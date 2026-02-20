@@ -28,6 +28,7 @@ export async function createSession(input: {
   uploadId: string;
   filename: string;
   contentType: string;
+  owner?: string;
   sizeBytes: number;
   chunkSize: number;
   totalChunks: number;
@@ -40,6 +41,7 @@ export async function createSession(input: {
     uploadId,
     filename,
     contentType,
+    owner,
     sizeBytes,
     chunkSize,
     totalChunks,
@@ -65,6 +67,7 @@ export async function createSession(input: {
       uploadId,
       filename,
       contentType,
+      ...(owner ? { owner } : {}),
       sizeBytes: String(sizeBytes),
       chunkSize: String(chunkSize),
       totalChunks: String(totalChunks),
@@ -79,6 +82,7 @@ export async function createSession(input: {
       status: "uploading",
       createdAt: String(now),
       expiresAt: String(expiresAt),
+      ...(owner ? { owner } : {}),
       sizeBytes: String(sizeBytes),
       chunkSize: String(chunkSize),
       totalChunks: String(totalChunks),
@@ -92,12 +96,26 @@ export async function createSession(input: {
     throw new Error("REDIS_TRANSACTION_FAILED");
   }
 
-  ensureFsFolder(uploadId);
+  try {
+    ensureFsFolder(uploadId);
+  } catch (err) {
+    // Redis state may already exist; roll back so we don't leave orphan sessions.
+    await redis
+      .multi()
+      .del(uploadKeys.session(uploadId))
+      .del(uploadKeys.meta(uploadId))
+      .del(uploadKeys.chunks(uploadId))
+      .srem(uploadKeys.gcIndex(), uploadId)
+      .exec()
+      .catch(() => {});
+    throw err;
+  }
 
   return {
     uploadId,
     filename,
     contentType,
+    owner,
     sizeBytes,
     chunkSize,
     totalChunks,
@@ -145,6 +163,7 @@ export async function getSession(
     uploadId,
     filename: data.filename,
     contentType: data.contentType,
+    owner: data.owner,
     sizeBytes,
     chunkSize,
     totalChunks,
