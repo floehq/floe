@@ -78,6 +78,19 @@ export async function runUploadGc(log: FastifyBaseLogger) {
     }
 
     /**
+     * Capacity reservations can leak into gcIndex if creation crashes before meta/session writes.
+     * If nothing exists for this id, remove it so capacity accounting can recover.
+     */
+    if (!status && !hasSession) {
+      await redis
+        .multi()
+        .del(uploadKeys.chunks(uploadId))
+        .srem(uploadKeys.gcIndex(), uploadId)
+        .exec();
+      continue;
+    }
+
+    /**
      * Only failed / expired uploads are collectible.
      */
     if (!status || !GC_ELIGIBLE_STATUSES.has(status)) {
@@ -150,4 +163,3 @@ export async function runUploadGc(log: FastifyBaseLogger) {
     await new Promise(r => setImmediate(r));
   }
 }
-
