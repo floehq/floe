@@ -27,7 +27,7 @@ const app = Fastify({
   logger: {
     level: process.env.NODE_ENV === "production" ? "info" : "debug",
     redact: {
-      paths: ["req.headers.authorization"],
+      paths: ["req.headers.authorization", "req.headers.x-api-key"],
       remove: true,
     },
   },
