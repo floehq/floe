@@ -10,6 +10,7 @@ export interface UploadSession {
   uploadId: string;
   filename: string;
   contentType: string;
+  owner?: string;
   sizeBytes: number;
   chunkSize: number;
   totalChunks: number;
