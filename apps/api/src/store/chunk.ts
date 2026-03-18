@@ -1,8 +1,8 @@
-// src/store/chunk.store.ts
-
 import type { Readable } from "stream";
 
 export interface ChunkStore {
+  backend(): "disk" | "s3";
+
   writeChunk(
     uploadId: string,
     index: number,
@@ -20,4 +20,3 @@ export interface ChunkStore {
 
   cleanup(uploadId: string): Promise<void>;
 }
-

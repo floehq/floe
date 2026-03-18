@@ -1,26 +1,17 @@
-// src/state/gc/upload.gc.worker.ts
-
 import fs from "fs/promises";
 import path from "path";
 import type { FastifyBaseLogger } from "fastify";
 
-import { getRedis } from "../client.js";
+import { getRedis } from "../redis.js";
 import { uploadKeys } from "../keys.js";
 import {
   UploadConfig,
   GcConfig,
 } from "../../config/uploads.config.js";
+import { chunkStore } from "../../store/index.js";
 
-/**
- * Grace period after last filesystem activity
- * before artifacts are eligible for deletion.
- */
 const GRACE_MS = GcConfig.grace;
 
-/**
- * Only these states are GC-eligible.
- * Everything else is protected.
- */
 const GC_ELIGIBLE_STATUSES = new Set([
   "failed",
   "expired",
@@ -30,11 +21,8 @@ const GC_ELIGIBLE_STATUSES = new Set([
 export async function runUploadGc(log: FastifyBaseLogger) {
   const redis = getRedis();
   const baseDir = UploadConfig.tmpDir;
+  const isDiskBackend = chunkStore.backend() === "disk";
 
-  /**
-   * SINGLE SOURCE OF TRUTH:
-   * GC only considers uploads registered here.
-   */
   const uploadIds = await redis.smembers(uploadKeys.gcIndex());
   if (uploadIds.length === 0) return;
 
@@ -51,21 +39,10 @@ export async function runUploadGc(log: FastifyBaseLogger) {
 
     let status = meta?.status;
 
-    /**
-     * HARD SAFETY:
-     * If a finalize lock exists, NEVER TOUCH.
-     */
     if (hasLock) {
       continue;
     }
 
-    /**
-     * CRITICAL FIX:
-     * Infer expiration when the session is gone but
-     * the status never transitioned.
-     *
-     * TTL ≠ state transition.
-     */
     if (
       !hasSession &&
       (status === "uploading" || status === "finalizing")
@@ -77,9 +54,15 @@ export async function runUploadGc(log: FastifyBaseLogger) {
       status = "expired";
     }
 
-    /**
-     * Only failed / expired uploads are collectible.
-     */
+    if (!status && !hasSession) {
+      await redis
+        .multi()
+        .del(uploadKeys.chunks(uploadId))
+        .srem(uploadKeys.gcIndex(), uploadId)
+        .exec();
+      continue;
+    }
+
     if (!status || !GC_ELIGIBLE_STATUSES.has(status)) {
       continue;
     }
@@ -87,37 +70,34 @@ export async function runUploadGc(log: FastifyBaseLogger) {
     const dirPath = path.join(baseDir, uploadId);
     const binPath = path.join(baseDir, `${uploadId}.bin`);
 
-    /**
-     * Determine age from the most valuable artifact.
-     * `.bin` takes precedence over chunk dir.
-     */
     let mtimeMs = 0;
-
-    try {
-      const st = await fs.stat(binPath);
-      mtimeMs = st.mtimeMs;
-    } catch {
+    if (isDiskBackend) {
       try {
-        const st = await fs.stat(dirPath);
+        const st = await fs.stat(binPath);
         mtimeMs = st.mtimeMs;
       } catch {
-        /**
-         * No filesystem artifacts left.
-         * Clean Redis only.
-         */
-        await redis.multi()
-          .del(metaKey)
-          .del(uploadKeys.chunks(uploadId))
-          .del(sessionKey)
-          .srem(uploadKeys.gcIndex(), uploadId)
-          .exec();
-        continue;
+        try {
+          const st = await fs.stat(dirPath);
+          mtimeMs = st.mtimeMs;
+        } catch {
+          await redis.multi()
+            .del(metaKey)
+            .del(uploadKeys.chunks(uploadId))
+            .del(sessionKey)
+            .srem(uploadKeys.gcIndex(), uploadId)
+            .exec();
+          continue;
+        }
+      }
+    } else {
+      const timestampCandidate =
+        meta?.failedAt ?? meta?.expiredAt ?? meta?.canceledAt ?? meta?.updatedAt ?? meta?.createdAt;
+      mtimeMs = Number(timestampCandidate ?? 0);
+      if (!Number.isFinite(mtimeMs) || mtimeMs <= 0) {
+        mtimeMs = Date.now();
       }
     }
 
-    /**
-     * Respect grace period.
-     */
     if (Date.now() - mtimeMs < GRACE_MS) {
       continue;
     }
@@ -127,15 +107,16 @@ export async function runUploadGc(log: FastifyBaseLogger) {
       "GC deleting failed/expired upload artifacts"
     );
 
-    /**
-     * Always attempt both deletions.
-     * Chunk dir may not exist. `.bin` may not exist.
-     * That is fine.
-     */
     await Promise.all([
-      fs.rm(dirPath, { recursive: true, force: true }).catch(() => {}),
-      fs.rm(binPath, { force: true }).catch(() => {}),
-      redis.multi()
+      chunkStore.cleanup(uploadId).catch(() => {}),
+      ...(isDiskBackend
+        ? [
+            fs.rm(dirPath, { recursive: true, force: true }).catch(() => {}),
+            fs.rm(binPath, { force: true }).catch(() => {}),
+          ]
+        : []),
+      redis
+        .multi()
         .del(metaKey)
         .del(uploadKeys.chunks(uploadId))
         .del(sessionKey)
@@ -143,11 +124,6 @@ export async function runUploadGc(log: FastifyBaseLogger) {
         .exec(),
     ]);
 
-    /**
-     * Yield to event loop to avoid starvation
-     * when GC backlog is large.
-     */
     await new Promise(r => setImmediate(r));
   }
 }
-

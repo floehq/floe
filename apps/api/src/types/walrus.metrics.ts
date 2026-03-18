@@ -1,5 +1,3 @@
-// src/types/walrus.metrics.ts
-
 export type WalrusUploadOutcome =
   | "success"
   | "auth_failed"
@@ -22,7 +20,6 @@ export interface WalrusUploadMetric {
   error?: string;
   httpStatus?: number;
   walrusCost?: number | string;
-  walrusObjectId?: string;
   walrusEndEpoch?: number;
   network: "mainnet" | "testnet";
   timestamp: number;
@@ -31,7 +28,10 @@ export interface WalrusUploadMetric {
 export function recordWalrusUploadMetric(
   metric: WalrusUploadMetric
 ) {
-  console.info("[walrus.upload.metric]", metric);
+  if (process.env.FLOE_LOG_WALRUS_METRICS !== "1") {
+    return;
+  }
+  process.stdout.write(`${JSON.stringify({ event: "walrus.upload.metric", ...metric })}\n`);
 }
 
 export function classifyWalrusError(

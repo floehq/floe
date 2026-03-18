@@ -1,5 +1,3 @@
-// src/utils/apiError.ts
-
 import type { FastifyReply } from "fastify";
 
 /**
@@ -27,10 +25,19 @@ export type ApiErrorCode =
   | "CHUNK_UPLOAD_FAILED"
   | "SESSION_CREATE_FAILED"
   | "UPLOAD_FAILED"
+  | "FINALIZE_QUEUE_BACKPRESSURE"
   | "INVALID_EPOCHS"
   | "RATE_LIMITED"
+  | "UNAUTHORIZED"
   | "CHUNK_IN_PROGRESS"
-  | "INTERNAL_ERROR";
+  | "INTERNAL_ERROR"
+  | "OWNER_MISMATCH"
+  | "FILE_NOT_FOUND"
+  | "INVALID_FILE_METADATA"
+  | "SUI_UNAVAILABLE"
+  | "INVALID_RANGE"
+  | "FILE_CONTENT_NOT_FOUND"
+  | "FILE_BLOB_UNAVAILABLE";
 
 export interface ApiErrorResponse {
   error: {

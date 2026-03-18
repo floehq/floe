@@ -1,6 +1,5 @@
-// src/services/upload/walrus.read.ts
-
 import { WalrusEnv, WalrusReadLimits } from "../../config/walrus.config.js";
+import { observeWalrusSegmentFetch } from "../metrics/runtime.metrics.js";
 
 function normalizeBaseUrl(url: string): string {
   return url.replace(/\/$/, "");
@@ -122,10 +121,31 @@ export async function fetchWalrusBlob(params: {
         throw Object.assign(new Error("AbortError"), { name: "AbortError" });
       }
 
+      const attemptStartedAt = Date.now();
       try {
         const res = await fetchWithTimeout({ url, headers, signal: params.signal });
 
+        // Some aggregators can be out-of-sync or on a different network.
+        // Try other aggregators before concluding the blob is missing.
+        if (res.status === 404) {
+          observeWalrusSegmentFetch({
+            outcome: "not_found",
+            durationMs: Date.now() - attemptStartedAt,
+            statusClass: "4xx",
+          });
+          lastStatus = res.status;
+          try {
+            await res.body?.cancel();
+          } catch {}
+          break;
+        }
+
         if (isRetryableStatus(res.status)) {
+          observeWalrusSegmentFetch({
+            outcome: "retryable_status",
+            durationMs: Date.now() - attemptStartedAt,
+            statusClass: res.status >= 500 ? "5xx" : "4xx",
+          });
           lastStatus = res.status;
           try {
             await res.body?.cancel();
@@ -136,18 +156,39 @@ export async function fetchWalrusBlob(params: {
           continue;
         }
 
+        observeWalrusSegmentFetch({
+          outcome: "success",
+          durationMs: Date.now() - attemptStartedAt,
+          statusClass: "2xx",
+        });
         lastGoodAggregatorIdx = idx;
         return { res, aggregatorUrl: base };
       } catch (err) {
+        const durationMs = Date.now() - attemptStartedAt;
         lastErr = err;
 
         if ((params.signal && params.signal.aborted) || (err as any)?.name === "AbortError") {
+          observeWalrusSegmentFetch({
+            outcome: "aborted",
+            durationMs,
+            statusClass: "none",
+          });
           throw err;
         }
 
         if (!isRetryableNetworkError(err)) {
+          observeWalrusSegmentFetch({
+            outcome: "other_error",
+            durationMs,
+            statusClass: "none",
+          });
           throw err;
         }
+        observeWalrusSegmentFetch({
+          outcome: "network_error",
+          durationMs,
+          statusClass: "none",
+        });
 
         const delay =
           WalrusReadLimits.baseRetryDelayMs * Math.max(1, attempt + 1);

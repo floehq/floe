@@ -1,5 +1,3 @@
-// src/routes/uploads.routes.ts
-
 import { FastifyInstance } from "fastify";
 import crypto from "crypto";
 import fs from "fs/promises";
@@ -8,12 +6,17 @@ import path from "path";
 import { sendApiError } from "../utils/apiError.js";
 import { ChunkConfig, UploadConfig } from "../config/uploads.config.js";
 import { WalrusEpochLimits } from "../config/walrus.config.js";
+import { AuthUploadPolicyConfig } from "../config/auth.config.js";
 
-import { createSession, getSession } from "../services/upload/upload.session.js";
-import { finalizeUpload } from "../services/upload/upload.finalize.js";
+import { createSession, getSession } from "../services/uploads/session.js";
+import {
+  enqueueUploadFinalize,
+  isUploadFinalizeQueued,
+} from "../services/uploads/finalize.queue.js";
+import { applyRateLimitHeaders } from "../services/auth/auth.headers.js";
 
 import { chunkStore } from "../store/index.js";
-import { getRedis } from "../state/client.js";
+import { getRedis } from "../state/redis.js";
 import { uploadKeys } from "../state/keys.js";
 
 function isUuid(value: unknown): value is string {
@@ -35,17 +38,77 @@ function shouldExposeBlobId(query: any): boolean {
   return raw === "1" || raw === "true" || raw === true;
 }
 
-function createAdmissionLockKey(uploadId: string): string {
-  const bucketCount = 16;
-  const seed = uploadId.slice(0, 8);
-  const bucket = Number.parseInt(seed, 16) % bucketCount;
-  return `${uploadKeys.createLock()}:${bucket}`;
+const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
+function parseOptionalSuiAddressEnv(name: string): string | undefined {
+  const raw = process.env[name]?.trim();
+  if (!raw) return undefined;
+  if (!SUI_ADDRESS_RE.test(raw)) {
+    throw new Error(`${name} must be a valid 32-byte Sui address`);
+  }
+  return `0x${raw.replace(/^0x/i, "").toLowerCase()}`;
+}
+
+function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min) {
+    throw new Error(`${name} must be an integer >= ${min}`);
+  }
+  return n;
+}
+
+const DEFAULT_OWNER_ADDRESS = parseOptionalSuiAddressEnv("FLOE_DEFAULT_OWNER_ADDRESS");
+
+const FINALIZE_POLL_AFTER_MS = parsePositiveIntEnv("FLOE_FINALIZE_STATUS_POLL_MS", 2000);
+
+async function tryReserveUploadCapacity(params: {
+  maxActiveUploads: number;
+  uploadId: string;
+}): Promise<boolean> {
+  const redis = getRedis();
+  const script = `
+    local key = KEYS[1]
+    local max = tonumber(ARGV[1])
+    local uploadId = ARGV[2]
+    local count = tonumber(redis.call("SCARD", key))
+    if count >= max then
+      return 0
+    end
+    redis.call("SADD", key, uploadId)
+    return 1
+  `;
+
+  const reserved = await redis.eval(
+    script,
+    [uploadKeys.gcIndex()],
+    [String(params.maxActiveUploads), params.uploadId]
+  );
+
+  return Number(reserved) === 1;
 }
 
 export default async function uploadRoutes(app: FastifyInstance) {
   app.post("/v1/uploads/create", async (req, reply) => {
     const log = req.log;
     const body = req.body as any;
+    const createLimit = await req.server.authProvider.checkRateLimit({
+      req,
+      scope: "upload_control",
+    });
+    applyRateLimitHeaders(reply, createLimit);
+    if (!createLimit.allowed) {
+      return sendApiError(reply, 429, "RATE_LIMITED", "Rate limit exceeded", {
+        retryable: true,
+        details: {
+          limit: createLimit.limit,
+          current: createLimit.current,
+          windowSeconds: createLimit.windowSeconds,
+          authenticated: createLimit.identity.authenticated,
+          authMethod: createLimit.identity.method,
+        },
+      });
+    }
 
     if (!body || typeof body !== "object") {
       return sendApiError(
@@ -90,12 +153,20 @@ export default async function uploadRoutes(app: FastifyInstance) {
       return sendApiError(reply, 400, "INVALID_FILE_SIZE", "sizeBytes must be positive");
     }
 
-    if (fileSizeNum > UploadConfig.maxFileSizeBytes) {
+    const tierMaxFileSizeBytes = createLimit.identity.authenticated
+      ? AuthUploadPolicyConfig.maxFileSizeBytes.authenticated
+      : AuthUploadPolicyConfig.maxFileSizeBytes.public;
+    const effectiveMaxFileSizeBytes = Math.min(
+      UploadConfig.maxFileSizeBytes,
+      tierMaxFileSizeBytes
+    );
+
+    if (fileSizeNum > effectiveMaxFileSizeBytes) {
       return sendApiError(
         reply,
         413,
         "FILE_TOO_LARGE",
-        `File exceeds maxFileSizeBytes (${UploadConfig.maxFileSizeBytes})`
+        `File exceeds maxFileSizeBytes (${effectiveMaxFileSizeBytes})`
       );
     }
 
@@ -145,42 +216,32 @@ export default async function uploadRoutes(app: FastifyInstance) {
       );
     }
 
-    const redis = getRedis();
     const uploadId = crypto.randomUUID();
-    const createLockKey = createAdmissionLockKey(uploadId);
-    const createLockToken = crypto.randomUUID();
-    const createLockAcquired = await redis.set(createLockKey, createLockToken, {
-      nx: true,
-      px: 5_000,
+    const redis = getRedis();
+    const capacityReserved = await tryReserveUploadCapacity({
+      maxActiveUploads: UploadConfig.maxActiveUploads,
+      uploadId,
     });
 
-    if (!createLockAcquired) {
-      return sendApiError(
-        reply,
-        503,
-        "RATE_LIMITED",
-        "Upload creation is busy, retry shortly",
-        { retryable: true }
-      );
+    if (!capacityReserved) {
+      return sendApiError(reply, 429, "UPLOAD_CAPACITY_REACHED", "Too many active uploads", {
+        retryable: true,
+      });
     }
 
+    let sessionCreated = false;
     try {
-      const activeUploads = await redis.scard(uploadKeys.gcIndex());
-      if (activeUploads >= UploadConfig.maxActiveUploads) {
-        return sendApiError(reply, 429, "UPLOAD_CAPACITY_REACHED", "Too many active uploads", {
-          retryable: true,
-        });
-      }
-
       const session = await createSession({
         uploadId,
         filename,
         contentType,
+        owner: createLimit.identity.owner ?? DEFAULT_OWNER_ADDRESS,
         sizeBytes: fileSizeNum,
         chunkSize: resolvedChunkSize,
         totalChunks,
         epochs: resolvedEpochs,
       });
+      sessionCreated = true;
 
       log.info({ uploadId, totalChunks }, "Upload session created");
 
@@ -203,9 +264,15 @@ export default async function uploadRoutes(app: FastifyInstance) {
         }
       );
     } finally {
-      const currentLockValue = await redis.get<string>(createLockKey).catch(() => null);
-      if (currentLockValue === createLockToken) {
-        await redis.del(createLockKey).catch(() => {});
+      if (!sessionCreated) {
+        await redis
+          .multi()
+          .del(uploadKeys.session(uploadId))
+          .del(uploadKeys.meta(uploadId))
+          .del(uploadKeys.chunks(uploadId))
+          .srem(uploadKeys.gcIndex(), uploadId)
+          .exec()
+          .catch(() => {});
       }
     }
   });
@@ -213,6 +280,23 @@ export default async function uploadRoutes(app: FastifyInstance) {
   app.put("/v1/uploads/:uploadId/chunk/:index", async (req, reply) => {
     const log = req.log;
     const { uploadId, index } = req.params as any;
+    const chunkLimit = await req.server.authProvider.checkRateLimit({
+      req,
+      scope: "upload_chunk",
+    });
+    applyRateLimitHeaders(reply, chunkLimit);
+    if (!chunkLimit.allowed) {
+      return sendApiError(reply, 429, "RATE_LIMITED", "Rate limit exceeded", {
+        retryable: true,
+        details: {
+          limit: chunkLimit.limit,
+          current: chunkLimit.current,
+          windowSeconds: chunkLimit.windowSeconds,
+          authenticated: chunkLimit.identity.authenticated,
+          authMethod: chunkLimit.identity.method,
+        },
+      });
+    }
 
     if (!isUuid(uploadId)) {
       return sendApiError(reply, 400, "INVALID_UPLOAD_ID", "uploadId must be a UUID");
@@ -221,6 +305,20 @@ export default async function uploadRoutes(app: FastifyInstance) {
     const session = await getSession(uploadId);
     if (!session) {
       return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
+    }
+    const authzChunk = await req.server.authProvider.authorizeUploadAccess({
+      req,
+      action: "chunk",
+      uploadId,
+      uploadOwner: session.owner ?? null,
+    });
+    if (!authzChunk.allowed) {
+      return sendApiError(
+        reply,
+        403,
+        "OWNER_MISMATCH",
+        authzChunk.message ?? "Upload access denied"
+      );
     }
 
     if (session.status === "completed") {
@@ -319,44 +417,123 @@ export default async function uploadRoutes(app: FastifyInstance) {
     }
 
     const redis = getRedis();
+    const statusProbe = await redis.hget<string>(uploadKeys.meta(uploadId), "status");
+    const statusScope = statusProbe === "finalizing" ? "file_meta_read" : "upload_control";
+    const statusLimit = await req.server.authProvider.checkRateLimit({
+      req,
+      scope: statusScope,
+    });
+    applyRateLimitHeaders(reply, statusLimit);
+    if (!statusLimit.allowed) {
+      return sendApiError(reply, 429, "RATE_LIMITED", "Rate limit exceeded", {
+        retryable: true,
+        details: {
+          limit: statusLimit.limit,
+          current: statusLimit.current,
+          windowSeconds: statusLimit.windowSeconds,
+          authenticated: statusLimit.identity.authenticated,
+          authMethod: statusLimit.identity.method,
+          scope: statusScope,
+        },
+      });
+    }
+
     const [session, meta, members] = await Promise.all([
       getSession(uploadId),
       redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId)),
       redis.smembers(uploadKeys.chunks(uploadId)),
     ]);
+    const receivedChunks = members.map(Number).sort((a, b) => a - b);
 
     if (!session) {
       const status = meta?.status;
       if (!status) {
         return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
       }
+      const authzStatus = await req.server.authProvider.authorizeUploadAccess({
+        req,
+        action: "status",
+        uploadId,
+        uploadOwner: meta?.owner ?? null,
+      });
+      if (!authzStatus.allowed) {
+        return sendApiError(
+          reply,
+          403,
+          "OWNER_MISMATCH",
+          authzStatus.message ?? "Upload access denied"
+        );
+      }
 
       return {
         uploadId,
         chunkSize: meta?.chunkSize ? Number(meta.chunkSize) : null,
         totalChunks: meta?.totalChunks ? Number(meta.totalChunks) : null,
-        receivedChunks: members.map(Number).sort((a, b) => a - b),
+        receivedChunks,
+        receivedChunkCount: receivedChunks.length,
         expiresAt: meta?.expiresAt ? Number(meta.expiresAt) : null,
         status,
+        ...(status === "finalizing" ? { pollAfterMs: FINALIZE_POLL_AFTER_MS } : {}),
         ...(meta?.fileId ? { fileId: meta.fileId } : {}),
         ...(exposeBlobId && meta?.blobId ? { blobId: meta.blobId } : {}),
+        ...(meta?.walrusEndEpoch ? { walrusEndEpoch: Number(meta.walrusEndEpoch) } : {}),
         ...(meta?.error ? { error: meta.error } : {}),
       };
+    }
+    const authzStatus = await req.server.authProvider.authorizeUploadAccess({
+      req,
+      action: "status",
+      uploadId,
+      uploadOwner: session.owner ?? null,
+    });
+    if (!authzStatus.allowed) {
+      return sendApiError(
+        reply,
+        403,
+        "OWNER_MISMATCH",
+        authzStatus.message ?? "Upload access denied"
+      );
     }
 
     return {
       uploadId,
       chunkSize: session.chunkSize,
       totalChunks: session.totalChunks,
-      receivedChunks: members.map(Number).sort((a, b) => a - b),
+      receivedChunks,
+      receivedChunkCount: receivedChunks.length,
       expiresAt: session.expiresAt,
-      status: session.status,
+      status: meta?.status ?? session.status,
+      ...((meta?.status ?? session.status) === "finalizing"
+        ? { pollAfterMs: FINALIZE_POLL_AFTER_MS }
+        : {}),
+      ...(meta?.fileId ? { fileId: meta.fileId } : {}),
+      ...(exposeBlobId && meta?.blobId ? { blobId: meta.blobId } : {}),
+      ...(meta?.walrusEndEpoch ? { walrusEndEpoch: Number(meta.walrusEndEpoch) } : {}),
+      ...(meta?.error ? { error: meta.error } : {}),
     };
   });
 
   app.post("/v1/uploads/:uploadId/complete", async (req, reply) => {
     const log = req.log;
     const { uploadId } = req.params as { uploadId: string };
+    const exposeBlobId = shouldExposeBlobId((req as any).query);
+    const completeLimit = await req.server.authProvider.checkRateLimit({
+      req,
+      scope: "upload_control",
+    });
+    applyRateLimitHeaders(reply, completeLimit);
+    if (!completeLimit.allowed) {
+      return sendApiError(reply, 429, "RATE_LIMITED", "Rate limit exceeded", {
+        retryable: true,
+        details: {
+          limit: completeLimit.limit,
+          current: completeLimit.current,
+          windowSeconds: completeLimit.windowSeconds,
+          authenticated: completeLimit.identity.authenticated,
+          authMethod: completeLimit.identity.method,
+        },
+      });
+    }
 
     if (!isUuid(uploadId)) {
       return sendApiError(reply, 400, "INVALID_UPLOAD_ID", "uploadId must be a UUID");
@@ -368,6 +545,20 @@ export default async function uploadRoutes(app: FastifyInstance) {
       getSession(uploadId),
       redis.hgetall<Record<string, string>>(metaKey),
     ]);
+    const authzComplete = await req.server.authProvider.authorizeUploadAccess({
+      req,
+      action: "complete",
+      uploadId,
+      uploadOwner: session?.owner ?? meta?.owner ?? null,
+    });
+    if (!authzComplete.allowed) {
+      return sendApiError(
+        reply,
+        403,
+        "OWNER_MISMATCH",
+        authzComplete.message ?? "Upload access denied"
+      );
+    }
 
     const metaStatus = meta?.status;
 
@@ -384,20 +575,21 @@ export default async function uploadRoutes(app: FastifyInstance) {
 
         return reply.code(200).send({
           fileId: meta.fileId,
-          blobId: meta.blobId,
+          ...(exposeBlobId ? { blobId: meta.blobId } : {}),
           sizeBytes: Number(meta.sizeBytes ?? 0),
           status: "ready",
+          ...(meta?.walrusEndEpoch ? { walrusEndEpoch: Number(meta.walrusEndEpoch) } : {}),
         });
       }
 
       if (metaStatus === "finalizing") {
-        return sendApiError(
-          reply,
-          409,
-          "UPLOAD_FINALIZATION_IN_PROGRESS",
-          "Upload is currently finalizing",
-          { retryable: true }
-        );
+        reply.header("Retry-After", String(Math.max(1, Math.ceil(FINALIZE_POLL_AFTER_MS / 1000))));
+        return reply.code(202).send({
+          uploadId,
+          status: "finalizing",
+          pollAfterMs: FINALIZE_POLL_AFTER_MS,
+          ...(isUploadFinalizeQueued(uploadId) ? { inProgress: true } : {}),
+        });
       }
 
       return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
@@ -407,9 +599,10 @@ export default async function uploadRoutes(app: FastifyInstance) {
       if (meta?.fileId && meta?.blobId) {
         return reply.code(200).send({
           fileId: meta.fileId,
-          blobId: meta.blobId,
+          ...(exposeBlobId ? { blobId: meta.blobId } : {}),
           sizeBytes: Number(meta.sizeBytes ?? session.sizeBytes),
           status: "ready",
+          ...(meta?.walrusEndEpoch ? { walrusEndEpoch: Number(meta.walrusEndEpoch) } : {}),
         });
       }
 
@@ -433,48 +626,46 @@ export default async function uploadRoutes(app: FastifyInstance) {
       );
     }
 
-    try {
-      const result = await finalizeUpload(session);
-
-      log.info(
-        {
-          uploadId,
-          fileId: result.fileId,
-          blobId: result.blobId,
-        },
-        "Upload finalized"
-      );
-
-      return reply.code(200).send(result);
-    } catch (err: any) {
-      if (err?.message === "UPLOAD_FINALIZATION_IN_PROGRESS") {
-        return sendApiError(
-          reply,
-          409,
-          "UPLOAD_FINALIZATION_IN_PROGRESS",
-          "Upload is currently finalizing",
-          { retryable: true }
-        );
-      }
-
-      log.error({ uploadId, err }, "Upload finalization failed");
-
+    const queued = await enqueueUploadFinalize({ uploadId, log });
+    if (queued.rejectedByBackpressure) {
       return sendApiError(
         reply,
-        502,
-        "UPLOAD_FAILED",
-        err.message ?? "Upload finalization failed",
+        503,
+        "FINALIZE_QUEUE_BACKPRESSURE",
+        "Finalize queue is saturated, retry shortly",
         { retryable: true }
       );
     }
+    reply.header("Retry-After", String(Math.max(1, Math.ceil(FINALIZE_POLL_AFTER_MS / 1000))));
+    return reply.code(202).send({
+      uploadId,
+      status: "finalizing",
+      pollAfterMs: FINALIZE_POLL_AFTER_MS,
+      enqueued: queued.enqueued,
+      ...(isUploadFinalizeQueued(uploadId) ? { inProgress: true } : {}),
+    });
   });
 
-  // Cancel an in-progress upload session. Best-effort cleanup; GC will catch any leftovers.
-  // This endpoint is intentionally idempotent: repeated cancels return 200 when the upload
-  // is already canceled/expired/failed.
   app.delete("/v1/uploads/:uploadId", async (req, reply) => {
     const log = req.log;
     const { uploadId } = req.params as { uploadId: string };
+    const cancelLimit = await req.server.authProvider.checkRateLimit({
+      req,
+      scope: "upload_control",
+    });
+    applyRateLimitHeaders(reply, cancelLimit);
+    if (!cancelLimit.allowed) {
+      return sendApiError(reply, 429, "RATE_LIMITED", "Rate limit exceeded", {
+        retryable: true,
+        details: {
+          limit: cancelLimit.limit,
+          current: cancelLimit.current,
+          windowSeconds: cancelLimit.windowSeconds,
+          authenticated: cancelLimit.identity.authenticated,
+          authMethod: cancelLimit.identity.method,
+        },
+      });
+    }
 
     if (!isUuid(uploadId)) {
       return sendApiError(reply, 400, "INVALID_UPLOAD_ID", "uploadId must be a UUID");
@@ -489,6 +680,20 @@ export default async function uploadRoutes(app: FastifyInstance) {
       redis.hgetall<Record<string, string>>(metaKey),
       redis.exists(lockKey),
     ]);
+    const authzCancel = await req.server.authProvider.authorizeUploadAccess({
+      req,
+      action: "cancel",
+      uploadId,
+      uploadOwner: session?.owner ?? meta?.owner ?? null,
+    });
+    if (!authzCancel.allowed) {
+      return sendApiError(
+        reply,
+        403,
+        "OWNER_MISMATCH",
+        authzCancel.message ?? "Upload access denied"
+      );
+    }
 
     if (hasLock) {
       return sendApiError(
@@ -501,8 +706,6 @@ export default async function uploadRoutes(app: FastifyInstance) {
 
     const status = meta?.status;
 
-    // If the session is already gone, treat delete as idempotent whenever we have
-    // a meta record to explain what happened.
     if (!session) {
       if (!status) {
         return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
@@ -518,12 +721,10 @@ export default async function uploadRoutes(app: FastifyInstance) {
       }
 
       if (status === "canceled" || status === "failed" || status === "expired") {
-        // Ensure this upload no longer counts against active capacity.
         await redis.srem(uploadKeys.gcIndex(), uploadId);
         return reply.code(200).send({ ok: true, uploadId, status });
       }
 
-      // Unknown/legacy state: attempt to cancel + cleanup best-effort.
       await redis.hset(metaKey, {
         status: "canceled",
         canceledAt: String(Date.now()),
@@ -538,6 +739,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         .multi()
         .del(uploadKeys.session(uploadId))
         .del(uploadKeys.chunks(uploadId))
+        .srem(uploadKeys.gcIndex(), uploadId)
         .exec();
 
       log.info({ uploadId }, "Upload canceled");
@@ -563,7 +765,6 @@ export default async function uploadRoutes(app: FastifyInstance) {
       fs.rm(finalBinPath(uploadId), { force: true }).catch(() => {}),
     ]);
 
-    // Preserve meta for inspection, but remove active session/chunk state.
     await redis
       .multi()
       .del(uploadKeys.session(uploadId))

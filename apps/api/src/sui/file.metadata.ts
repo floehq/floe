@@ -1,7 +1,5 @@
-// src/sui/file.metadata.ts
-
 import { Transaction } from "@mysten/sui/transactions";
-import { suiClient, suiSigner } from "./client.js";
+import { suiClient, suiSigner } from "../state/sui.js";
 
 const SUI_PACKAGE_ID = process.env.SUI_PACKAGE_ID;
 
@@ -14,6 +12,7 @@ export interface FinalizeFileInput {
   sizeBytes: number;
   mimeType: string;
   owner?: string;
+  walrusEndEpoch?: number;
 }
 
 export interface FinalizeFileResult {
@@ -26,7 +25,7 @@ export async function finalizeFileMetadata(
   const tx = new Transaction();
 
   tx.moveCall({
-    target: `${SUI_PACKAGE_ID}::file::create`,
+    target: `${SUI_PACKAGE_ID}::file::create_with_owner`,
     arguments: [
       tx.pure.string(input.blobId),
       tx.pure.u64(input.sizeBytes),
@@ -34,6 +33,9 @@ export async function finalizeFileMetadata(
       input.owner 
         ? tx.pure.option("address", input.owner)
         : tx.pure.option("address", null),
+      input.walrusEndEpoch !== undefined
+        ? tx.pure.option("u64", input.walrusEndEpoch)
+        : tx.pure.option("u64", null),
       tx.object("0x6"),
     ],
   });

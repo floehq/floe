@@ -1,5 +1,3 @@
-// src/state/gc/upload.gc.scheduler.ts
-
 import type { FastifyBaseLogger } from "fastify";
 import { GcConfig } from "../../config/uploads.config.js";
 import { runUploadGc } from "./upload.gc.worker.js";
@@ -36,4 +34,3 @@ export async function stopUploadGc(): Promise<void> {
     running = null;
   }
 }
-

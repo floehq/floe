@@ -1,13 +1,12 @@
-// src/services/upload/walrus.metrics.ts
-
 import type { Readable } from "stream";
-import { walrusQueue } from "./walrus.limiter.js";
-import { uploadToWalrusOnce } from "./walrus.upload.js";
+import { walrusQueue } from "./limiter.js";
+import { uploadToWalrusOnce } from "./upload.js";
 import { WalrusUploadLimits } from "../../config/walrus.config.js";
 import {
   recordWalrusUploadMetric,
   classifyWalrusError,
 } from "../../types/walrus.metrics.js";
+import { observeWalrusPublish } from "../metrics/runtime.metrics.js";
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 type WalrusUploadResult = Awaited<ReturnType<typeof uploadToWalrusOnce>>;
@@ -51,10 +50,15 @@ export async function uploadToWalrusWithMetrics(params: {
             durationMs: Date.now() - start,
             outcome: "success",
             walrusCost: res.cost,
-            walrusObjectId: res.objectId,
             walrusEndEpoch: res.endEpoch,
             network: process.env.FLOE_NETWORK as any,
             timestamp: Date.now(),
+          });
+          observeWalrusPublish({
+            durationMs: Date.now() - start,
+            outcome: "success",
+            mode: (process.env.FLOE_WALRUS_STORE_MODE === "cli" ? "cli" : "sdk"),
+            source: res.source,
           });
 
           return res;
@@ -83,6 +87,12 @@ export async function uploadToWalrusWithMetrics(params: {
       httpStatus: extractWalrusHttpStatus(err),
       network: process.env.FLOE_NETWORK as any,
       timestamp: Date.now(),
+    });
+    observeWalrusPublish({
+      durationMs: Date.now() - start,
+      outcome: "failure",
+      mode: (process.env.FLOE_WALRUS_STORE_MODE === "cli" ? "cli" : "sdk"),
+      source: "unknown",
     });
 
     throw err;

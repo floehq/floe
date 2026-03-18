@@ -1,0 +1,746 @@
+import { FastifyInstance } from "fastify";
+import { Readable } from "node:stream";
+
+import { suiClient } from "../state/sui.js";
+import { getIndexedFile, upsertIndexedFile } from "../db/files.repository.js";
+import { fetchWalrusBlob } from "../services/walrus/read.js";
+import { WalrusReadLimits } from "../config/walrus.config.js";
+import { sendApiError } from "../utils/apiError.js";
+import { applyRateLimitHeaders } from "../services/auth/auth.headers.js";
+import {
+  observeMetadataLookup,
+  observeStreamTtfb,
+  recordStreamReadError,
+} from "../services/metrics/runtime.metrics.js";
+
+function inferContainerFromMime(mimeType: string): string | null {
+  const m = (mimeType ?? "").toLowerCase();
+  if (m.includes("mp4")) return "mp4";
+  if (m.includes("webm")) return "webm";
+  if (m.includes("quicktime")) return "mov";
+  if (m.includes("x-matroska") || m.includes("mkv")) return "mkv";
+  return null;
+}
+
+function classifyStreamErrorReason(message: string): string {
+  const msg = (message ?? "").toUpperCase();
+  if (msg.includes("FILE_BLOB_UNAVAILABLE")) return "blob_unavailable";
+  if (msg.includes("INVALID_RANGE")) return "invalid_range";
+  if (msg.includes("WALRUS_RANGE_FAILED")) return "walrus_range_failed";
+  if (msg.includes("WALRUS_EMPTY_SEGMENT")) return "walrus_empty_segment";
+  if (msg.includes("WALRUS_SEGMENT_OVERRUN")) return "walrus_segment_overrun";
+  if (msg.includes("ABORT")) return "aborted";
+  return "other";
+}
+
+function shouldExposeBlobId(req: any): boolean {
+  // Default: never expose blobId unless explicitly requested.
+  if (process.env.FLOE_EXPOSE_BLOB_ID === "1") return true;
+  const q = req?.query ?? {};
+  const raw = q.includeBlobId ?? q.include_blob_id ?? q.includeStorage;
+  return raw === "1" || raw === "true" || raw === true;
+}
+
+type ParsedRange = {
+  start: number;
+  end: number;
+};
+
+type NormalizedFileFields = {
+  blobId: string;
+  sizeBytes: number;
+  mimeType: string;
+  createdAt: number;
+  owner: unknown;
+  ownerAddress: string | null;
+  walrusEndEpoch: number | null;
+};
+
+const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
+
+function normalizeSuiAddress(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const value = raw.trim();
+  if (!SUI_ADDRESS_RE.test(value)) return null;
+  return `0x${value.replace(/^0x/i, "").toLowerCase()}`;
+}
+
+function parseOptionalU64(raw: unknown): number | null {
+  if (raw === null || raw === undefined) return null;
+
+  if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) {
+    return Math.floor(raw);
+  }
+  if (typeof raw === "string" && raw.trim() !== "") {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
+  }
+  if (typeof raw === "object") {
+    const vec = (raw as any)?.vec;
+    if (Array.isArray(vec)) {
+      if (vec.length === 0) return null;
+      return parseOptionalU64(vec[0]);
+    }
+  }
+
+  return null;
+}
+
+function normalizeFileFields(fields: any): NormalizedFileFields | null {
+  if (!fields || typeof fields !== "object") return null;
+
+  const blobId = typeof fields.blob_id === "string" ? fields.blob_id.trim() : "";
+  const rawSizeBytes = Number(fields.size_bytes);
+  const rawCreatedAt = Number(fields.created_at);
+  const mimeType =
+    typeof fields.mime === "string" && fields.mime.trim().length > 0
+      ? fields.mime
+      : "application/octet-stream";
+
+  if (!blobId) return null;
+  if (!Number.isFinite(rawSizeBytes) || !Number.isInteger(rawSizeBytes) || rawSizeBytes <= 0) {
+    return null;
+  }
+  if (!Number.isFinite(rawCreatedAt) || rawCreatedAt < 0) return null;
+
+  return {
+    blobId,
+    sizeBytes: rawSizeBytes,
+    mimeType,
+    createdAt: rawCreatedAt,
+    owner: fields.owner ?? null,
+    ownerAddress: normalizeSuiAddress(fields.owner),
+    walrusEndEpoch: parseOptionalU64(fields.walrus_end_epoch),
+  };
+}
+
+function parseSingleRangeHeader(params: {
+  rangeHeader: string;
+  sizeBytes: number;
+}): { range: ParsedRange; kind: "bounded" | "open" | "suffix" } | { error: "INVALID_RANGE" } {
+  const { rangeHeader, sizeBytes } = params;
+
+  const m = rangeHeader.trim().match(/^bytes=(\d*)-(\d*)$/i);
+  if (!m) return { error: "INVALID_RANGE" };
+
+  const rawStart = m[1];
+  const rawEnd = m[2];
+
+  // Suffix: bytes=-N
+  if (rawStart === "" && rawEnd !== "") {
+    const suffixLen = Number(rawEnd);
+    if (!Number.isFinite(suffixLen) || suffixLen <= 0) return { error: "INVALID_RANGE" };
+
+    const end = sizeBytes - 1;
+    const start = Math.max(0, sizeBytes - suffixLen);
+    return { range: { start, end }, kind: "suffix" };
+  }
+
+  const start = Number(rawStart);
+  if (!Number.isFinite(start) || start < 0) return { error: "INVALID_RANGE" };
+
+  // Open ended: bytes=N-
+  if (rawEnd === "") {
+    const end = sizeBytes - 1;
+    if (start > end) return { error: "INVALID_RANGE" };
+    return { range: { start, end }, kind: "open" };
+  }
+
+  const endRaw = Number(rawEnd);
+  if (!Number.isFinite(endRaw) || endRaw < start) return { error: "INVALID_RANGE" };
+  if (start >= sizeBytes) return { error: "INVALID_RANGE" };
+
+  const end = Math.min(endRaw, sizeBytes - 1);
+  return { range: { start, end }, kind: "bounded" };
+}
+
+const FILE_FIELDS_MEMORY_CACHE_TTL_MS = Number(
+  process.env.FLOE_FILE_FIELDS_MEMORY_CACHE_TTL_MS ?? 60_000
+);
+const FILE_FIELDS_MEMORY_CACHE_MAX = Number(
+  process.env.FLOE_FILE_FIELDS_MEMORY_CACHE_MAX_ENTRIES ?? 5000
+);
+const FILE_FIELDS_DEBUG = process.env.FLOE_FILE_FIELDS_DEBUG === "1";
+
+type FileFieldsSource = "memory" | "postgres" | "sui";
+type CachedFileFieldsResult = {
+  fields: any | null;
+  source: FileFieldsSource | null;
+};
+
+const fileFieldsMemoryCache = new Map<
+  string,
+  { value: any; expiresAt: number; touchedAt: number }
+>();
+
+function getMemoryFileFields(fileId: string): any | null {
+  if (!Number.isFinite(FILE_FIELDS_MEMORY_CACHE_TTL_MS) || FILE_FIELDS_MEMORY_CACHE_TTL_MS <= 0) {
+    return null;
+  }
+  const now = Date.now();
+  const hit = fileFieldsMemoryCache.get(fileId);
+  if (!hit) return null;
+  if (hit.expiresAt <= now) {
+    fileFieldsMemoryCache.delete(fileId);
+    return null;
+  }
+  hit.touchedAt = now;
+  return hit.value;
+}
+
+function setMemoryFileFields(fileId: string, fields: any) {
+  if (!Number.isFinite(FILE_FIELDS_MEMORY_CACHE_TTL_MS) || FILE_FIELDS_MEMORY_CACHE_TTL_MS <= 0) {
+    return;
+  }
+  const now = Date.now();
+  fileFieldsMemoryCache.set(fileId, {
+    value: fields,
+    expiresAt: now + FILE_FIELDS_MEMORY_CACHE_TTL_MS,
+    touchedAt: now,
+  });
+
+  const maxEntries = Number.isFinite(FILE_FIELDS_MEMORY_CACHE_MAX) && FILE_FIELDS_MEMORY_CACHE_MAX > 0
+    ? Math.floor(FILE_FIELDS_MEMORY_CACHE_MAX)
+    : 5000;
+  if (fileFieldsMemoryCache.size <= maxEntries) return;
+
+  // Drop least-recently-touched entries when we exceed max size.
+  let over = fileFieldsMemoryCache.size - maxEntries;
+  const entries = [...fileFieldsMemoryCache.entries()].sort(
+    (a, b) => a[1].touchedAt - b[1].touchedAt
+  );
+  for (const [k] of entries) {
+    if (over <= 0) break;
+    fileFieldsMemoryCache.delete(k);
+    over -= 1;
+  }
+}
+
+async function getFileFieldsCached(fileId: string): Promise<CachedFileFieldsResult> {
+  const memory = getMemoryFileFields(fileId);
+  if (memory) {
+    return { fields: memory, source: "memory" };
+  }
+
+  const indexed = await getIndexedFile(fileId).catch(() => null);
+  if (indexed) {
+    const fields = {
+      blob_id: indexed.blobId,
+      size_bytes: indexed.sizeBytes,
+      mime: indexed.mimeType,
+      created_at: indexed.createdAtMs,
+      owner: indexed.ownerAddress,
+      walrus_end_epoch: indexed.walrusEndEpoch,
+    };
+    setMemoryFileFields(fileId, fields);
+    return { fields, source: "postgres" };
+  }
+
+  const obj = await suiClient.getObject({
+    id: fileId,
+    options: { showContent: true },
+  });
+
+  if (!obj.data?.content || obj.data.content.dataType !== "moveObject") {
+    return { fields: null, source: null };
+  }
+
+  const fields = obj.data.content.fields as any;
+  setMemoryFileFields(fileId, fields);
+  const normalized = normalizeFileFields(fields);
+  if (normalized) {
+    await upsertIndexedFile({
+      fileId,
+      blobId: normalized.blobId,
+      ownerAddress: normalized.ownerAddress,
+      sizeBytes: normalized.sizeBytes,
+      mimeType: normalized.mimeType,
+      walrusEndEpoch: normalized.walrusEndEpoch,
+      createdAtMs: normalized.createdAt,
+    }).catch(() => {});
+  }
+
+  return { fields, source: "sui" };
+}
+
+async function* walrusByteStream(params: {
+  blobId: string;
+  start: number;
+  end: number;
+  maxSegmentBytes: number;
+  signal: AbortSignal;
+}): AsyncGenerator<Uint8Array> {
+  const safeUpstreamSnippet = (body: string): string => {
+    const trimmed = (body ?? "").trim();
+    if (!trimmed) return "";
+    const snippet = trimmed.slice(0, 160);
+    const ascii = snippet.replace(/[^\x20-\x7E]/g, "");
+    return ascii;
+  };
+
+  const makeWalrusReadError = (upstreamStatus: number, upstreamBody: string) => {
+    const snippet = safeUpstreamSnippet(upstreamBody);
+    const err = new Error(
+      `WALRUS_RANGE_FAILED status=${upstreamStatus}${snippet ? ` body=${snippet}` : ""}`.trim()
+    ) as Error & { statusCode?: number };
+
+    if (upstreamStatus === 404) {
+      err.statusCode = 404;
+      err.message = "FILE_BLOB_UNAVAILABLE";
+      return err;
+    }
+
+    err.statusCode = upstreamStatus >= 500 ? 503 : 502;
+    return err;
+  };
+
+  const maxSegmentBytes =
+    Number.isFinite(params.maxSegmentBytes) && params.maxSegmentBytes > 0
+      ? params.maxSegmentBytes
+      : 16 * 1024 * 1024;
+
+  const minSegmentBytes = 256 * 1024; // 256KiB
+
+  let offset = params.start;
+
+  while (offset <= params.end) {
+    if (params.signal.aborted) return;
+
+    let segSize = Math.min(maxSegmentBytes, params.end - offset + 1);
+
+    while (true) {
+      const segEnd = Math.min(params.end, offset + segSize - 1);
+
+      let upstream: Response;
+      try {
+        ({ res: upstream } = await fetchWalrusBlob({
+          blobId: params.blobId,
+          rangeHeader: `bytes=${offset}-${segEnd}`,
+          signal: params.signal,
+        }));
+      } catch (err) {
+        if (params.signal.aborted || (err as any)?.name === "AbortError") {
+          return;
+        }
+
+        if (segSize > minSegmentBytes) {
+          segSize = Math.max(minSegmentBytes, Math.floor(segSize / 2));
+          continue;
+        }
+
+        throw err;
+      }
+
+      if (upstream.status === 416 && segSize > minSegmentBytes) {
+        segSize = Math.max(minSegmentBytes, Math.floor(segSize / 2));
+        continue;
+      }
+
+      const isFullObjectAttempt =
+        params.start === 0 && offset === 0 && segEnd === params.end;
+
+      if (upstream.status === 200 && isFullObjectAttempt) {
+      } else if (upstream.status !== 206) {
+        const text = await upstream.text().catch(() => "");
+        throw makeWalrusReadError(upstream.status, text);
+      }
+
+      const body = upstream.body;
+      if (!body) return;
+
+      const rs = Readable.fromWeb(body as any);
+      const expected = segEnd - offset + 1;
+      let read = 0;
+
+      for await (const chunk of rs) {
+        if (params.signal.aborted) return;
+        const buf = chunk as Uint8Array;
+        read += buf.byteLength;
+        yield buf;
+      }
+
+      if (read < expected) {
+        if (read === 0) {
+          throw new Error(
+            `WALRUS_EMPTY_SEGMENT offset=${offset} end=${segEnd}`
+          );
+        }
+
+        offset += read;
+        segSize = Math.max(minSegmentBytes, Math.floor(segSize / 2));
+        continue;
+      }
+
+      if (read > expected) {
+        throw new Error(
+          `WALRUS_SEGMENT_OVERRUN expected=${expected} read=${read}`
+        );
+      }
+
+      offset = segEnd + 1;
+      break;
+    }
+  }
+}
+
+export async function filesRoutes(app: FastifyInstance) {
+  app.get("/v1/files/:fileId/metadata", async (req, res) => {
+    const readLimit = await req.server.authProvider.checkRateLimit({
+      req,
+      scope: "file_meta_read",
+    });
+    applyRateLimitHeaders(res, readLimit);
+    if (!readLimit.allowed) {
+      return sendApiError(res, 429, "RATE_LIMITED", "Rate limit exceeded", {
+        retryable: true,
+      });
+    }
+
+    const { fileId } = req.params as { fileId: string };
+
+    let fields: any | null = null;
+    let fieldsSource: FileFieldsSource | null = null;
+    const t0 = Date.now();
+    try {
+      const out = await getFileFieldsCached(fileId);
+      fields = out.fields;
+      fieldsSource = out.source;
+    } catch (err) {
+      req.log.error({ err, fileId }, "Sui read failed");
+      return sendApiError(
+        res,
+        503,
+        "SUI_UNAVAILABLE",
+        "Failed to fetch file metadata from Sui",
+        { retryable: true }
+      );
+    }
+
+    if (!fields) {
+      return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
+    }
+
+    const normalized = normalizeFileFields(fields);
+    if (!normalized) {
+      req.log.error({ fileId, fields }, "Invalid file metadata fields");
+      return sendApiError(
+        res,
+        502,
+        "INVALID_FILE_METADATA",
+        "File metadata is invalid"
+      );
+    }
+
+    if (FILE_FIELDS_DEBUG) {
+      req.log.info(
+        { fileId, source: fieldsSource ?? "unknown", durationMs: Date.now() - t0 },
+        "metadata fields lookup"
+      );
+    }
+    observeMetadataLookup({
+      endpoint: "metadata",
+      source: fieldsSource ?? "unknown",
+      durationMs: Date.now() - t0,
+    });
+
+    const exposeBlobId = shouldExposeBlobId(req);
+    const container = inferContainerFromMime(normalized.mimeType);
+    const authz = await req.server.authProvider.authorizeFileAccess({
+      req,
+      action: "metadata",
+      fileId,
+      fileOwner: normalized.ownerAddress,
+    });
+    if (!authz.allowed) {
+      return sendApiError(
+        res,
+        403,
+        "OWNER_MISMATCH",
+        authz.message ?? "File access denied"
+      );
+    }
+
+    return {
+      fileId,
+      manifestVersion: 1,
+      container,
+      ...(exposeBlobId ? { blobId: normalized.blobId } : {}),
+      sizeBytes: normalized.sizeBytes,
+      mimeType: normalized.mimeType,
+      owner: normalized.owner,
+      createdAt: normalized.createdAt,
+      ...(normalized.walrusEndEpoch !== null ? { walrusEndEpoch: normalized.walrusEndEpoch } : {}),
+    };
+  });
+
+  app.get("/v1/files/:fileId/manifest", async (req, res) => {
+    const readLimit = await req.server.authProvider.checkRateLimit({
+      req,
+      scope: "file_meta_read",
+    });
+    applyRateLimitHeaders(res, readLimit);
+    if (!readLimit.allowed) {
+      return sendApiError(res, 429, "RATE_LIMITED", "Rate limit exceeded", {
+        retryable: true,
+      });
+    }
+
+    const { fileId } = req.params as { fileId: string };
+
+    let fields: any | null = null;
+    let fieldsSource: FileFieldsSource | null = null;
+    const t0 = Date.now();
+    try {
+      const out = await getFileFieldsCached(fileId);
+      fields = out.fields;
+      fieldsSource = out.source;
+    } catch (err) {
+      req.log.error({ err, fileId }, "Sui read failed");
+      return sendApiError(
+        res,
+        503,
+        "SUI_UNAVAILABLE",
+        "Failed to fetch file metadata from Sui",
+        { retryable: true }
+      );
+    }
+
+    if (!fields) {
+      return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
+    }
+
+    const normalized = normalizeFileFields(fields);
+    if (!normalized) {
+      req.log.error({ fileId, fields }, "Invalid file metadata fields");
+      return sendApiError(
+        res,
+        502,
+        "INVALID_FILE_METADATA",
+        "File metadata is invalid"
+      );
+    }
+
+    if (FILE_FIELDS_DEBUG) {
+      req.log.info(
+        { fileId, source: fieldsSource ?? "unknown", durationMs: Date.now() - t0 },
+        "manifest fields lookup"
+      );
+    }
+    observeMetadataLookup({
+      endpoint: "manifest",
+      source: fieldsSource ?? "unknown",
+      durationMs: Date.now() - t0,
+    });
+
+    const exposeBlobId = shouldExposeBlobId(req);
+    const container = inferContainerFromMime(normalized.mimeType);
+    const authz = await req.server.authProvider.authorizeFileAccess({
+      req,
+      action: "manifest",
+      fileId,
+      fileOwner: normalized.ownerAddress,
+    });
+    if (!authz.allowed) {
+      return sendApiError(
+        res,
+        403,
+        "OWNER_MISMATCH",
+        authz.message ?? "File access denied"
+      );
+    }
+
+    return {
+      manifestVersion: 1,
+      fileId,
+      createdAt: normalized.createdAt,
+      sizeBytes: normalized.sizeBytes,
+      mimeType: normalized.mimeType,
+      container,
+      ...(normalized.walrusEndEpoch !== null ? { walrusEndEpoch: normalized.walrusEndEpoch } : {}),
+      layout: {
+        type: "walrus_single_blob",
+        segments: [
+          {
+            index: 0,
+            offsetBytes: 0,
+            sizeBytes: normalized.sizeBytes,
+            ...(exposeBlobId ? { blobId: normalized.blobId } : {}),
+          },
+        ],
+      },
+    };
+  });
+
+  app.route({
+    method: ["GET", "HEAD"],
+    url: "/v1/files/:fileId/stream",
+    handler: async (req, reply) => {
+      const readLimit = await req.server.authProvider.checkRateLimit({
+        req,
+        scope: "file_stream_read",
+      });
+      applyRateLimitHeaders(reply, readLimit);
+      if (!readLimit.allowed) {
+        return sendApiError(reply, 429, "RATE_LIMITED", "Rate limit exceeded", {
+          retryable: true,
+        });
+      }
+
+      const { fileId } = req.params as { fileId: string };
+
+      let fields: any | null = null;
+      let fieldsSource: FileFieldsSource | null = null;
+      const t0 = Date.now();
+      try {
+        const out = await getFileFieldsCached(fileId);
+        fields = out.fields;
+        fieldsSource = out.source;
+      } catch (err) {
+        req.log.error({ err, fileId }, "Sui read failed");
+        return sendApiError(
+          reply,
+          503,
+          "SUI_UNAVAILABLE",
+          "Failed to fetch file metadata from Sui",
+          { retryable: true }
+        );
+      }
+
+      if (!fields) {
+        return sendApiError(reply, 404, "FILE_NOT_FOUND", "File not found");
+      }
+
+      const normalized = normalizeFileFields(fields);
+      if (!normalized) {
+        req.log.error({ fileId, fields }, "Invalid file metadata fields");
+        return sendApiError(
+          reply,
+          502,
+          "INVALID_FILE_METADATA",
+          "File metadata is invalid"
+        );
+      }
+
+      if (FILE_FIELDS_DEBUG) {
+        req.log.info(
+          { fileId, source: fieldsSource ?? "unknown", durationMs: Date.now() - t0 },
+          "stream fields lookup"
+        );
+      }
+      observeMetadataLookup({
+        endpoint: "stream",
+        source: fieldsSource ?? "unknown",
+        durationMs: Date.now() - t0,
+      });
+
+      const authz = await req.server.authProvider.authorizeFileAccess({
+        req,
+        action: "stream",
+        fileId,
+        fileOwner: normalized.ownerAddress,
+      });
+      if (!authz.allowed) {
+        return sendApiError(
+          reply,
+          403,
+          "OWNER_MISMATCH",
+          authz.message ?? "File access denied"
+        );
+      }
+
+      const blobId = normalized.blobId;
+      const sizeBytes = normalized.sizeBytes;
+      const mimeType = normalized.mimeType;
+
+      reply.header("Accept-Ranges", "bytes");
+      reply.header("ETag", blobId);
+
+      const rangeHeader = (req.headers as any)?.range as string | undefined;
+
+      let start = 0;
+      let end = sizeBytes - 1;
+      let status = 200;
+
+      if (rangeHeader) {
+        const parsedOrErr = parseSingleRangeHeader({
+          rangeHeader,
+          sizeBytes,
+        });
+
+        if ("error" in parsedOrErr) {
+          reply.header("Content-Range", `bytes */${sizeBytes}`);
+          return sendApiError(
+            reply,
+            416,
+            "INVALID_RANGE",
+            "Unsupported Range header"
+          );
+        }
+
+        start = parsedOrErr.range.start;
+        end = parsedOrErr.range.end;
+        status = 206;
+      }
+
+      const abortController = new AbortController();
+      const abortUpstream = () => abortController.abort();
+      const detachAbortHooks = () => {
+        req.raw.removeListener("aborted", abortUpstream);
+        reply.raw.removeListener("close", abortUpstream);
+      };
+      req.raw.once("aborted", abortUpstream);
+      reply.raw.once("close", abortUpstream);
+
+      const span = end - start + 1;
+
+      reply.header("Content-Type", mimeType);
+      reply.header("Content-Length", String(span));
+
+      if (status === 206) {
+        reply.header("Content-Range", `bytes ${start}-${end}/${sizeBytes}`);
+      }
+
+      // HEAD requests are satisfied from metadata but should still reflect range semantics.
+      if (req.method === "HEAD") {
+        return reply.status(status).send();
+      }
+
+      const streamStartMs = Date.now();
+      let firstByteObserved = false;
+      const stream = Readable.from(
+        (async function* () {
+          for await (const chunk of walrusByteStream({
+            blobId,
+            start,
+            end,
+            maxSegmentBytes: Math.min(
+              WalrusReadLimits.maxRangeBytes,
+              WalrusReadLimits.mediaSegmentBytes
+            ),
+            signal: abortController.signal,
+          })) {
+            if (!firstByteObserved && chunk.byteLength > 0) {
+              firstByteObserved = true;
+              observeStreamTtfb({
+                range: rangeHeader ? "partial" : "full",
+                durationMs: Date.now() - streamStartMs,
+              });
+            }
+            yield chunk;
+          }
+        })()
+      );
+      stream.once("end", detachAbortHooks);
+      stream.once("close", detachAbortHooks);
+      stream.once("error", detachAbortHooks);
+      stream.once("error", (err: any) => {
+        if (err?.message === "FILE_CONTENT_NOT_FOUND") {
+          err.message = "FILE_BLOB_UNAVAILABLE";
+        }
+        recordStreamReadError(classifyStreamErrorReason(String(err?.message ?? "")));
+      });
+
+      return reply.status(status).send(stream);
+    },
+  });
+}

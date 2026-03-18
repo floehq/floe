@@ -1,5 +1,3 @@
-// src/state/keys.ts
-
 const PREFIX = "floe:v1";
 
 const key = (suffix: string) => `${PREFIX}:${suffix}`;
@@ -14,15 +12,6 @@ export const uploadKeys = {
   // GC index (single source of truth)
   gcIndex: () => key("upload:gc:active"),
 
-  // Short-lived lock for atomic-ish create admission under concurrency.
-  createLock: () => key("upload:create:lock"),
-
-  dedupe: (userId: string, fileHash: string) =>
-    key(`upload:dedupe:${userId}:${fileHash}`),
-};
-
-// Stable fileId lookups (stream/metadata hot path).
-export const fileKeys = {
-  // Cached Move fields for the on-chain FileMeta object (blob_id, size_bytes, ...)
-  fields: (fileId: string) => key(`file:${fileId}:fields`),
+  finalizeQueue: () => key("upload:finalize:queue"),
+  finalizePending: () => key("upload:finalize:pending"),
 };

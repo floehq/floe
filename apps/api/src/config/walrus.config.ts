@@ -1,5 +1,3 @@
-// apps/api/src/config/walrus.config.ts
-
 function parseUrlList(raw: string | undefined): string[] {
   if (!raw) return [];
   return raw
@@ -24,27 +22,19 @@ function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
   return n;
 }
 
-if (!process.env.WALRUS_PUBLISHER_URL) {
-  throw new Error("Missing required env: WALRUS_PUBLISHER_URL");
-}
-
 if (!process.env.WALRUS_AGGREGATOR_URL) {
   throw new Error("Missing required env: WALRUS_AGGREGATOR_URL");
 }
 
-const publisherUrl = process.env.WALRUS_PUBLISHER_URL;
 const primaryAggregator = process.env.WALRUS_AGGREGATOR_URL;
 const fallbackAggregators = parseUrlList(
   process.env.WALRUS_AGGREGATOR_FALLBACK_URLS
 );
 
-assertHttpUrl("WALRUS_PUBLISHER_URL", publisherUrl);
 assertHttpUrl("WALRUS_AGGREGATOR_URL", primaryAggregator);
 for (const u of fallbackAggregators) assertHttpUrl("WALRUS_AGGREGATOR_FALLBACK_URLS", u);
 
 export const WalrusEnv = {
-  publisherUrl,
-
   // Ordered list. Reader will try primary first, then fallbacks.
   aggregatorUrls: [primaryAggregator, ...fallbackAggregators],
 };
@@ -52,9 +42,16 @@ export const WalrusEnv = {
 export const WalrusReadLimits = {
   timeoutMs: parsePositiveIntEnv("WALRUS_READ_TIMEOUT_MS", 10 * 60_000),
 
-  // Max size for a single upstream Walrus Range request. Used to stitch large
-  // reads into bounded segments so public aggregators can serve big files.
+  // Max size for a single upstream Walrus Range request. Used to stitch large reads into bounded segments so public aggregators can serve big files.
   maxRangeBytes: parsePositiveIntEnv("FLOE_STREAM_MAX_RANGE_BYTES", 64 * 1024 * 1024),
+
+  // Default stitched segment size for media playback. Keep this smaller than the
+  // absolute max range size so seeks and cold reads are less sensitive to
+  // aggregator hiccups during long streams.
+  mediaSegmentBytes: parsePositiveIntEnv(
+    "FLOE_STREAM_MEDIA_SEGMENT_BYTES",
+    8 * 1024 * 1024
+  ),
 
   // Retry budget per stitched segment (network errors, 5xx, 429).
   maxSegmentRetries: parsePositiveIntEnv("WALRUS_READ_MAX_RETRIES", 2),
@@ -68,23 +65,24 @@ export const WalrusEpochLimits = {
 } as const;
 
 export const WalrusUploadLimits = {
-  maxRetries: 3,
-  baseRetryDelayMs: 2000,
+  maxRetries: parsePositiveIntEnv("FLOE_WALRUS_UPLOAD_MAX_RETRIES", 3),
+  baseRetryDelayMs: parsePositiveIntEnv("FLOE_WALRUS_UPLOAD_RETRY_DELAY_MS", 2000),
+  timeoutMs: parsePositiveIntEnv("FLOE_WALRUS_UPLOAD_TIMEOUT_MS", 20 * 60_000, 10_000),
 };
 
 export const WalrusQueueLimits = {
   /**
    * Max concurrent Walrus publish requests.
    */
-  concurrency: 3,
+  concurrency: parsePositiveIntEnv("FLOE_WALRUS_QUEUE_CONCURRENCY", 4),
 
   /**
    * Max jobs per interval window.
    */
-  intervalCap: 1,
+  intervalCap: parsePositiveIntEnv("FLOE_WALRUS_QUEUE_INTERVAL_CAP", 4),
 
   /**
    * Interval window in ms.
    */
-  intervalMs: 1500,
+  intervalMs: parsePositiveIntEnv("FLOE_WALRUS_QUEUE_INTERVAL_MS", 1000),
 };

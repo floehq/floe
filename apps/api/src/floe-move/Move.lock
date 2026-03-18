@@ -25,10 +25,3 @@ compiler-version = "1.62.0"
 edition = "2024.beta"
 flavor = "sui"
 
-[env]
-
-[env.testnet]
-chain-id = "4c78adac"
-original-published-id = "0xff4f3895ef868b2d54454f45859aa970f3c2101506b1445140f6b82731aa2cdd"
-latest-published-id = "0xff4f3895ef868b2d54454f45859aa970f3c2101506b1445140f6b82731aa2cdd"
-published-version = "1"

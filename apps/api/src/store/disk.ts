@@ -1,5 +1,3 @@
-// src/store/disk.chunk.store.ts
-
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
@@ -8,7 +6,7 @@ import { Transform } from "stream";
 import type { Readable } from "stream";
 
 import { UploadConfig } from "../config/uploads.config.js";
-import type { ChunkStore } from "./chunk.store.js";
+import type { ChunkStore } from "./chunk.js";
 
 const STALE_TMP_MS = 10 * 60 * 1000;
 
@@ -34,6 +32,10 @@ function createValidationStream(
 }
 
 export class DiskChunkStore implements ChunkStore {
+  backend(): "disk" | "s3" {
+    return "disk";
+  }
+
   private dir(uploadId: string) {
     return path.join(UploadConfig.tmpDir, uploadId);
   }
