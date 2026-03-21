@@ -174,7 +174,7 @@ Default public tier:
 - `file_stream_read`: `120` / `60s`
 - max upload size: `100MB`
 
-Default authenticated-context tier:
+Default authenticated API key tier:
 
 - `upload_control`: `120` / `60s`
 - `upload_chunk`: `1200` / `60s`
@@ -184,17 +184,31 @@ Default authenticated-context tier:
 
 These limits are configured in `apps/api/src/config/auth.config.ts`.
 
-## Auth Context Headers
+## Auth Model
 
-Current authenticated-context signals:
+Floe supports three deployment modes:
 
-- `Authorization: Bearer ...`
-- `x-api-key`
-- `x-auth-user`
-- `x-wallet-address`
-- `x-owner-address`
+- `public`
+- `hybrid`
+- `private`
 
-This is still scaffold-stage request identity, not full cryptographic verification.
+Current verified auth method:
+
+- `x-api-key: <secret>`
+- `Authorization: Bearer <secret>`
+
+Mode behavior:
+
+- `public`: upload and file routes can be used without auth, subject to public rate limits
+- `hybrid`: upload actions require a verified API key; file reads can remain public
+- `private`: upload and file routes require a verified API key
+
+Verified API keys are configured through `FLOE_API_KEYS_JSON`. Each key can carry:
+
+- `id`
+- `owner`
+- `tier`
+- `scopes`
 
 ## Error Format
 
@@ -219,6 +233,7 @@ Common error codes include:
 - `UPLOAD_CAPACITY_REACHED`
 - `FINALIZE_QUEUE_BACKPRESSURE`
 - `RATE_LIMITED`
+- `AUTH_REQUIRED`
 - `OWNER_MISMATCH`
 - `FILE_BLOB_UNAVAILABLE`
 - `SUI_UNAVAILABLE`

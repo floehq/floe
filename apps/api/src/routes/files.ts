@@ -41,6 +41,10 @@ function shouldExposeBlobId(req: any): boolean {
   return raw === "1" || raw === "true" || raw === true;
 }
 
+function authzStatusCode(code?: string): 401 | 403 {
+  return code === "AUTH_REQUIRED" ? 401 : 403;
+}
+
 type ParsedRange = {
   start: number;
   end: number;
@@ -454,8 +458,8 @@ export async function filesRoutes(app: FastifyInstance) {
     if (!authz.allowed) {
       return sendApiError(
         res,
-        403,
-        "OWNER_MISMATCH",
+        authzStatusCode(authz.code),
+        authz.code === "AUTH_REQUIRED" ? "AUTH_REQUIRED" : "OWNER_MISMATCH",
         authz.message ?? "File access denied"
       );
     }
@@ -543,8 +547,8 @@ export async function filesRoutes(app: FastifyInstance) {
     if (!authz.allowed) {
       return sendApiError(
         res,
-        403,
-        "OWNER_MISMATCH",
+        authzStatusCode(authz.code),
+        authz.code === "AUTH_REQUIRED" ? "AUTH_REQUIRED" : "OWNER_MISMATCH",
         authz.message ?? "File access denied"
       );
     }
@@ -642,8 +646,8 @@ export async function filesRoutes(app: FastifyInstance) {
       if (!authz.allowed) {
         return sendApiError(
           reply,
-          403,
-          "OWNER_MISMATCH",
+          authzStatusCode(authz.code),
+          authz.code === "AUTH_REQUIRED" ? "AUTH_REQUIRED" : "OWNER_MISMATCH",
           authz.message ?? "File access denied"
         );
       }

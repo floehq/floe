@@ -23,12 +23,13 @@ Included today:
 - Walrus-backed durable file finalization
 - Sui `fileId` creation for stable metadata lookup
 - byte-range streaming through `/v1/files/:fileId/stream`
-- public vs authenticated-context rate limits
+- public, hybrid, or private auth modes
+- env-backed API key verification
 - optional owner-based authorization enforcement
 
 Not included yet:
 
-- full production auth/identity verification
+- auth management UI, key rotation workflows, or tenant auth control plane
 - transcoding or adaptive bitrate playback
 - analytics, billing, or subscription logic
 - complete private-content policy stack
@@ -97,6 +98,8 @@ SUI_PACKAGE_ID=0x<your-package-id>
 
 Use `.env.example` as the full environment reference.
 
+Auth defaults to `hybrid` mode. Upload actions require a verified API key in `hybrid` and `private` mode. File reads remain public in `hybrid` mode and require auth in `private` mode.
+
 ### Run
 
 ```bash
@@ -133,6 +136,15 @@ Prepare a non-faststart MP4 for better first-play behavior:
 ```bash
 ./floe.sh "path/to/video.mp4" --faststart
 ```
+
+### Auth Example
+
+```dotenv
+FLOE_AUTH_MODE=hybrid
+FLOE_API_KEYS_JSON=[{"id":"local-dev","secret":"replace-with-long-random-secret","owner":"0xf35568c562fd25dccd58e4e9240d8a6f864de0a9854ddd1f7d8aa6ff5f9722a4","tier":"authenticated","scopes":["*"]}]
+```
+
+Send the key with either `x-api-key` or `Authorization: Bearer <key>`.
 
 ## Documentation
 

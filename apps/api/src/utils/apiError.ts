@@ -37,7 +37,8 @@ export type ApiErrorCode =
   | "SUI_UNAVAILABLE"
   | "INVALID_RANGE"
   | "FILE_CONTENT_NOT_FOUND"
-  | "FILE_BLOB_UNAVAILABLE";
+  | "FILE_BLOB_UNAVAILABLE"
+  | "AUTH_REQUIRED";
 
 export interface ApiErrorResponse {
   error: {

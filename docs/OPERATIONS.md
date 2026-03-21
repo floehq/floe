@@ -124,6 +124,9 @@ GC:
 
 Auth and request shaping:
 
+- `FLOE_AUTH_MODE` default `hybrid`
+- `FLOE_API_KEYS_JSON` optional env-backed API key list
+
 - `FLOE_RATE_LIMIT_WINDOW_SECONDS` default `60`
 - `FLOE_RATE_LIMIT_UPLOAD_CONTROL_PUBLIC` default `5`
 - `FLOE_RATE_LIMIT_UPLOAD_CONTROL_AUTH` default `120`
@@ -148,6 +151,13 @@ Read behavior and observability:
 - `FLOE_CORS_ORIGINS`
 - `FLOE_ENABLE_METRICS` default `1`
 - `FLOE_METRICS_TOKEN`
+
+Auth mode defaults:
+
+- default auth mode: `hybrid`
+- verified auth method: API key via `x-api-key` or `Authorization: Bearer <key>`
+- `hybrid` mode requires auth for upload actions and allows public file reads
+- `private` mode requires auth for upload and file routes
 
 ## Current Defaults
 

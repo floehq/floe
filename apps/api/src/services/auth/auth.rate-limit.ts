@@ -1,18 +1,16 @@
-import type { FastifyRequest } from "fastify";
 import { getRedis } from "../../state/redis.js";
 import {
   AuthRateLimitConfig,
   type RateLimitScope,
 } from "../../config/auth.config.js";
-import { resolveRequestIdentity, type RequestIdentity } from "./auth.identity.js";
+import type { RequestIdentity } from "./auth.identity.js";
 
 function windowBucket(nowMs: number, windowSeconds: number): number {
   return Math.floor(nowMs / (windowSeconds * 1000));
 }
 
-function selectLimit(scope: RateLimitScope, authenticated: boolean): number {
-  const tier = authenticated ? "authenticated" : "public";
-  return AuthRateLimitConfig.limits[scope][tier];
+function selectLimit(scope: RateLimitScope, identity: RequestIdentity): number {
+  return AuthRateLimitConfig.limits[scope][identity.tier];
 }
 
 export interface RateLimitDecision {
@@ -24,12 +22,12 @@ export interface RateLimitDecision {
 }
 
 export async function checkTieredRateLimit(params: {
-  req: FastifyRequest;
   scope: RateLimitScope;
+  identity: RequestIdentity;
 }): Promise<RateLimitDecision> {
-  const identity = resolveRequestIdentity(params.req);
+  const identity = params.identity;
   const windowSeconds = AuthRateLimitConfig.windowSeconds;
-  const limit = selectLimit(params.scope, identity.authenticated);
+  const limit = selectLimit(params.scope, identity);
   const bucket = windowBucket(Date.now(), windowSeconds);
   const key = `floe:v1:ratelimit:${params.scope}:${bucket}:${identity.subject}`;
   const redis = getRedis();

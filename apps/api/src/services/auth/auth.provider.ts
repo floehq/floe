@@ -1,12 +1,13 @@
 import type { FastifyRequest } from "fastify";
 
-import { AuthOwnerPolicyConfig } from "../../config/auth.config.js";
+import { AuthModeConfig, AuthOwnerPolicyConfig } from "../../config/auth.config.js";
 import type { RateLimitScope } from "../../config/auth.config.js";
 import {
   checkTieredRateLimit,
   type RateLimitDecision,
 } from "./auth.rate-limit.js";
 import {
+  authRequiredForAction,
   resolveRequestIdentity,
   type RequestIdentity,
 } from "./auth.identity.js";
@@ -36,18 +37,33 @@ class DefaultAuthProvider implements AuthProvider {
     return resolveRequestIdentity(req);
   }
 
+  private requireAuthentication(req: FastifyRequest, action: "upload" | "file_read"): { allowed: true; identity: RequestIdentity } | { allowed: false; code: string; message: string } {
+    const identity = this.resolveIdentity(req);
+    if (authRequiredForAction(action) && !identity.authenticated) {
+      return {
+        allowed: false,
+        code: "AUTH_REQUIRED",
+        message:
+          AuthModeConfig.mode === "private"
+            ? "Authenticated access is required"
+            : "Authenticated access is required for this action",
+      };
+    }
+    return { allowed: true, identity } as const;
+  }
+
   async authorizeUploadAccess(params: {
     req: FastifyRequest;
     action: "create" | "chunk" | "status" | "complete" | "cancel";
     uploadId?: string;
     uploadOwner?: string | null;
   }): Promise<{ allowed: boolean; code?: string; message?: string }> {
+    const base = this.requireAuthentication(params.req, "upload");
+    if (!base.allowed) return base;
     if (!AuthOwnerPolicyConfig.enforceUploadOwner) return { allowed: true };
     const expected = params.uploadOwner?.trim();
     if (!expected) return { allowed: true };
-
-    const identity = this.resolveIdentity(params.req);
-    const owner = identity.owner?.trim();
+    const owner = base.identity.owner?.trim();
     if (!owner || owner.toLowerCase() !== expected.toLowerCase()) {
       return {
         allowed: false,
@@ -64,11 +80,12 @@ class DefaultAuthProvider implements AuthProvider {
     fileId: string;
     fileOwner?: string | null;
   }): Promise<{ allowed: boolean; code?: string; message?: string }> {
+    const base = this.requireAuthentication(params.req, "file_read");
+    if (!base.allowed) return base;
     if (!AuthOwnerPolicyConfig.enforceUploadOwner) return { allowed: true };
     const expected = params.fileOwner?.trim();
     if (!expected) return { allowed: true };
-    const identity = this.resolveIdentity(params.req);
-    const owner = identity.owner?.trim();
+    const owner = base.identity.owner?.trim();
     if (!owner || owner.toLowerCase() !== expected.toLowerCase()) {
       return {
         allowed: false,
@@ -83,7 +100,8 @@ class DefaultAuthProvider implements AuthProvider {
     req: FastifyRequest;
     scope: RateLimitScope;
   }): Promise<RateLimitDecision> {
-    return checkTieredRateLimit(params);
+    const identity = this.resolveIdentity(params.req);
+    return checkTieredRateLimit({ scope: params.scope, identity });
   }
 }
 

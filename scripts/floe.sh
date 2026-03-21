@@ -801,9 +801,9 @@ maybe_load_state
 
 print_banner
 if [[ -n "$API_KEY" || -n "$BEARER_TOKEN" || -n "$AUTH_USER" || -n "$WALLET_ADDRESS" || -n "$OWNER_ADDRESS" ]]; then
-print_kv "Auth mode" "enabled"
+print_kv "Request auth" "authenticated"
 else
-  print_kv "Auth mode" "public"
+  print_kv "Request auth" "public"
 fi
 print_kv "API"           "$API_BASE"
 print_kv "File"          "$(basename "$SOURCE_FILE_PATH")"
