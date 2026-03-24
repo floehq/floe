@@ -1,16 +1,76 @@
-import PQueue from "p-queue";
 import type { FastifyBaseLogger } from "fastify";
 
 import { getRedis } from "../../state/redis.js";
 import { uploadKeys } from "../../state/keys.js";
 import { getSession } from "./session.js";
-import { finalizeUpload } from "./finalize.js";
+import {
+  classifyFinalizeJobFailure,
+  decideFinalizeWorkerFailureAction,
+  executeFinalizeRecoveryPlan,
+  executeFinalizeWorkerFailureAction,
+  planFinalizeRecoveryPass,
+  reserveFinalizeActiveLocal,
+  shapeFinalizeQueueStats,
+} from "./finalize.shared.js";
 import {
   observeFinalizeQueueWait,
   recordFinalizeEnqueue,
   recordFinalizeJobResult,
   setFinalizeQueueMetrics,
 } from "../metrics/runtime.metrics.js";
+
+class LocalAsyncQueue {
+  private readonly concurrency: number;
+  private readonly queued: Array<() => void> = [];
+  private readonly idleResolvers: Array<() => void> = [];
+  pending = 0;
+  size = 0;
+
+  constructor(params: { concurrency: number }) {
+    this.concurrency = params.concurrency;
+  }
+
+  add<T>(task: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.queued.push(() => {
+        this.size -= 1;
+        this.pending += 1;
+        void task()
+          .then(resolve, reject)
+          .finally(() => {
+            this.pending -= 1;
+            this.pump();
+            this.resolveIdleIfNeeded();
+          });
+      });
+      this.size += 1;
+      this.pump();
+    });
+  }
+
+  onIdle(): Promise<void> {
+    if (this.pending === 0 && this.size === 0) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      this.idleResolvers.push(resolve);
+    });
+  }
+
+  private pump() {
+    while (this.pending < this.concurrency && this.queued.length > 0) {
+      const next = this.queued.shift();
+      next?.();
+    }
+  }
+
+  private resolveIdleIfNeeded() {
+    if (this.pending !== 0 || this.size !== 0) return;
+    while (this.idleResolvers.length > 0) {
+      this.idleResolvers.shift()?.();
+    }
+  }
+}
 
 function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
   const raw = process.env[name];
@@ -38,6 +98,20 @@ const FINALIZE_IN_PROGRESS_RETRY_MAX_MS = parsePositiveIntEnv(
   30_000,
   1000
 );
+const FINALIZE_RETRYABLE_FAILURE_BASE_MS = parsePositiveIntEnv(
+  "FLOE_FINALIZE_RETRYABLE_FAILURE_BASE_MS",
+  2000,
+  200
+);
+const FINALIZE_RETRYABLE_FAILURE_MAX_MS = parsePositiveIntEnv(
+  "FLOE_FINALIZE_RETRYABLE_FAILURE_MAX_MS",
+  30_000,
+  1000
+);
+const FINALIZE_RETRYABLE_FAILURE_MAX_ATTEMPTS = parsePositiveIntEnv(
+  "FLOE_FINALIZE_RETRYABLE_FAILURE_MAX_ATTEMPTS",
+  4
+);
 const FINALIZE_DRAIN_INTERVAL_MS = parsePositiveIntEnv(
   "FLOE_FINALIZE_DRAIN_INTERVAL_MS",
   500,
@@ -48,60 +122,14 @@ const FINALIZE_QUEUE_MAX_DEPTH = parsePositiveIntEnv(
   5000
 );
 
-const finalizeWorkers = new PQueue({
+const finalizeWorkers = new LocalAsyncQueue({
   concurrency: FINALIZE_CONCURRENCY,
 });
 
 let drainTimer: NodeJS.Timeout | null = null;
 const activeLocal = new Set<string>();
-
-function classifyFinalizeFailure(err: unknown): {
-  reason: string;
-  retryable: boolean;
-  stage: string;
-} {
-  const wrapped = err as Error & { finalizeStage?: string };
-  const msg = String(wrapped?.message ?? "UPLOAD_FINALIZE_FAILED").toUpperCase();
-  const stage = wrapped.finalizeStage ?? "unknown";
-
-  if (msg.includes("UPLOAD_FINALIZE_TIMEOUT")) {
-    return { reason: "timeout", retryable: true, stage };
-  }
-  if (msg === "UPLOAD_FINALIZATION_IN_PROGRESS") {
-    return { reason: "lock_in_progress", retryable: true, stage };
-  }
-  if (msg === "UPLOAD_FINALIZATION_LOCK_LOST") {
-    return { reason: "lock_lost", retryable: true, stage };
-  }
-  if (msg.includes("UPLOAD_NOT_FOUND")) {
-    return { reason: "upload_not_found", retryable: false, stage };
-  }
-  if (msg.includes("INCOMPLETE_CHUNKS")) {
-    return { reason: "incomplete_chunks", retryable: false, stage };
-  }
-  if (msg.includes("MISSING_CHUNKS")) {
-    return { reason: "missing_chunks", retryable: false, stage };
-  }
-  if (msg.includes("WALRUS_UPLOAD_FAILED")) {
-    return { reason: "walrus_upload_failed", retryable: true, stage };
-  }
-  if (msg.includes("WALRUS")) {
-    return { reason: "walrus_unavailable", retryable: true, stage };
-  }
-  if (msg === "SUI_FILE_CREATE_FAILED") {
-    return { reason: "sui_file_create_failed", retryable: false, stage };
-  }
-  if (msg.includes("SUI")) {
-    return { reason: "sui_unavailable", retryable: true, stage };
-  }
-  if (msg.includes("REDIS")) {
-    return { reason: "redis_failure", retryable: true, stage };
-  }
-  if (msg.includes("CORRUPT_COMPLETED_UPLOAD")) {
-    return { reason: "corrupt_completed_upload", retryable: false, stage };
-  }
-  return { reason: "other", retryable: false, stage };
-}
+let processFinalizeImpl: typeof processFinalize = processFinalize;
+let scheduleRetryImpl: typeof scheduleRetry = scheduleRetry;
 
 function queueKey() {
   return uploadKeys.finalizeQueue();
@@ -147,30 +175,44 @@ async function markUploadFinalizing(uploadId: string) {
 
 async function enqueueUploadId(uploadId: string): Promise<boolean> {
   const redis = getRedis();
+  const queuedAt = Date.now();
   const script = `
     local pendingKey = KEYS[1]
     local queueKey = KEYS[2]
+    local pendingSinceKey = KEYS[3]
     local uploadId = ARGV[1]
+    local queuedAt = ARGV[2]
 
     local added = redis.call("SADD", pendingKey, uploadId)
     if added == 1 then
       redis.call("LPUSH", queueKey, uploadId)
+      redis.call("ZADD", pendingSinceKey, queuedAt, uploadId)
     end
     return added
   `;
 
-  const added = await redis.eval(script, [pendingKey(), queueKey()], [uploadId]);
+  const added = await redis.eval(
+    script,
+    [pendingKey(), queueKey(), uploadKeys.finalizePendingSince()],
+    [uploadId, String(queuedAt)]
+  );
   return Number(added) === 1;
 }
 
 async function enqueueUploadIdForce(uploadId: string): Promise<void> {
   const redis = getRedis();
+  const queuedAt = Date.now();
   const script = `
     redis.call("SADD", KEYS[1], ARGV[1])
     redis.call("LPUSH", KEYS[2], ARGV[1])
+    redis.call("ZADD", KEYS[3], ARGV[2], ARGV[1])
     return 1
   `;
-  await redis.eval(script, [pendingKey(), queueKey()], [uploadId]);
+  await redis.eval(
+    script,
+    [pendingKey(), queueKey(), uploadKeys.finalizePendingSince()],
+    [uploadId, String(queuedAt)]
+  );
 }
 
 async function dequeueUploadId(): Promise<string | null> {
@@ -182,7 +224,10 @@ async function dequeueUploadId(): Promise<string | null> {
 
 async function clearPending(uploadId: string): Promise<void> {
   const redis = getRedis();
-  await redis.srem(pendingKey(), uploadId);
+  await Promise.all([
+    redis.srem(pendingKey(), uploadId),
+    redis.zrem(uploadKeys.finalizePendingSince(), uploadId),
+  ]);
 }
 
 async function processFinalize(params: {
@@ -201,6 +246,7 @@ async function processFinalize(params: {
     throw new Error("UPLOAD_NOT_FOUND");
   }
 
+  const { finalizeUpload } = await import("./finalize.js");
   await finalizeUpload(session, {
     log: params.log,
     attempt: params.attempt,
@@ -271,7 +317,7 @@ async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
     }, FINALIZE_TIMEOUT_MS);
     timeoutHandle.unref?.();
 
-    await processFinalize({ uploadId, log, attempt, queueWaitMs });
+    await processFinalizeImpl({ uploadId, log, attempt, queueWaitMs });
     log.info({ uploadId, attempt, queueWaitMs }, "Upload finalize worker completed");
     await clearPending(uploadId);
     recordFinalizeJobResult({
@@ -281,39 +327,70 @@ async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
     });
   } catch (err: any) {
     const msg = String(err?.message ?? "UPLOAD_FINALIZE_FAILED");
-    if (msg === "UPLOAD_FINALIZATION_IN_PROGRESS") {
-      const delayMs = await lockRetryDelayMs(uploadId).catch(
+    const failure = classifyFinalizeJobFailure(err);
+    const failureAction = decideFinalizeWorkerFailureAction({
+      message: msg,
+      attempt,
+      reason: failure.reason,
+      retryable: failure.retryable,
+      stage: failure.stage,
+      lockRetryDelayMs: await lockRetryDelayMs(uploadId).catch(
         () => FINALIZE_IN_PROGRESS_RETRY_MS
+      ),
+      retryableBaseDelayMs: FINALIZE_RETRYABLE_FAILURE_BASE_MS,
+      retryableMaxDelayMs: FINALIZE_RETRYABLE_FAILURE_MAX_MS,
+      retryableMaxAttempts: FINALIZE_RETRYABLE_FAILURE_MAX_ATTEMPTS,
+    });
+    const actionResult = await executeFinalizeWorkerFailureAction({
+      action: failureAction,
+      uploadId,
+      nowMs: Date.now(),
+      writeMeta: async (fields) => {
+        await redis.hset(uploadKeys.meta(uploadId), fields).catch(() => {});
+      },
+      scheduleRetry: async (nextUploadId, nextDelayMs) => {
+        await scheduleRetryImpl(nextUploadId, log, nextDelayMs);
+      },
+      clearPending: async (nextUploadId) => {
+        await clearPending(nextUploadId);
+      },
+      markFailed: async ({ uploadId: failedUploadId, reason, retryable, stage }) => {
+        await markUploadFailed({
+          uploadId: failedUploadId,
+          errorMessage: msg,
+          reason,
+          retryable,
+          stage,
+          queueWaitMs,
+        });
+      },
+    });
+
+    if (actionResult.metricsOutcome !== "failed") {
+      log.warn(
+        {
+          uploadId,
+          attempt,
+          queueWaitMs,
+          reason: actionResult.reason,
+          failedStage: failure.stage,
+          delayMs: failureAction.action === "failed" ? undefined : failureAction.delayMs,
+          err,
+          ...(timedOut ? { timeoutMs: FINALIZE_TIMEOUT_MS } : {}),
+        },
+        actionResult.metricsOutcome === "retry_lock"
+          ? "Upload finalize worker requeued due to lock contention"
+          : "Upload finalize worker scheduled retry for transient failure"
       );
-      await redis
-        .hset(uploadKeys.meta(uploadId), {
-          lastFinalizeRetryAt: String(Date.now()),
-          lastFinalizeRetryDelayMs: String(delayMs),
-          failedReasonCode: "lock_in_progress",
-          failedRetryable: "1",
-        })
-        .catch(() => {});
-      await scheduleRetry(uploadId, log, delayMs);
-      await clearPending(uploadId);
       recordFinalizeJobResult({
-        outcome: "retry_lock",
-        reason: "lock_in_progress",
+        outcome: actionResult.metricsOutcome,
+        reason: actionResult.reason,
         durationMs: Date.now() - startedAt,
         retryable: true,
       });
       return;
     }
 
-    const failure = classifyFinalizeFailure(err);
-    await markUploadFailed({
-      uploadId,
-      errorMessage: msg,
-      reason: failure.reason,
-      retryable: failure.retryable,
-      stage: failure.stage,
-      queueWaitMs,
-    });
-    await clearPending(uploadId);
     log.error(
       {
         uploadId,
@@ -348,7 +425,11 @@ async function drainOnce(log: FastifyBaseLogger) {
   while (finalizeWorkers.size + finalizeWorkers.pending < FINALIZE_CONCURRENCY) {
     const uploadId = await dequeueUploadId();
     if (!uploadId) return;
-    if (activeLocal.has(uploadId)) continue;
+    const reservation = reserveFinalizeActiveLocal({
+      activeLocalIds: [...activeLocal],
+      uploadId,
+    });
+    if (!reservation.reserved) continue;
 
     activeLocal.add(uploadId);
     void finalizeWorkers.add(async () => {
@@ -362,30 +443,64 @@ async function recoverFinalizingUploads(log: FastifyBaseLogger) {
   const activeIds = await redis.smembers<string[]>(uploadKeys.gcIndex());
   if (!Array.isArray(activeIds) || activeIds.length === 0) return;
 
-  let recovered = 0;
-  let cleaned = 0;
+  const entries = await Promise.all(
+    activeIds.map(async (uploadId) => ({
+      uploadId,
+      status: await redis.hget<string>(uploadKeys.meta(uploadId), "status"),
+    }))
+  );
+  const recoveryPlan = planFinalizeRecoveryPass(entries);
 
-  for (const uploadId of activeIds) {
-    const status = await redis.hget<string>(uploadKeys.meta(uploadId), "status");
-    if (status === "finalizing") {
+  const { recovered, cleaned } = await executeFinalizeRecoveryPlan({
+    plan: recoveryPlan,
+    requeue: async (uploadId) => {
       // Force requeue on startup so stale pending entries do not block recovery.
       await enqueueUploadIdForce(uploadId);
-      recovered += 1;
-      continue;
-    }
-
-    // Cleanup stale queue/pending entries for non-finalizing uploads.
-    await Promise.all([
-      redis.srem(pendingKey(), uploadId),
-      redis.lrem(queueKey(), 0, uploadId),
-    ]);
-    cleaned += 1;
-  }
+    },
+    cleanup: async (uploadId) => {
+      // Cleanup stale queue/pending entries for non-finalizing uploads.
+      await Promise.all([
+        redis.srem(pendingKey(), uploadId),
+        redis.zrem(uploadKeys.finalizePendingSince(), uploadId),
+        redis.lrem(queueKey(), 0, uploadId),
+      ]);
+    },
+  });
   log.info(
     { count: activeIds.length, recovered, cleaned },
     "Finalize queue recovery scan completed"
   );
 }
+
+export const finalizeQueueTestHooks = {
+  async runFinalizeJob(params: { uploadId: string; log: FastifyBaseLogger }) {
+    await runFinalizeJob(params.uploadId, params.log);
+  },
+  async runNextQueuedJob(log: FastifyBaseLogger) {
+    const uploadId = await dequeueUploadId();
+    if (!uploadId) throw new Error("FINALIZE_QUEUE_EMPTY");
+    activeLocal.add(uploadId);
+    await runFinalizeJob(uploadId, log);
+    return uploadId;
+  },
+  async recoverFinalizingUploads(log: FastifyBaseLogger) {
+    await recoverFinalizingUploads(log);
+  },
+  async forceEnqueue(uploadId: string) {
+    await enqueueUploadIdForce(uploadId);
+  },
+  reset() {
+    activeLocal.clear();
+    processFinalizeImpl = processFinalize;
+    scheduleRetryImpl = scheduleRetry;
+  },
+  setProcessFinalize(fn?: typeof processFinalize) {
+    processFinalizeImpl = fn ?? processFinalize;
+  },
+  setScheduleRetry(fn?: typeof scheduleRetry) {
+    scheduleRetryImpl = fn ?? scheduleRetry;
+  },
+};
 
 export async function startUploadFinalizeWorker(log: FastifyBaseLogger): Promise<void> {
   await recoverFinalizingUploads(log);
@@ -432,18 +547,33 @@ export async function getUploadFinalizeQueueStats(): Promise<{
   pendingUnique: number;
   activeLocal: number;
   concurrency: number;
+  oldestQueuedAt: number | null;
+  oldestQueuedAgeMs: number | null;
 }> {
   const redis = getRedis();
-  const [depth, pendingUnique] = await Promise.all([
-    redis.llen(queueKey()),
-    redis.scard(pendingKey()),
-  ]);
-  return {
-    depth: Number(depth ?? 0),
-    pendingUnique: Number(pendingUnique ?? 0),
+  const script = `
+    local depth = redis.call("LLEN", KEYS[1])
+    local pending = redis.call("SCARD", KEYS[2])
+    local oldest = redis.call("ZRANGE", KEYS[3], 0, 0, "WITHSCORES")
+    local oldestScore = false
+    if oldest[2] then
+      oldestScore = oldest[2]
+    end
+    return { depth, pending, oldestScore }
+  `;
+  const result = await redis.eval(
+    script,
+    [queueKey(), pendingKey(), uploadKeys.finalizePendingSince()],
+    []
+  );
+  const [depth, pendingUnique, oldestQueuedAt] = Array.isArray(result) ? result : [0, 0, null];
+  return shapeFinalizeQueueStats({
+    depth,
+    pendingUnique,
     activeLocal: activeLocal.size,
     concurrency: FINALIZE_CONCURRENCY,
-  };
+    oldestQueuedAt,
+  });
 }
 
 export async function syncFinalizeQueueMetrics(): Promise<void> {

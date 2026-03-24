@@ -9,6 +9,7 @@ import { WalrusEpochLimits } from "../config/walrus.config.js";
 import { AuthUploadPolicyConfig } from "../config/auth.config.js";
 
 import { createSession, getSession } from "../services/uploads/session.js";
+import { buildFinalizeDiagnostics } from "../services/uploads/finalize.shared.js";
 import {
   enqueueUploadFinalize,
   isUploadFinalizeQueued,
@@ -495,25 +496,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         ...(exposeBlobId && meta?.blobId ? { blobId: meta.blobId } : {}),
         ...(meta?.walrusEndEpoch ? { walrusEndEpoch: Number(meta.walrusEndEpoch) } : {}),
         ...(meta?.error ? { error: meta.error } : {}),
-        ...(meta?.finalizeStage ? { finalizeStage: meta.finalizeStage } : {}),
-        ...(meta?.finalizeLastSuccessfulStage
-          ? { finalizeLastSuccessfulStage: meta.finalizeLastSuccessfulStage }
-          : {}),
-        ...(meta?.failedStage ? { failedStage: meta.failedStage } : {}),
-        ...(meta?.failedReasonCode ? { failedReasonCode: meta.failedReasonCode } : {}),
-        ...(meta?.failedRetryable
-          ? { failedRetryable: meta.failedRetryable === "1" }
-          : {}),
-        ...(meta?.finalizeAttempts ? { finalizeAttempts: Number(meta.finalizeAttempts) } : {}),
-        ...(meta?.finalizeQueueWaitMs
-          ? { finalizeQueueWaitMs: Number(meta.finalizeQueueWaitMs) }
-          : {}),
-        ...(meta?.finalizeVerifyMs ? { finalizeVerifyMs: Number(meta.finalizeVerifyMs) } : {}),
-        ...(meta?.finalizeWalrusMs ? { finalizeWalrusMs: Number(meta.finalizeWalrusMs) } : {}),
-        ...(meta?.finalizeSuiMs ? { finalizeSuiMs: Number(meta.finalizeSuiMs) } : {}),
-        ...(meta?.finalizeRedisMs ? { finalizeRedisMs: Number(meta.finalizeRedisMs) } : {}),
-        ...(meta?.finalizeCleanupMs ? { finalizeCleanupMs: Number(meta.finalizeCleanupMs) } : {}),
-        ...(meta?.finalizeTotalMs ? { finalizeTotalMs: Number(meta.finalizeTotalMs) } : {}),
+        ...buildFinalizeDiagnostics(meta),
       };
     }
     const authzStatus = await req.server.authProvider.authorizeUploadAccess({
@@ -546,18 +529,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       ...(exposeBlobId && meta?.blobId ? { blobId: meta.blobId } : {}),
       ...(meta?.walrusEndEpoch ? { walrusEndEpoch: Number(meta.walrusEndEpoch) } : {}),
       ...(meta?.error ? { error: meta.error } : {}),
-      ...(meta?.finalizeStage ? { finalizeStage: meta.finalizeStage } : {}),
-      ...(meta?.finalizeLastSuccessfulStage
-        ? { finalizeLastSuccessfulStage: meta.finalizeLastSuccessfulStage }
-        : {}),
-      ...(meta?.failedStage ? { failedStage: meta.failedStage } : {}),
-      ...(meta?.failedReasonCode ? { failedReasonCode: meta.failedReasonCode } : {}),
-      ...(meta?.failedRetryable ? { failedRetryable: meta.failedRetryable === "1" } : {}),
-      ...(meta?.finalizeAttempts ? { finalizeAttempts: Number(meta.finalizeAttempts) } : {}),
-      ...(meta?.finalizeQueueWaitMs
-        ? { finalizeQueueWaitMs: Number(meta.finalizeQueueWaitMs) }
-        : {}),
-      ...(meta?.finalizeTotalMs ? { finalizeTotalMs: Number(meta.finalizeTotalMs) } : {}),
+      ...buildFinalizeDiagnostics(meta),
     };
   });
 
@@ -637,6 +609,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           status: "finalizing",
           pollAfterMs: FINALIZE_POLL_AFTER_MS,
           ...(isUploadFinalizeQueued(uploadId) ? { inProgress: true } : {}),
+          ...buildFinalizeDiagnostics(meta),
         });
       }
 
@@ -691,6 +664,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       pollAfterMs: FINALIZE_POLL_AFTER_MS,
       enqueued: queued.enqueued,
       ...(isUploadFinalizeQueued(uploadId) ? { inProgress: true } : {}),
+      ...buildFinalizeDiagnostics(meta),
     });
   });
 

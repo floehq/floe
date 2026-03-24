@@ -1,10 +1,23 @@
-import { Redis } from "@upstash/redis";
+import { NativeRedisClient } from "./redis.native.js";
+import type { RedisClient } from "./redis.types.js";
 
-let redis: Redis | null = null;
+let redis: RedisClient | null = null;
 
-export async function initRedis(): Promise<Redis> {
-  if (redis) return redis;
+type RedisProvider = "upstash" | "native";
 
+function resolveRedisProvider(): RedisProvider {
+  const explicit = (process.env.FLOE_REDIS_PROVIDER ?? "").trim().toLowerCase();
+  if (explicit === "upstash" || explicit === "native") {
+    return explicit;
+  }
+  if (process.env.REDIS_URL) {
+    return "native";
+  }
+  return "upstash";
+}
+
+async function createUpstashClient(): Promise<RedisClient> {
+  const { Redis: UpstashRedis } = await import("@upstash/redis");
   const url = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
 
@@ -14,22 +27,39 @@ export async function initRedis(): Promise<Redis> {
     );
   }
 
-  const client = new Redis({
+  const client = new UpstashRedis({
     url,
     token,
     retry: {
       retries: 3,
       backoff: (attempt) => Math.min(100 * 2 ** attempt, 1000),
     },
-  });
+  }) as unknown as RedisClient;
 
   await client.ping();
+  return client;
+}
 
-  redis = client;
+async function createNativeClient(): Promise<RedisClient> {
+  const url = (process.env.REDIS_URL ?? "").trim();
+  if (!url) {
+    throw new Error("REDIS_URL is required when FLOE_REDIS_PROVIDER=native");
+  }
+  const client = new NativeRedisClient({ url });
+  await client.connect();
+  await client.ping();
+  return client;
+}
+
+export async function initRedis(): Promise<RedisClient> {
+  if (redis) return redis;
+  redis = resolveRedisProvider() === "native"
+    ? await createNativeClient()
+    : await createUpstashClient();
   return redis;
 }
 
-export function getRedis(): Redis {
+export function getRedis(): RedisClient {
   if (!redis) {
     throw new Error(
       "Redis not initialized. initRedis() must be awaited during startup."
@@ -38,3 +68,8 @@ export function getRedis(): Redis {
   return redis;
 }
 
+export async function closeRedis(): Promise<void> {
+  if (!redis) return;
+  await redis.close?.().catch(() => {});
+  redis = null;
+}

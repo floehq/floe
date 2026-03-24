@@ -14,4 +14,5 @@ export const uploadKeys = {
 
   finalizeQueue: () => key("upload:finalize:queue"),
   finalizePending: () => key("upload:finalize:pending"),
+  finalizePendingSince: () => key("upload:finalize:pending_since"),
 };

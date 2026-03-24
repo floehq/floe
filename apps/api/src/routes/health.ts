@@ -6,6 +6,7 @@ import {
   syncFinalizeQueueMetrics,
 } from "../services/uploads/finalize.queue.js";
 import { renderPrometheusMetrics } from "../services/metrics/runtime.metrics.js";
+import { assessFinalizeQueueHealth } from "../services/uploads/finalize.shared.js";
 import { sendApiError } from "../utils/apiError.js";
 import { checkPostgresHealth, isPostgresConfigured } from "../state/postgres.js";
 
@@ -19,6 +20,16 @@ function parseBoolEnv(name: string, fallback: boolean): boolean {
 
 const METRICS_ENABLED = parseBoolEnv("FLOE_ENABLE_METRICS", true);
 const METRICS_TOKEN = (process.env.FLOE_METRICS_TOKEN ?? "").trim();
+
+const FINALIZE_QUEUE_STUCK_AGE_MS = (() => {
+  const raw = process.env.FLOE_FINALIZE_QUEUE_STUCK_AGE_MS;
+  if (raw === undefined || raw === "") return 5 * 60_000;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1000) {
+    throw new Error("FLOE_FINALIZE_QUEUE_STUCK_AGE_MS must be an integer >= 1000");
+  }
+  return n;
+})();
 
 function bearerTokenFromAuthHeader(raw: unknown): string | undefined {
   if (typeof raw !== "string") return undefined;
@@ -82,6 +93,8 @@ export default async function healthRoute(app: FastifyInstance) {
           pendingUnique: number;
           activeLocal: number;
           concurrency: number;
+          oldestQueuedAt: number | null;
+          oldestQueuedAgeMs: number | null;
         }
       | null = null;
     let postgres = {
@@ -111,12 +124,18 @@ export default async function healthRoute(app: FastifyInstance) {
       postgres = await checkPostgresHealth();
     }
 
-    const ready = redisOk && (!postgres.enabled || postgres.ok === true);
+    const baseReady = redisOk && (!postgres.enabled || postgres.ok === true);
+    const finalizeQueueHealth = assessFinalizeQueueHealth({
+      ready: baseReady,
+      finalizeQueue,
+      stuckAgeThresholdMs: FINALIZE_QUEUE_STUCK_AGE_MS,
+    });
 
-    return reply.status(ready ? 200 : 503).send({
-      status: ready ? "UP" : "DOWN",
+    return reply.status(finalizeQueueHealth.ready ? 200 : 503).send({
+      status: finalizeQueueHealth.ready ? "UP" : "DOWN",
       service: "floe-api-v1",
-      ready,
+      ready: finalizeQueueHealth.ready,
+      degraded: finalizeQueueHealth.backlogStalled,
       timestamp,
       checks: {
         redis: {
@@ -130,7 +149,10 @@ export default async function healthRoute(app: FastifyInstance) {
           pendingUnique: null,
           activeLocal: null,
           concurrency: null,
+          oldestQueuedAt: null,
+          oldestQueuedAgeMs: null,
         },
+        finalizeQueueWarning: finalizeQueueHealth.finalizeQueueWarning,
       },
     });
   });

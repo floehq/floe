@@ -21,8 +21,8 @@ Minimum required environment values:
 - `PORT`
 - `NODE_ENV`
 - `UPLOAD_TMP_DIR`
-- `UPSTASH_REDIS_REST_URL`
-- `UPSTASH_REDIS_REST_TOKEN`
+- when `FLOE_REDIS_PROVIDER=upstash`: `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`
+- when `FLOE_REDIS_PROVIDER=native`: `REDIS_URL`
 - `WALRUS_AGGREGATOR_URL`
 - `FLOE_NETWORK`
 - `SUI_PRIVATE_KEY`
@@ -59,8 +59,10 @@ Chunk staging:
 
 Redis:
 
-- `UPSTASH_REDIS_REST_URL`
-- `UPSTASH_REDIS_REST_TOKEN`
+- `FLOE_REDIS_PROVIDER` default `upstash`
+- `UPSTASH_REDIS_REST_URL` required for `upstash` mode
+- `UPSTASH_REDIS_REST_TOKEN` required for `upstash` mode
+- `REDIS_URL` required for `native` mode
 
 Postgres:
 
@@ -220,7 +222,7 @@ For best first-play behavior with MP4 files, use stream-ready/faststart MP4s.
 Floe exports:
 
 - HTTP request counts and duration
-- finalize queue depth, active workers, enqueue totals, and job durations
+- finalize queue depth, oldest queued age, active workers, enqueue totals, and job durations
 - Walrus publish totals and durations
 - Sui finalize totals and durations
 - metadata lookup duration
@@ -263,6 +265,7 @@ Floe exports:
 - sustained `429` spikes on upload/status routes
 - `floe_finalize_queue_depth` above threshold
 - `floe_finalize_jobs_total{outcome="failed"}` above threshold
+- `floe_finalize_jobs_total{outcome="retry_transient"}` sustained above threshold
 - `floe_walrus_publish_total{outcome="failure"}` above threshold
 - `floe_sui_finalize_total{outcome="failure"}` above threshold
 - `floe_stream_read_errors_total` rapid growth
@@ -271,7 +274,7 @@ Floe exports:
 
 When finalize backlog grows:
 
-1. inspect finalize queue depth and active worker count
+1. inspect finalize queue depth, oldest queued age, and active worker count
 2. inspect Walrus and Sui dependency failures
 3. tune `FLOE_FINALIZE_CONCURRENCY` only after confirming downstream capacity
 4. reduce ingest pressure if public traffic is saturating the queue
@@ -287,3 +290,11 @@ When Sui failures spike:
 1. verify signer validity and balance
 2. verify RPC reachability and latency
 3. confirm package/object compatibility
+
+Finalize retry model:
+
+- lock contention records `outcome="retry_lock"` and requeues using the lock TTL-derived delay
+- transient retryable failures record `outcome="retry_transient"` and back off exponentially from `FLOE_FINALIZE_RETRYABLE_FAILURE_BASE_MS` up to `FLOE_FINALIZE_RETRYABLE_FAILURE_MAX_MS`
+- retryable transient failures stop requeueing after `FLOE_FINALIZE_RETRYABLE_FAILURE_MAX_ATTEMPTS` attempts and then become terminal failures
+- `/health` marks the service degraded when `oldestQueuedAgeMs` exceeds `FLOE_FINALIZE_QUEUE_STUCK_AGE_MS` while finalize work is still pending
+- `finalizeWarning` means the upload already committed as completed, but a best-effort follow-up step failed after commit

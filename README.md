@@ -86,6 +86,7 @@ NODE_ENV=development
 UPLOAD_TMP_DIR=/home/tejas/Floe/apps/api/tmp/upload/
 FLOE_CHUNK_STORE_MODE=s3
 FLOE_S3_BUCKET=floe-staging
+FLOE_REDIS_PROVIDER=upstash
 UPSTASH_REDIS_REST_URL=https://<your-upstash-url>.upstash.io
 UPSTASH_REDIS_REST_TOKEN=<your-upstash-token>
 WALRUS_AGGREGATOR_URL=https://walrus-testnet-aggregator.nodes.guru
@@ -99,6 +100,11 @@ SUI_PACKAGE_ID=0x<your-package-id>
 Use `.env.example` as the full environment reference.
 
 Auth defaults to `hybrid` mode. Upload actions require a verified API key in `hybrid` and `private` mode. File reads remain public in `hybrid` mode and require auth in `private` mode.
+
+For Redis, Floe now supports two runtime modes:
+
+- `FLOE_REDIS_PROVIDER=upstash` with `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`
+- `FLOE_REDIS_PROVIDER=native` with `REDIS_URL=redis://host:6379`
 
 ### Run
 

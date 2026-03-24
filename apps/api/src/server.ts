@@ -8,7 +8,7 @@ import path from "path";
 import uploadRoutes from "./routes/uploads.js";
 import healthRoute from "./routes/health.js";
 import { filesRoutes } from "./routes/files.js";
-import { initRedis } from "./state/redis.js";
+import { closeRedis, initRedis } from "./state/redis.js";
 import {
   closePostgres,
   initPostgres,
@@ -181,6 +181,13 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
   await app.register(uploadRoutes);
   await app.register(filesRoutes);
   await app.register(healthRoute);
+
+  app.addHook("onClose", async () => {
+    await stopUploadGc();
+    await stopUploadFinalizeWorker();
+    await closePostgres();
+    await closeRedis();
+  });
 
   app.setErrorHandler((err, req, reply) => {
     const statusCode =

@@ -16,6 +16,13 @@ import {
   observeSuiFinalize,
 } from "../metrics/runtime.metrics.js";
 import { upsertIndexedFile } from "../../db/files.repository.js";
+import {
+  buildCompletedFinalizeResult,
+  buildFinalizeFollowupWarningMeta,
+  normalizeFinalizeFailure,
+  shouldPersistFinalizeFailure,
+  type FinalizeFailureCode,
+} from "./finalize.shared.js";
 
 const finalFilePath = (uploadId: string) =>
   path.join(UploadConfig.tmpDir, `${uploadId}.bin`);
@@ -37,64 +44,6 @@ type FinalizeContext = {
   attempt?: number;
   queueWaitMs?: number;
 };
-
-type FinalizeFailureCode =
-  | "lock_in_progress"
-  | "lock_lost"
-  | "upload_not_found"
-  | "incomplete_chunks"
-  | "missing_chunks"
-  | "walrus_upload_failed"
-  | "walrus_unavailable"
-  | "walrus_unknown"
-  | "sui_file_create_failed"
-  | "sui_unavailable"
-  | "redis_failure"
-  | "corrupt_completed_upload"
-  | "finalize_failed";
-
-function normalizeFinalizeFailure(err: unknown): {
-  reasonCode: FinalizeFailureCode;
-  retryable: boolean;
-} {
-  const message = String((err as Error)?.message ?? "UPLOAD_FINALIZE_FAILED").toUpperCase();
-
-  if (message === "UPLOAD_FINALIZATION_IN_PROGRESS") {
-    return { reasonCode: "lock_in_progress", retryable: true };
-  }
-  if (message === "UPLOAD_FINALIZATION_LOCK_LOST") {
-    return { reasonCode: "lock_lost", retryable: true };
-  }
-  if (message === "UPLOAD_NOT_FOUND") {
-    return { reasonCode: "upload_not_found", retryable: false };
-  }
-  if (message === "INCOMPLETE_CHUNKS") {
-    return { reasonCode: "incomplete_chunks", retryable: false };
-  }
-  if (message === "MISSING_CHUNKS") {
-    return { reasonCode: "missing_chunks", retryable: false };
-  }
-  if (message.includes("WALRUS_UPLOAD_FAILED")) {
-    return { reasonCode: "walrus_upload_failed", retryable: true };
-  }
-  if (message.includes("WALRUS")) {
-    return { reasonCode: "walrus_unavailable", retryable: true };
-  }
-  if (message === "SUI_FILE_CREATE_FAILED") {
-    return { reasonCode: "sui_file_create_failed", retryable: false };
-  }
-  if (message.includes("SUI")) {
-    return { reasonCode: "sui_unavailable", retryable: true };
-  }
-  if (message.includes("REDIS")) {
-    return { reasonCode: "redis_failure", retryable: true };
-  }
-  if (message === "CORRUPT_COMPLETED_UPLOAD") {
-    return { reasonCode: "corrupt_completed_upload", retryable: false };
-  }
-
-  return { reasonCode: "finalize_failed", retryable: false };
-}
 
 function attachFinalizeStage(err: unknown, stage: FinalizeStage): Error {
   const wrapped = err instanceof Error ? err : new Error(String(err));
@@ -178,6 +127,7 @@ export async function finalizeUpload(
     cleanup: 0,
   };
   let currentStage: FinalizeStage | null = null;
+  let committedCompletedState = false;
   const setFinalizeStage = async (stage: FinalizeStage) => {
     currentStage = stage;
     await redis.hset(metaKey, {
@@ -212,27 +162,7 @@ export async function finalizeUpload(
   // Fast-path idempotency.
   const pre = await redis.hgetall<Record<string, string>>(metaKey);
   if (pre?.status === "completed") {
-    if (!pre.fileId || !pre.blobId) {
-      throw new Error("CORRUPT_COMPLETED_UPLOAD");
-    }
-
-    return {
-      fileId: pre.fileId,
-      blobId: pre.blobId,
-      sizeBytes: Number(pre.sizeBytes ?? session.sizeBytes),
-      status: "ready",
-      ...(pre.walrusEndEpoch ? { walrusEndEpoch: Number(pre.walrusEndEpoch) } : {}),
-      finalize: {
-        totalMs: Number(pre.finalizeTotalMs ?? 0),
-        stageDurationsMs: {
-          verify_chunks: Number(pre.finalizeVerifyMs ?? 0),
-          walrus_publish: Number(pre.finalizeWalrusMs ?? 0),
-          sui_finalize: Number(pre.finalizeSuiMs ?? 0),
-          redis_commit: Number(pre.finalizeRedisMs ?? 0),
-          cleanup: Number(pre.finalizeCleanupMs ?? 0),
-        },
-      },
-    };
+    return buildCompletedFinalizeResult(pre, session.sizeBytes);
   }
 
   const lockKey = `${metaKey}:lock`;
@@ -273,27 +203,7 @@ export async function finalizeUpload(
     // Re-check inside the lock (race-safe).
     const meta = await redis.hgetall<Record<string, string>>(metaKey);
     if (meta?.status === "completed") {
-      if (!meta.fileId || !meta.blobId) {
-        throw new Error("CORRUPT_COMPLETED_UPLOAD");
-      }
-
-      return {
-        fileId: meta.fileId,
-        blobId: meta.blobId,
-        sizeBytes: Number(meta.sizeBytes ?? session.sizeBytes),
-        status: "ready",
-        ...(meta.walrusEndEpoch ? { walrusEndEpoch: Number(meta.walrusEndEpoch) } : {}),
-        finalize: {
-          totalMs: Number(meta.finalizeTotalMs ?? 0),
-          stageDurationsMs: {
-            verify_chunks: Number(meta.finalizeVerifyMs ?? 0),
-            walrus_publish: Number(meta.finalizeWalrusMs ?? 0),
-            sui_finalize: Number(meta.finalizeSuiMs ?? 0),
-            redis_commit: Number(meta.finalizeRedisMs ?? 0),
-            cleanup: Number(meta.finalizeCleanupMs ?? 0),
-          },
-        },
-      };
+      return buildCompletedFinalizeResult(meta, session.sizeBytes);
     }
 
     await redis.hset(metaKey, {
@@ -416,6 +326,7 @@ export async function finalizeUpload(
     if (!tx) {
       throw new Error("REDIS_FINALIZE_TRANSACTION_FAILED");
     }
+    committedCompletedState = true;
 
     await upsertIndexedFile({
       fileId,
@@ -427,22 +338,35 @@ export async function finalizeUpload(
       createdAtMs: Date.now(),
     }).catch(() => {});
 
-    await runStage("cleanup", async () => {
+    const cleanupStartedAt = Date.now();
+    currentStage = "cleanup";
+    try {
       await Promise.all([
         chunkStore.cleanup(uploadId).catch(() => {}),
         fs.unlink(finalFilePath(uploadId)).catch(() => {}),
       ]);
-    });
+    } finally {
+      stageDurationsMs.cleanup = Date.now() - cleanupStartedAt;
+      observeFinalizeStage({
+        stage: "cleanup",
+        outcome: "success",
+        durationMs: stageDurationsMs.cleanup,
+      });
+    }
 
     const finalizeTotalMs = Date.now() - startedAt;
-    await redis.hset(metaKey, {
-      finalizeStage: "completed",
-      finalizeCleanupMs: String(stageDurationsMs.cleanup),
-      finalizeRedisMs: String(stageDurationsMs.redis_commit),
-      finalizeTotalMs: String(finalizeTotalMs),
-      finalizeLastProgressAt: String(Date.now()),
-      finalizeAttemptState: "completed",
-    });
+    await redis
+      .hset(metaKey, {
+        finalizeStage: "completed",
+        finalizeCleanupMs: String(stageDurationsMs.cleanup),
+        finalizeRedisMs: String(stageDurationsMs.redis_commit),
+        finalizeTotalMs: String(finalizeTotalMs),
+        finalizeLastProgressAt: String(Date.now()),
+        finalizeAttemptState: "completed",
+      })
+      .catch((postCommitErr) => {
+        context.log?.warn({ uploadId, err: postCommitErr }, "Upload finalize post-commit metadata update failed");
+      });
 
     context.log?.info(
       {
@@ -469,13 +393,14 @@ export async function finalizeUpload(
   } catch (err) {
     const wrapped = err as Error & { finalizeStage?: FinalizeStage };
     const message = wrapped.message;
-    const isLockOwnershipError =
-      message === "UPLOAD_FINALIZATION_LOCK_LOST" ||
-      message === "UPLOAD_FINALIZATION_IN_PROGRESS";
     const failure = normalizeFinalizeFailure(err);
 
-    // If we no longer own the lock, avoid forcing terminal "failed" state.
-    if (!isLockOwnershipError) {
+    if (
+      shouldPersistFinalizeFailure({
+        committedCompletedState,
+        errorMessage: message,
+      })
+    ) {
       await redis.hset(metaKey, {
         status: "failed",
         error: message,
@@ -486,6 +411,13 @@ export async function finalizeUpload(
         finalizeAttemptState: failure.retryable ? "retryable_failure" : "terminal_failure",
         finalizeLastProgressAt: String(Date.now()),
       });
+    } else if (committedCompletedState) {
+      await redis
+        .hset(metaKey, buildFinalizeFollowupWarningMeta({
+          errorMessage: message,
+          nowMs: Date.now(),
+        }))
+        .catch(() => {});
     }
 
     context.log?.error(

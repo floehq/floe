@@ -47,6 +47,14 @@ Returns:
 ```
 
 ### `GET /v1/uploads/:uploadId/status`
+Status responses may include finalize diagnostics when an upload is finalizing, failed, or completed after asynchronous finalize work. Important fields:
+
+- `finalizeAttemptState`: `running`, `retryable_failure`, `terminal_failure`, or `completed`
+- `finalizeAttempts`: current finalize attempt count
+- `lastFinalizeRetryDelayMs`: next scheduled retry delay for retryable failures
+- `failedReasonCode` and `failedRetryable`: terminal vs retryable failure details
+- `finalizeWarning` and `finalizeWarningAt`: post-commit warning recorded after status already reached `completed`
+
 
 Read upload state and received chunk indexes.
 
@@ -64,6 +72,12 @@ Response may include:
 - `blobId` only when explicitly exposed
 - `walrusEndEpoch` when available
 - `error` when failed
+- finalize diagnostics when applicable:
+  - `finalizeAttemptState`: `running`, `retryable_failure`, `terminal_failure`, or `completed`
+  - `finalizeAttempts`
+  - `lastFinalizeRetryDelayMs`
+  - `failedReasonCode` and `failedRetryable`
+  - `finalizeWarning` and `finalizeWarningAt` for post-commit degraded follow-up work
 
 ### `POST /v1/uploads/:uploadId/complete`
 
@@ -141,7 +155,8 @@ Returns service readiness and dependency checks for:
 
 - Redis
 - Postgres
-- finalize queue state
+- finalize queue state, including oldest queued age and thresholded warning when finalize is stalled
+- a queue warning when finalize backlog is degraded by age threshold
 
 ### `GET /metrics`
 

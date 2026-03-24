@@ -147,7 +147,7 @@ export function recordFinalizeEnqueue(params: {
 }
 
 export function recordFinalizeJobResult(params: {
-  outcome: "success" | "failed" | "retry_lock";
+  outcome: "success" | "failed" | "retry_lock" | "retry_transient";
   reason?: string;
   retryable?: boolean;
   durationMs: number;
