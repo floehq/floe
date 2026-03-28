@@ -61,7 +61,6 @@ function authzErrorCode(code?: string): "AUTH_REQUIRED" | "OWNER_MISMATCH" | "IN
   if (code === "INSUFFICIENT_SCOPE") return "INSUFFICIENT_SCOPE";
   return "OWNER_MISMATCH";
 }
-
 export type StreamReadPlan = {
   initialSegmentBytes: number;
   segmentBytes: number;
