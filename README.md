@@ -83,7 +83,7 @@ Minimal working example:
 ```dotenv
 PORT=3001
 NODE_ENV=development
-UPLOAD_TMP_DIR=/home/tejas/Floe/apps/api/tmp/upload/
+UPLOAD_TMP_DIR=/var/lib/floe/upload
 FLOE_CHUNK_STORE_MODE=s3
 FLOE_S3_BUCKET=floe-staging
 FLOE_REDIS_PROVIDER=upstash
@@ -118,6 +118,18 @@ npm run dev
 npm run build --workspace=apps/api
 npm run start
 ```
+
+## Deployment Baseline
+
+Floe now includes a container-first deployment baseline for phase-1 beta.
+
+- build with `docker build -t floe-api:latest .`
+- run production from built JS instead of `tsx`
+- mount a persistent writable path at `UPLOAD_TMP_DIR`
+- use `/health` for container/platform health checks
+- if local MinIO runs on the host, use `host.docker.internal` instead of `127.0.0.1` from inside Docker
+
+See `docs/DEPLOYMENT.md` for the deploy, restart, and recovery flow.
 
 ## Upload CLI
 
@@ -155,6 +167,7 @@ Send the key with either `x-api-key` or `Authorization: Bearer <key>`.
 ## Documentation
 
 - `docs/API.md` - route behavior and response contract
+- `docs/DEPLOYMENT.md` - deployment baseline, required services, and restart flow
 - `docs/OPERATIONS.md` - runtime model, env, metrics, and runbook notes
 - `docs/SECURITY.md` - current auth model and hardening path
 

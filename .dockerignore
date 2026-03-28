@@ -1,0 +1,11 @@
+node_modules
+apps/*/node_modules
+.git
+.gitignore
+.env
+.env.*
+tmp
+apps/api/tmp
+apps/api/test
+apps/api/dist
+npm-debug.log

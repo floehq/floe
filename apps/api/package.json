@@ -6,7 +6,7 @@
     "dev": "tsx watch --env-file=../../.env src/server.ts",
     "build": "tsc",
     "test": "tsx --test ./test/*.test.ts",
-    "start": "tsx --env-file=../../.env dist/server.js"
+    "start": "node dist/server.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.995.0",
