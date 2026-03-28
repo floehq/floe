@@ -1,20 +1,69 @@
 import test, { afterEach, before } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import { Readable } from "node:stream";
 
 process.env.FLOE_NETWORK = "testnet";
 process.env.SUI_PRIVATE_KEY = `[${new Array(32).fill(0).join(",")}]`;
 process.env.SUI_PACKAGE_ID = "0x2";
 process.env.WALRUS_AGGREGATOR_URL = "http://127.0.0.1:1";
+process.env.UPLOAD_TMP_DIR = "/tmp/floe-test-upload";
 delete process.env.DATABASE_URL;
 
 type FilesRouteModule = typeof import("../src/routes/files.ts");
 type PostgresModule = typeof import("../src/state/postgres.ts");
 type SuiModule = typeof import("../src/state/sui.ts");
+type StreamCacheModule = typeof import("../src/services/stream/stream.cache.ts");
 
 let filesRouteModule: FilesRouteModule;
 let postgresModule: PostgresModule;
 let suiModule: SuiModule;
+let streamCacheModule: StreamCacheModule;
 let originalGetObject: typeof suiModule.suiClient.getObject;
+const originalFetch = globalThis.fetch;
+const walrusSamples = new Map<string, Uint8Array>();
+
+function buildFileFields(overrides?: Partial<{
+  blob_id: string;
+  size_bytes: string;
+  mime: string;
+  created_at: string;
+  owner: string;
+  walrus_end_epoch: string;
+}>) {
+  return {
+    blob_id: "blob-default",
+    size_bytes: "8",
+    mime: "video/mp4",
+    created_at: "1700000000000",
+    owner: "0x1111111111111111111111111111111111111111111111111111111111111111",
+    walrus_end_epoch: "12",
+    ...overrides,
+  };
+}
+
+async function mockSuiFile(fields?: Parameters<typeof buildFileFields>[0]) {
+  (suiModule.suiClient as any).getObject = async () => ({
+    data: {
+      content: {
+        dataType: "moveObject",
+        fields: buildFileFields(fields),
+      },
+    },
+  });
+}
+
+async function readPayloadBytes(payload: unknown): Promise<number[]> {
+  if (!(payload instanceof Readable)) {
+    return [];
+  }
+
+  const chunks: number[] = [];
+  for await (const chunk of payload) {
+    chunks.push(...chunk);
+  }
+  return chunks;
+}
 
 const log = {
   info() {},
@@ -27,6 +76,24 @@ const log = {
     return this;
   },
 } as any;
+
+function parseRangeHeader(
+  rangeHeader: string | null | undefined,
+  sizeBytes: number
+): { start: number; end: number } | null {
+  if (!rangeHeader) return null;
+  const match = rangeHeader.match(/^bytes=(\d+)-(\d+)$/i);
+  if (!match) return null;
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start) {
+    return null;
+  }
+  return {
+    start,
+    end: Math.min(end, sizeBytes - 1),
+  };
+}
 
 async function createRouteApp() {
   const handlers = new Map<string, (req: any, reply: any) => Promise<unknown> | unknown>();
@@ -118,6 +185,7 @@ async function createRouteApp() {
       return {
         statusCode: reply.statusCode,
         headers: reply.headers,
+        payload,
         json() {
           return payload;
         },
@@ -130,13 +198,42 @@ before(async () => {
   filesRouteModule = await import("../src/routes/files.ts");
   postgresModule = await import("../src/state/postgres.ts");
   suiModule = await import("../src/state/sui.ts");
+  streamCacheModule = await import("../src/services/stream/stream.cache.ts");
   originalGetObject = suiModule.suiClient.getObject.bind(suiModule.suiClient);
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const blobId = decodeURIComponent(url.split("/").pop() ?? "");
+    const body = walrusSamples.get(blobId) ?? Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7]);
+    const requestHeaders =
+      input instanceof Request
+        ? input.headers
+        : new Headers(init?.headers ?? undefined);
+    const parsedRange = parseRangeHeader(requestHeaders.get("range"), body.byteLength);
+    if (!parsedRange) {
+      return new Response(body, {
+        status: 200,
+        headers: { "content-length": String(body.byteLength) },
+      });
+    }
+
+    const rangedBody = body.subarray(parsedRange.start, parsedRange.end + 1);
+    return new Response(rangedBody, {
+      status: 206,
+      headers: {
+        "content-range": `bytes ${parsedRange.start}-${parsedRange.end}/${body.byteLength}`,
+        "content-length": String(rangedBody.byteLength),
+      },
+    });
+  }) as typeof fetch;
 });
 
 afterEach(() => {
   delete process.env.DATABASE_URL;
+  delete process.env.FLOE_PUBLIC_STREAM_BASE_URL;
   postgresModule.setPostgresForTests(null, false);
   (suiModule.suiClient as any).getObject = originalGetObject;
+  walrusSamples.clear();
+  return fs.rm(process.env.UPLOAD_TMP_DIR!, { recursive: true, force: true });
 });
 
 test("metadata route exposes degraded postgres fallback when Sui is used", async () => {
@@ -308,4 +405,175 @@ test("stream routes expose metadata source headers", async () => {
   assert.equal(headRes.statusCode, 200);
   assert.equal(headRes.headers["x-floe-metadata-source"], "memory");
   assert.equal(headRes.headers["x-floe-postgres-state"], "healthy");
+});
+
+test("chooseStreamReadPlan uses larger full reads and conservative ranged reads", () => {
+  const smallFull = filesRouteModule.chooseStreamReadPlan({
+    sizeBytes: 8 * 1024 * 1024,
+    hasRangeHeader: false,
+  });
+  const largeFull = filesRouteModule.chooseStreamReadPlan({
+    sizeBytes: 64 * 1024 * 1024,
+    hasRangeHeader: false,
+  });
+  const ranged = filesRouteModule.chooseStreamReadPlan({
+    sizeBytes: 2 * 1024 * 1024,
+    hasRangeHeader: true,
+  });
+
+  assert.equal(smallFull.initialSegmentBytes, 8 * 1024 * 1024);
+  assert.equal(largeFull.initialSegmentBytes, 32 * 1024 * 1024);
+  assert.equal(ranged.initialSegmentBytes, 8 * 1024 * 1024);
+});
+
+test("shouldCacheFullObject caches only bounded small files", () => {
+  assert.equal(streamCacheModule.shouldCacheFullObject(8 * 1024 * 1024), true);
+  assert.equal(streamCacheModule.shouldCacheFullObject(64 * 1024 * 1024), false);
+});
+
+test("ensureCachedStreamRange persists exact bytes for a cached segment", async () => {
+  const blobId = "range-cache-blob";
+  walrusSamples.set(blobId, Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+
+  const cachedPath = await streamCacheModule.ensureCachedStreamRange({
+    blobId,
+    start: 2,
+    end: 6,
+  });
+  const bytes = await fs.readFile(cachedPath);
+
+  assert.deepEqual([...bytes], [2, 3, 4, 5, 6]);
+});
+
+test("stream route rejects invalid ranges with 416 and content-range size", async () => {
+  await mockSuiFile({
+    blob_id: "blob-invalid-range",
+    size_bytes: "10",
+  });
+  walrusSamples.set("blob-invalid-range", Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+
+  const app = await createRouteApp();
+  const fileId = "0x8888888888888888888888888888888888888888888888888888888888888888";
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+    headers: { range: "bytes=20-30" },
+  });
+
+  assert.equal(res.statusCode, 416);
+  assert.equal(res.headers["content-range"], "bytes */10");
+  assert.equal(res.json().error.code, "INVALID_RANGE");
+});
+
+test("stream route serves suffix ranges", async () => {
+  await mockSuiFile({
+    blob_id: "blob-suffix-range",
+    size_bytes: "10",
+  });
+  walrusSamples.set("blob-suffix-range", Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+
+  const app = await createRouteApp();
+  const fileId = "0x9999999999999999999999999999999999999999999999999999999999999999";
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+    headers: { range: "bytes=-3" },
+  });
+
+  assert.equal(res.statusCode, 206);
+  assert.equal(res.headers["content-range"], "bytes 7-9/10");
+  assert.equal(res.headers["content-length"], "3");
+  assert.deepEqual(await readPayloadBytes(res.payload), [7, 8, 9]);
+});
+
+test("stream route serves open-ended ranges", async () => {
+  await mockSuiFile({
+    blob_id: "blob-open-range",
+    size_bytes: "10",
+  });
+  walrusSamples.set("blob-open-range", Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+
+  const app = await createRouteApp();
+  const fileId = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+    headers: { range: "bytes=4-" },
+  });
+
+  assert.equal(res.statusCode, 206);
+  assert.equal(res.headers["content-range"], "bytes 4-9/10");
+  assert.equal(res.headers["content-length"], "6");
+  assert.deepEqual(await readPayloadBytes(res.payload), [4, 5, 6, 7, 8, 9]);
+});
+
+test("head stream route reflects valid range headers without streaming a body", async () => {
+  await mockSuiFile({
+    blob_id: "blob-head-range",
+    size_bytes: "10",
+  });
+
+  const app = await createRouteApp();
+  const fileId = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const res = await app.inject({
+    method: "HEAD",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+    headers: { range: "bytes=2-5" },
+  });
+
+  assert.equal(res.statusCode, 206);
+  assert.equal(res.headers["content-range"], "bytes 2-5/10");
+  assert.equal(res.headers["content-length"], "4");
+  assert.equal((res.json() as any).payload, undefined);
+});
+
+test("metadata and manifest expose public streamUrl when configured", async () => {
+  process.env.FLOE_PUBLIC_STREAM_BASE_URL = "https://cdn.example.com/floe/";
+  (suiModule.suiClient as any).getObject = async () => ({
+    data: {
+      content: {
+        dataType: "moveObject",
+        fields: {
+          blob_id: "blob-public-url",
+          size_bytes: "128",
+          mime: "video/mp4",
+          created_at: "1700000000000",
+          owner: "0x1111111111111111111111111111111111111111111111111111111111111111",
+          walrus_end_epoch: "12",
+        },
+      },
+    },
+  });
+
+  const app = await createRouteApp();
+  const fileId = "0x7777777777777777777777777777777777777777777777777777777777777777";
+  const metadataRes = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/metadata`,
+    routePath: "/v1/files/:fileId/metadata",
+    params: { fileId },
+  });
+  const manifestRes = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/manifest`,
+    routePath: "/v1/files/:fileId/manifest",
+    params: { fileId },
+  });
+
+  assert.equal(
+    metadataRes.json().streamUrl,
+    `https://cdn.example.com/floe/v1/files/${fileId}/stream`
+  );
+  assert.equal(
+    manifestRes.json().streamUrl,
+    `https://cdn.example.com/floe/v1/files/${fileId}/stream`
+  );
 });

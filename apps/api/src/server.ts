@@ -34,6 +34,7 @@ import {
 import { recordHttpRequest } from "./services/metrics/runtime.metrics.js";
 import { ensureFilesTable } from "./db/files.repository.js";
 import { chunkStore } from "./store/index.js";
+import { initStreamCache } from "./services/stream/stream.cache.js";
 
 process.on("unhandledRejection", (reason) => {
   console.error("Unhandled promise rejection:", reason);
@@ -148,6 +149,7 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
     await initPostgres(app.log);
     await ensureFilesTable();
     await validateUploadTmpDir();
+    await initStreamCache();
     app.log.info(
       {
         limits: {

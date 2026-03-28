@@ -172,6 +172,7 @@ Byte-range stream endpoint.
 Behavior:
 
 - supports single `Range` requests
+- supports bounded, open-ended, and suffix single-range forms
 - returns `200`, `206`, or `416`
 - includes `Accept-Ranges: bytes`
 - includes `ETag`
@@ -181,6 +182,15 @@ Behavior:
 ### `HEAD /v1/files/:fileId/stream`
 
 Returns range-aware headers without streaming the body.
+
+## Streaming Limitations
+
+Current phase-1 limits:
+
+- only single-range requests are supported
+- Floe does not provide HLS, DASH, transcoding, or adaptive bitrate playback
+- first-play behavior for MP4 depends on stream-ready or faststart files
+- cold reads still depend on Walrus aggregator responsiveness even when metadata is cached locally
 
 ## Operational Endpoints
 

@@ -1,4 +1,5 @@
 import { FastifyInstance } from "fastify";
+import fs from "node:fs/promises";
 import { Readable } from "node:stream";
 
 import { suiClient } from "../state/sui.js";
@@ -6,6 +7,7 @@ import { getIndexedFile, upsertIndexedFile } from "../db/files.repository.js";
 import { isPostgresConfigured, isPostgresEnabled } from "../state/postgres.js";
 import { fetchWalrusBlob } from "../services/walrus/read.js";
 import { WalrusReadLimits } from "../config/walrus.config.js";
+import { AuthModeConfig, AuthOwnerPolicyConfig } from "../config/auth.config.js";
 import { sendApiError } from "../utils/apiError.js";
 import { applyRateLimitHeaders } from "../services/auth/auth.headers.js";
 import {
@@ -13,6 +15,12 @@ import {
   observeStreamTtfb,
   recordStreamReadError,
 } from "../services/metrics/runtime.metrics.js";
+import {
+  createCachedReadStream,
+  ensureCachedStreamBlob,
+  ensureCachedStreamRange,
+  getCachedStreamPath,
+} from "../services/stream/stream.cache.js";
 
 function inferContainerFromMime(mimeType: string): string | null {
   const m = (mimeType ?? "").toLowerCase();
@@ -47,6 +55,11 @@ function shouldExposeBlobId(req: any): boolean {
 function authzStatusCode(code?: string): 401 | 403 {
   return code === "AUTH_REQUIRED" ? 401 : 403;
 }
+
+export type StreamReadPlan = {
+  initialSegmentBytes: number;
+  segmentBytes: number;
+};
 
 type ParsedRange = {
   start: number;
@@ -181,6 +194,28 @@ type CachedFileFieldsResult = {
   postgresState: PostgresReadState;
 };
 
+function canExposePublicFileRead(): boolean {
+  return AuthModeConfig.mode !== "private" && !AuthOwnerPolicyConfig.enforceUploadOwner;
+}
+
+function getPublicStreamUrl(fileId: string): string | null {
+  if (!canExposePublicFileRead()) return null;
+  const configuredBaseUrl = (process.env.FLOE_PUBLIC_STREAM_BASE_URL ?? "").trim();
+  if (!configuredBaseUrl) return null;
+  const base = configuredBaseUrl.replace(/\/+$/, "");
+  return `${base}/v1/files/${encodeURIComponent(fileId)}/stream`;
+}
+
+function applyFileReadCacheHeaders(reply: any) {
+  if (canExposePublicFileRead()) {
+    reply.header("Cache-Control", "public, max-age=31536000, immutable");
+    return;
+  }
+
+  reply.header("Cache-Control", "private, no-store");
+  reply.header("Vary", "Authorization, x-api-key");
+}
+
 const fileFieldsMemoryCache = new Map<
   string,
   { value: any; expiresAt: number; touchedAt: number }
@@ -301,6 +336,7 @@ async function* walrusByteStream(params: {
   start: number;
   end: number;
   maxSegmentBytes: number;
+  initialSegmentBytes?: number;
   signal: AbortSignal;
 }): AsyncGenerator<Uint8Array> {
   const safeUpstreamSnippet = (body: string): string => {
@@ -339,7 +375,11 @@ async function* walrusByteStream(params: {
   while (offset <= params.end) {
     if (params.signal.aborted) return;
 
-    let segSize = Math.min(maxSegmentBytes, params.end - offset + 1);
+    const preferredSegmentBytes =
+      offset === params.start && params.initialSegmentBytes
+        ? Math.max(maxSegmentBytes, params.initialSegmentBytes)
+        : maxSegmentBytes;
+    let segSize = Math.min(preferredSegmentBytes, params.end - offset + 1);
 
     while (true) {
       const segEnd = Math.min(params.end, offset + segSize - 1);
@@ -418,6 +458,107 @@ async function* walrusByteStream(params: {
   }
 }
 
+async function* cachedSegmentByteStream(params: {
+  blobId: string;
+  start: number;
+  end: number;
+  initialSegmentBytes: number;
+  segmentBytes: number;
+  signal: AbortSignal;
+}): AsyncGenerator<Uint8Array> {
+  let offset = params.start;
+
+  while (offset <= params.end) {
+    if (params.signal.aborted) return;
+
+    const preferredSegmentBytes =
+      offset === params.start ? params.initialSegmentBytes : params.segmentBytes;
+    const segmentEnd = Math.min(params.end, offset + preferredSegmentBytes - 1);
+    const expected = segmentEnd - offset + 1;
+    try {
+      const cachePath = await ensureCachedStreamRange({
+        blobId: params.blobId,
+        start: offset,
+        end: segmentEnd,
+        signal: params.signal,
+      });
+
+      const rs = createCachedReadStream({
+        filePath: cachePath,
+        start: 0,
+        end: segmentEnd - offset,
+      });
+
+      let read = 0;
+      for await (const chunk of rs) {
+        if (params.signal.aborted) return;
+        const buf = chunk as Uint8Array;
+        read += buf.byteLength;
+        yield buf;
+      }
+
+      if (read !== expected) {
+        throw new Error(`STREAM_CACHE_RANGE_TRUNCATED expected=${expected} read=${read}`);
+      }
+    } catch (err) {
+      if ((err as Error)?.message !== "STREAM_CACHE_CAPACITY_EXCEEDED") {
+        throw err;
+      }
+
+      for await (const chunk of walrusByteStream({
+        blobId: params.blobId,
+        start: offset,
+        end: segmentEnd,
+        maxSegmentBytes: params.segmentBytes,
+        initialSegmentBytes: expected,
+        signal: params.signal,
+      })) {
+        yield chunk;
+      }
+    }
+
+    offset = segmentEnd + 1;
+  }
+}
+
+export function chooseStreamReadPlan(params: {
+  sizeBytes: number;
+  hasRangeHeader: boolean;
+}): StreamReadPlan {
+  const boundedMediaSegment = Math.min(
+    WalrusReadLimits.maxRangeBytes,
+    WalrusReadLimits.mediaSegmentBytes
+  );
+  const boundedInitialSegment = Math.min(
+    WalrusReadLimits.maxRangeBytes,
+    Math.max(
+      boundedMediaSegment,
+      WalrusReadLimits.initialSegmentBytes,
+      WalrusReadLimits.inlineFullObjectMaxBytes
+    )
+  );
+
+  if (params.hasRangeHeader) {
+    return {
+      initialSegmentBytes: boundedMediaSegment,
+      segmentBytes: boundedMediaSegment,
+    };
+  }
+
+  if (params.sizeBytes <= WalrusReadLimits.inlineFullObjectMaxBytes) {
+    const fullSize = Math.min(params.sizeBytes, WalrusReadLimits.maxRangeBytes);
+    return {
+      initialSegmentBytes: fullSize,
+      segmentBytes: fullSize,
+    };
+  }
+
+  return {
+    initialSegmentBytes: boundedInitialSegment,
+    segmentBytes: boundedMediaSegment,
+  };
+}
+
 export async function filesRoutes(app: FastifyInstance) {
   app.get("/v1/files/:fileId/metadata", async (req, res) => {
     const readLimit = await req.server.authProvider.checkRateLimit({
@@ -462,6 +603,8 @@ export async function filesRoutes(app: FastifyInstance) {
       return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
     }
     applyFileLookupHeaders(res, { source: fieldsSource, postgresState });
+    applyFileReadCacheHeaders(res);
+    applyFileReadCacheHeaders(res);
 
     const normalized = normalizeFileFields(fields);
     if (!normalized) {
@@ -488,6 +631,7 @@ export async function filesRoutes(app: FastifyInstance) {
 
     const exposeBlobId = shouldExposeBlobId(req);
     const container = inferContainerFromMime(normalized.mimeType);
+    const publicStreamUrl = getPublicStreamUrl(fileId);
     const authz = await req.server.authProvider.authorizeFileAccess({
       req,
       action: "metadata",
@@ -510,6 +654,7 @@ export async function filesRoutes(app: FastifyInstance) {
       ...(exposeBlobId ? { blobId: normalized.blobId } : {}),
       sizeBytes: normalized.sizeBytes,
       mimeType: normalized.mimeType,
+      ...(publicStreamUrl ? { streamUrl: publicStreamUrl } : {}),
       owner: normalized.owner,
       createdAt: normalized.createdAt,
       ...(normalized.walrusEndEpoch !== null ? { walrusEndEpoch: normalized.walrusEndEpoch } : {}),
@@ -585,6 +730,7 @@ export async function filesRoutes(app: FastifyInstance) {
 
     const exposeBlobId = shouldExposeBlobId(req);
     const container = inferContainerFromMime(normalized.mimeType);
+    const publicStreamUrl = getPublicStreamUrl(fileId);
     const authz = await req.server.authProvider.authorizeFileAccess({
       req,
       action: "manifest",
@@ -607,6 +753,7 @@ export async function filesRoutes(app: FastifyInstance) {
       sizeBytes: normalized.sizeBytes,
       mimeType: normalized.mimeType,
       container,
+      ...(publicStreamUrl ? { streamUrl: publicStreamUrl } : {}),
       ...(normalized.walrusEndEpoch !== null ? { walrusEndEpoch: normalized.walrusEndEpoch } : {}),
       layout: {
         type: "walrus_single_blob",
@@ -673,6 +820,7 @@ export async function filesRoutes(app: FastifyInstance) {
         return sendApiError(reply, 404, "FILE_NOT_FOUND", "File not found");
       }
       applyFileLookupHeaders(reply, { source: fieldsSource, postgresState });
+      applyFileReadCacheHeaders(reply);
 
       const normalized = normalizeFileFields(fields);
       if (!normalized) {
@@ -756,6 +904,10 @@ export async function filesRoutes(app: FastifyInstance) {
       reply.raw.once("close", abortUpstream);
 
       const span = end - start + 1;
+      const readPlan = chooseStreamReadPlan({
+        sizeBytes: span,
+        hasRangeHeader: Boolean(rangeHeader),
+      });
 
       reply.header("Content-Type", mimeType);
       reply.header("Content-Length", String(span));
@@ -769,19 +921,38 @@ export async function filesRoutes(app: FastifyInstance) {
         return reply.status(status).send();
       }
 
+      const cachedPath =
+        (await getCachedStreamPath(blobId)) ??
+        (status === 200
+          ? await ensureCachedStreamBlob({
+              blobId,
+              sizeBytes,
+            }).catch(() => null)
+          : null);
+
+      if (cachedPath) {
+        const stat = await fs.stat(cachedPath).catch(() => null);
+        if (stat?.isFile() && stat.size >= end + 1) {
+          const cachedStream = createCachedReadStream({
+            filePath: cachedPath,
+            start,
+            end,
+          });
+          return reply.status(status).send(cachedStream);
+        }
+      }
+
       const streamStartMs = Date.now();
       let firstByteObserved = false;
       let totalStreamedBytes = 0;
       const stream = Readable.from(
         (async function* () {
-          for await (const chunk of walrusByteStream({
+          for await (const chunk of cachedSegmentByteStream({
             blobId,
             start,
             end,
-            maxSegmentBytes: Math.min(
-              WalrusReadLimits.maxRangeBytes,
-              WalrusReadLimits.mediaSegmentBytes
-            ),
+            initialSegmentBytes: readPlan.initialSegmentBytes,
+            segmentBytes: readPlan.segmentBytes,
             signal: abortController.signal,
           })) {
             if (!firstByteObserved && chunk.byteLength > 0) {

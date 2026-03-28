@@ -13,6 +13,7 @@
     "dev": "npm run dev --workspace=apps/api",
     "start": "npm run start --workspace=apps/api",
     "upload": "./floe.sh",
+    "measure:stream": "node ./scripts/measure-stream.mjs",
     "lint": "npm run lint --workspaces --if-present",
     "clean": "rm -rf node_modules && npm install"
   },

@@ -53,6 +53,19 @@ export const WalrusReadLimits = {
     8 * 1024 * 1024
   ),
 
+  // Larger first read for cold full-object playback so players can start with
+  // fewer round-trips before normal stitched reads continue.
+  initialSegmentBytes: parsePositiveIntEnv(
+    "FLOE_STREAM_INITIAL_SEGMENT_BYTES",
+    32 * 1024 * 1024
+  ),
+
+  // For small full-object reads, avoid stitched multi-range behavior entirely.
+  inlineFullObjectMaxBytes: parsePositiveIntEnv(
+    "FLOE_STREAM_INLINE_FULL_MAX_BYTES",
+    32 * 1024 * 1024
+  ),
+
   // Retry budget per stitched segment (network errors, 5xx, 429).
   maxSegmentRetries: parsePositiveIntEnv("WALRUS_READ_MAX_RETRIES", 2),
   baseRetryDelayMs: parsePositiveIntEnv("WALRUS_READ_RETRY_DELAY_MS", 250),

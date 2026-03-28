@@ -228,11 +228,58 @@ Current read-path behavior:
 
 - metadata and manifests are served from Sui-backed file metadata with optional Postgres read-model caching
 - stream responses support `200`, `206`, and `416`
+- stream routes accept bounded, open-ended, and suffix single-range requests
 - Walrus reads are stitched in bounded segments
+- local disk cache can materially improve warm reads on the same Floe instance
 - playback reads use a smaller default segment size than the absolute max range size
 - segment fetches shrink on retry when public aggregators reject or fail larger range requests
+- a CDN or reverse proxy in front of Floe can benefit from this local cache as origin shielding, but the Floe cache itself is still per-instance and not edge-distributed
 
 For best first-play behavior with MP4 files, use stream-ready/faststart MP4s.
+
+### Known Streaming Limits
+
+- only single-range reads are supported in phase 1
+- there is no HLS, DASH, transcoding, or adaptive bitrate playback yet
+- non-faststart MP4 files may have weaker first-play behavior even when range reads succeed
+- metadata caching reduces lookup cost, but cold playback still depends on Walrus/public aggregator health and latency
+- increasing `FLOE_STREAM_CACHE_MAX_BYTES` helps recent hot content on one server, but does not by itself create CDN-grade global caching
+
+### Cold Vs Warm Read Check
+
+Use the built-in measurement helper against a finalized file:
+
+```bash
+npm run measure:stream -- <fileId> --base-url http://localhost:3001 --range bytes=0-1048575 --runs 2
+```
+
+Or let the helper calculate a range size for you:
+
+```bash
+npm run measure:stream -- <fileId> --size-mib 5 --runs 5
+```
+
+To sample random 5 MiB windows instead of always starting at byte `0`:
+
+```bash
+npm run measure:stream -- <fileId> --size-mib 5 --random-start --runs 5
+```
+
+If stream reads require auth, add one of:
+
+```bash
+npm run measure:stream -- <fileId> --api-key <key>
+npm run measure:stream -- <fileId> --bearer <token>
+```
+
+Interpretation:
+
+- run `1` is the cold read for that process/cache state
+- run `2` is the immediate warm follow-up read
+- compare `ttfbMs` first, then `totalMs`
+- capture at least a few samples per file before claiming a latency improvement
+
+This does not replace full p50/p95 benchmarking, but it gives a reproducible branch-level check for read-path regressions and warm-cache benefit.
 
 ## Metrics
 

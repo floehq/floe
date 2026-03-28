@@ -109,6 +109,7 @@ const FINALIZE_DURATION_BUCKETS_MS = [
 ];
 const UPSTREAM_DURATION_BUCKETS_MS = [50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000];
 const LOOKUP_DURATION_BUCKETS_MS = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500];
+const STREAM_CACHE_FILL_BUCKETS_MS = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000];
 
 export function recordHttpRequest(params: {
   method: string;
@@ -266,6 +267,48 @@ export function observeStreamTtfb(params: {
       range: params.range,
     }
   );
+}
+
+export function recordStreamCacheAccess(params: {
+  cacheType: "full" | "range";
+  outcome: "hit" | "miss" | "bypass" | "filled" | "rejected";
+}) {
+  incrementCounter("floe_stream_cache_access_total", 1, {
+    cache_type: params.cacheType,
+    outcome: params.outcome,
+  });
+}
+
+export function observeStreamCacheFill(params: {
+  cacheType: "full" | "range";
+  durationMs: number;
+}) {
+  observeHistogram(
+    "floe_stream_cache_fill_duration_ms",
+    params.durationMs,
+    STREAM_CACHE_FILL_BUCKETS_MS,
+    { cache_type: params.cacheType }
+  );
+}
+
+export function setStreamCacheMetrics(params: {
+  activeFills: number;
+  reservedBytes: number;
+}) {
+  setGauge("floe_stream_cache_active_fills", params.activeFills);
+  setGauge("floe_stream_cache_reserved_bytes", params.reservedBytes);
+}
+
+export function recordStreamCacheEviction(params: {
+  reason: "ttl" | "size" | "invalid";
+  bytes: number;
+}) {
+  incrementCounter("floe_stream_cache_evictions_total", 1, {
+    reason: params.reason,
+  });
+  incrementCounter("floe_stream_cache_evicted_bytes_total", params.bytes, {
+    reason: params.reason,
+  });
 }
 
 export function observeWalrusSegmentFetch(params: {
