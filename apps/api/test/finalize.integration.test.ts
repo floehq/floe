@@ -720,6 +720,10 @@ test("ops upload route returns operator snapshot for an upload", async () => {
     assert.equal("receivedIndexes" in body.chunks, false);
     assert.equal(body.finalize.pending, true);
     assert.equal(body.meta.status, "finalizing");
+    assert.equal(body.summary.phase, "finalize_retrying");
+    assert.equal(body.summary.issue, "retryable_finalize_failure");
+    assert.equal(body.summary.recommendedAction, "wait_for_finalize");
+    assert.equal(body.summary.chunkProgress.missingChunkCount, 1);
 
     const withIndexes = await app.inject({
       method: "GET",
@@ -730,6 +734,70 @@ test("ops upload route returns operator snapshot for an upload", async () => {
       headers: { "x-metrics-token": "ops-test-token" },
     });
     assert.deepEqual(withIndexes.json().chunks.receivedIndexes, [0, 2]);
+  } finally {
+    await cleanupUpload(uploadId);
+  }
+});
+
+test("ops upload route summarizes incomplete uploading sessions for operators", async () => {
+  const uploadId = await seedUpload({ totalChunks: 4 });
+  const app = await createRouteApp();
+  try {
+    const redis = redisModule.getRedis();
+    const { uploadKeys } = keysModule;
+    await redis.sadd(uploadKeys.chunks(uploadId), "0");
+    await redis.sadd(uploadKeys.chunks(uploadId), "1");
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/ops/uploads/${uploadId}`,
+      routePath: "/ops/uploads/:uploadId",
+      params: { uploadId },
+      headers: { "x-metrics-token": "ops-test-token" },
+    });
+    const body = res.json();
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(body.summary.status, "uploading");
+    assert.equal(body.summary.phase, "uploading");
+    assert.equal(body.summary.issue, "missing_chunks");
+    assert.equal(body.summary.recommendedAction, "resume_upload");
+    assert.equal(body.summary.chunkProgress.totalChunks, 4);
+    assert.equal(body.summary.chunkProgress.receivedCount, 2);
+    assert.equal(body.summary.chunkProgress.missingChunkCount, 2);
+    assert.equal(body.summary.chunkProgress.uploadComplete, false);
+  } finally {
+    await cleanupUpload(uploadId);
+  }
+});
+
+test("ops upload route distinguishes active finalize lock from queued work", async () => {
+  const uploadId = await seedUpload({ totalChunks: 2 });
+  const app = await createRouteApp();
+  try {
+    const redis = redisModule.getRedis();
+    const { uploadKeys } = keysModule;
+    await redis.hset(uploadKeys.meta(uploadId), {
+      status: "finalizing",
+      finalizeAttemptState: "running",
+    });
+    await redis.set(`${uploadKeys.meta(uploadId)}:lock`, "worker-1", { ex: 30 });
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/ops/uploads/${uploadId}`,
+      routePath: "/ops/uploads/:uploadId",
+      params: { uploadId },
+      headers: { "x-metrics-token": "ops-test-token" },
+    });
+    const body = res.json();
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(body.summary.phase, "finalize_active");
+    assert.equal(body.summary.recommendedAction, "wait_for_finalize");
+    assert.equal(body.summary.finalize.activeLock, true);
+    assert.equal(body.finalize.activeLock, true);
+    assert.equal(body.finalize.lockTtlSeconds > 0, true);
   } finally {
     await cleanupUpload(uploadId);
   }

@@ -323,9 +323,17 @@ Current health semantics:
 Operator inspection endpoint:
 
 - `GET /ops/uploads/:uploadId`
-- returns dependency state, upload session, upload metadata, received chunk indexes, finalize pending state, and lock TTL
+- returns dependency state, upload session, upload metadata, received chunk indexes, finalize pending state, lock TTL, and an operator-facing `summary`
 - use `?includeReceivedIndexes=1` only when you need the full chunk index list for a specific upload
 - intended for direct tester-support and outage triage without manual Redis inspection
+
+Operator summary highlights:
+
+- `summary.phase` quickly classifies the upload as `uploading`, `ready_to_finalize`, `finalize_queued`, `finalize_active`, `finalize_retrying`, `completed`, `failed`, `canceled`, or `expired`
+- `summary.issue` surfaces the top operator concern such as `missing_chunks`, a finalize failure reason, or dependency degradation
+- `summary.recommendedAction` points to the next move: resume upload, wait for finalize, inspect dependencies, inspect failure, or cleanup
+- `summary.chunkProgress` shows total, received, missing, and whether upload ingest is complete
+- `summary.finalize` surfaces retry state, lock presence, and queue-stall suspicion without requiring raw meta parsing
 
 ## Operational Recommendations
 
@@ -425,9 +433,10 @@ Redis outage handling:
 Operator upload inspection:
 
 1. call `GET /ops/uploads/:uploadId` with `x-metrics-token` or bearer auth
-2. inspect `session`, `meta`, and `chunks.receivedIndexes` to confirm whether the upload is incomplete, finalizing, failed, or already committed
-3. inspect `finalize.pending`, `finalize.activeLock`, and `finalize.lockTtlSeconds` to distinguish queued work from an active lock holder
-4. inspect `dependencies.redis` and `dependencies.postgres` in the same response before assuming application-level corruption
+2. inspect `summary.phase`, `summary.issue`, and `summary.recommendedAction` first
+3. inspect `summary.chunkProgress` and `chunks.receivedIndexes` to confirm whether the upload is incomplete, fully uploaded, or missing chunk state
+4. inspect `summary.finalize`, `finalize.pending`, `finalize.activeLock`, and `finalize.lockTtlSeconds` to distinguish queued work from an active lock holder or retry loop
+5. inspect `dependencies.redis` and `dependencies.postgres` in the same response before assuming application-level corruption
 
 Postgres outage handling:
 

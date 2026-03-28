@@ -14,6 +14,7 @@ import {
   checkPostgresDependencyHealth,
   checkRedisDependencyHealth,
 } from "../services/health/dependencies.js";
+import { buildOperatorUploadSummary } from "../services/ops/upload.summary.js";
 
 function parseBoolEnv(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
@@ -154,9 +155,23 @@ export default async function healthRoute(app: FastifyInstance) {
       ? chunkMembers.map(Number).filter(Number.isInteger).sort((a, b) => a - b)
       : [];
     const includeReceivedIndexes = parseBoolQuery((req as any).query?.includeReceivedIndexes);
+    const operatorSummary = buildOperatorUploadSummary({
+      session,
+      meta: metaObject,
+      receivedChunkIndexes: chunkIndexes,
+      finalizePending: Number(pending) === 1,
+      finalizeActiveLock: Number(hasLock) === 1,
+      finalizeLockTtlSeconds: Number(lockTtlSeconds),
+      finalizeQueue: queueStats,
+      dependencies: {
+        redis: redisHealth,
+        postgres: postgresHealth,
+      },
+    });
 
     return reply.code(200).send({
       uploadId,
+      summary: operatorSummary,
       dependencies: {
         redis: redisHealth,
         postgres: postgresHealth,
