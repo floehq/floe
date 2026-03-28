@@ -38,7 +38,7 @@ export function isPostgresEnabled(): boolean {
   return enabled && !!pool;
 }
 
-function isPostgresRequired(): boolean {
+export function isPostgresRequired(): boolean {
   return parseBoolEnv("FLOE_POSTGRES_REQUIRED", false);
 }
 
@@ -111,15 +111,28 @@ export async function closePostgres(): Promise<void> {
   enabled = false;
 }
 
+export function setPostgresForTests(client: PgPool | null, nextEnabled = !!client): void {
+  pool = client;
+  enabled = nextEnabled && !!client;
+}
+
 export async function checkPostgresHealth(): Promise<{
   enabled: boolean;
   ok: boolean | null;
   latencyMs: number | null;
 }> {
-  if (!enabled || !pool) {
+  if (!databaseUrl()) {
     return {
       enabled: false,
       ok: null,
+      latencyMs: null,
+    };
+  }
+
+  if (!enabled || !pool) {
+    return {
+      enabled: false,
+      ok: false,
       latencyMs: null,
     };
   }

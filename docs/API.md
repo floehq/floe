@@ -120,6 +120,11 @@ Returns normalized file metadata:
 - optional `walrusEndEpoch`
 - optional `blobId`
 
+Response headers also include:
+
+- `x-floe-metadata-source`: `memory`, `postgres`, or `sui`
+- `x-floe-postgres-state`: `healthy`, `degraded`, or `disabled`
+
 ### `GET /v1/files/:fileId/manifest`
 
 Returns the current read contract for the file:
@@ -132,6 +137,11 @@ Returns the current read contract for the file:
 - `layout.type = "walrus_single_blob"`
 - `layout.segments[0]`
 
+Response headers also include:
+
+- `x-floe-metadata-source`
+- `x-floe-postgres-state`
+
 ### `GET /v1/files/:fileId/stream`
 
 Byte-range stream endpoint.
@@ -142,6 +152,8 @@ Behavior:
 - returns `200`, `206`, or `416`
 - includes `Accept-Ranges: bytes`
 - includes `ETag`
+- includes `x-floe-metadata-source`
+- includes `x-floe-postgres-state`
 
 ### `HEAD /v1/files/:fileId/stream`
 
@@ -169,6 +181,30 @@ Requirements:
 - send either:
   - `x-metrics-token: <token>`
   - or `Authorization: Bearer <token>`
+
+### `GET /ops/uploads/:uploadId`
+
+Operator-only upload inspection endpoint.
+
+Requirements:
+
+- `FLOE_ENABLE_METRICS=1`
+- `FLOE_METRICS_TOKEN` configured
+- send either:
+  - `x-metrics-token: <token>`
+  - or `Authorization: Bearer <token>`
+
+Returns:
+
+- dependency health for Redis and Postgres
+- upload `session` when present
+- upload `meta` when present
+- received chunk count
+- finalize pending state, active lock state, and lock TTL
+
+Optional query flags:
+
+- `includeReceivedIndexes=1` to include the full received chunk index list
 
 ## Blob ID Exposure
 
@@ -247,6 +283,7 @@ Common error codes include:
 - `UPLOAD_FINALIZATION_IN_PROGRESS`
 - `UPLOAD_CAPACITY_REACHED`
 - `FINALIZE_QUEUE_BACKPRESSURE`
+- `DEPENDENCY_UNAVAILABLE`
 - `RATE_LIMITED`
 - `AUTH_REQUIRED`
 - `OWNER_MISMATCH`

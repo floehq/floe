@@ -242,6 +242,7 @@ Floe exports:
 - send either:
   - `x-metrics-token: <token>`
   - or `Authorization: Bearer <token>`
+- the same token also gates `GET /ops/uploads/:uploadId`
 
 ## Health Endpoint
 
@@ -251,6 +252,21 @@ Floe exports:
 - Redis health
 - Postgres health when configured
 - finalize queue depth and active worker stats
+
+Current health semantics:
+
+- `status="UP"` means Redis is healthy and no blocking finalize backlog is detected
+- `status="DEGRADED"` means the API is still serving but an optional dependency or queue condition needs operator attention
+- `status="DOWN"` means Redis is unavailable, a required Postgres dependency is unavailable, or finalize backlog is stalled beyond the configured threshold
+- Postgres can report `disabled`, `healthy`, `degraded`, or `unavailable`
+- Redis can report `healthy` or `unavailable`
+
+Operator inspection endpoint:
+
+- `GET /ops/uploads/:uploadId`
+- returns dependency state, upload session, upload metadata, received chunk indexes, finalize pending state, and lock TTL
+- use `?includeReceivedIndexes=1` only when you need the full chunk index list for a specific upload
+- intended for direct tester-support and outage triage without manual Redis inspection
 
 ## Operational Recommendations
 
@@ -276,6 +292,21 @@ Floe exports:
 - `floe_stream_read_errors_total` rapid growth
 
 ## Runbook Basics
+
+When `/health` is `DEGRADED`:
+
+1. inspect `checks.postgres.status` and `checks.finalizeQueueWarning`
+2. if Postgres is degraded and `FLOE_POSTGRES_REQUIRED=0`, keep serving traffic but treat read-model-backed behavior as non-authoritative until recovery
+3. if finalize backlog is degraded, inspect Walrus and Sui latency before increasing concurrency
+4. confirm startup recovery did not report unexpected `orphanUploads.recovered` or `finalizeQueue.cleaned` counts
+5. use `GET /ops/uploads/:uploadId` for any affected tester upload before digging through raw Redis keys
+
+When `/health` is `DOWN`:
+
+1. if Redis is unavailable, treat upload create, chunk, complete, and cancel paths as blocked until Redis is restored
+2. if Postgres is required and unavailable, restore Postgres or explicitly accept degraded behavior before changing config
+3. restart one API instance after the dependency is restored and confirm startup recovery logs
+4. confirm `GET /health` returns `ready=true` before resuming tester traffic
 
 When finalize backlog grows:
 
@@ -303,3 +334,36 @@ Finalize retry model:
 - retryable transient failures stop requeueing after `FLOE_FINALIZE_RETRYABLE_FAILURE_MAX_ATTEMPTS` attempts and then become terminal failures
 - `/health` marks the service degraded when queued backlog age exceeds `FLOE_FINALIZE_QUEUE_STUCK_AGE_MS` beyond currently active local workers
 - `finalizeWarning` means the upload already committed as completed, but a best-effort follow-up step failed after commit
+
+Startup recovery model:
+
+- disk-backed orphan chunk directories and final `.bin` artifacts are re-registered for GC as `expired`
+- startup logs include `startupRecovery.orphanUploads` with scanned and recovered counts
+- finalize queue startup recovery scans tracked uploads, requeues `finalizing` and retryable-failed uploads, and cleans stale queue entries for non-finalizing uploads
+- startup logs include `startupRecovery.finalizeQueue` with scanned, recovered, and cleaned counts
+
+Redis outage handling:
+
+1. restore Redis connectivity first; upload control paths return retryable `503 DEPENDENCY_UNAVAILABLE` while Redis is down
+2. restart one API instance after Redis is reachable
+3. inspect startup recovery logs and `GET /health`
+4. verify an existing upload can return `/status` and a new upload can succeed through `/create`
+
+Operator upload inspection:
+
+1. call `GET /ops/uploads/:uploadId` with `x-metrics-token` or bearer auth
+2. inspect `session`, `meta`, and `chunks.receivedIndexes` to confirm whether the upload is incomplete, finalizing, failed, or already committed
+3. inspect `finalize.pending`, `finalize.activeLock`, and `finalize.lockTtlSeconds` to distinguish queued work from an active lock holder
+4. inspect `dependencies.redis` and `dependencies.postgres` in the same response before assuming application-level corruption
+
+Postgres outage handling:
+
+1. if `FLOE_POSTGRES_REQUIRED=0`, the API may stay `DEGRADED`; do not trust read-model-backed behavior until Postgres returns
+2. if `FLOE_POSTGRES_REQUIRED=1`, treat the API as down until Postgres is restored
+3. after restore, restart one API instance and confirm `/health` reports Postgres `healthy`
+
+Backup and restore minimums:
+
+1. keep Redis persistence or managed durability enabled; ephemeral Redis is not beta-safe
+2. keep one documented, tested Redis restore path and one documented, tested Postgres restore path
+3. after any restore, verify startup recovery logs, `GET /health`, one upload status read, and one finalize flow before declaring recovery complete

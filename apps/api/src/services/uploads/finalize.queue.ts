@@ -459,10 +459,16 @@ async function drainOnce(log: FastifyBaseLogger) {
   }
 }
 
-async function recoverFinalizingUploads(log: FastifyBaseLogger) {
+async function recoverFinalizingUploads(log: FastifyBaseLogger): Promise<{
+  scanned: number;
+  recovered: number;
+  cleaned: number;
+}> {
   const redis = getRedis();
   const activeIds = await redis.smembers<string[]>(uploadKeys.gcIndex());
-  if (!Array.isArray(activeIds) || activeIds.length === 0) return;
+  if (!Array.isArray(activeIds) || activeIds.length === 0) {
+    return { scanned: 0, recovered: 0, cleaned: 0 };
+  }
 
   const entries = await Promise.all(
     activeIds.map(async (uploadId) => {
@@ -496,6 +502,11 @@ async function recoverFinalizingUploads(log: FastifyBaseLogger) {
     { count: activeIds.length, recovered, cleaned },
     "Finalize queue recovery scan completed"
   );
+  return {
+    scanned: activeIds.length,
+    recovered,
+    cleaned,
+  };
 }
 
 export const finalizeQueueTestHooks = {
@@ -510,7 +521,7 @@ export const finalizeQueueTestHooks = {
     return uploadId;
   },
   async recoverFinalizingUploads(log: FastifyBaseLogger) {
-    await recoverFinalizingUploads(log);
+    return recoverFinalizingUploads(log);
   },
   async forceEnqueue(uploadId: string) {
     await enqueueUploadIdForce(uploadId);
@@ -528,8 +539,12 @@ export const finalizeQueueTestHooks = {
   },
 };
 
-export async function startUploadFinalizeWorker(log: FastifyBaseLogger): Promise<void> {
-  await recoverFinalizingUploads(log);
+export async function startUploadFinalizeWorker(log: FastifyBaseLogger): Promise<{
+  scanned: number;
+  recovered: number;
+  cleaned: number;
+}> {
+  const recovery = await recoverFinalizingUploads(log);
   await drainOnce(log);
 
   if (drainTimer) clearInterval(drainTimer);
@@ -537,6 +552,7 @@ export async function startUploadFinalizeWorker(log: FastifyBaseLogger): Promise
     void drainOnce(log).catch((err) => log.error({ err }, "Finalize queue drain failed"));
   }, FINALIZE_DRAIN_INTERVAL_MS);
   drainTimer.unref?.();
+  return recovery;
 }
 
 export async function stopUploadFinalizeWorker(): Promise<void> {

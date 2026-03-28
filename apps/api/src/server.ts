@@ -174,8 +174,17 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
     throw err;
   }
 
-  await reconcileOrphanUploads(app.log);
-  await startUploadFinalizeWorker(app.log);
+  const orphanRecovery = await reconcileOrphanUploads(app.log);
+  const finalizeRecovery = await startUploadFinalizeWorker(app.log);
+  app.log.info(
+    {
+      startupRecovery: {
+        orphanUploads: orphanRecovery,
+        finalizeQueue: finalizeRecovery,
+      },
+    },
+    "Startup recovery completed"
+  );
   startUploadGc(app.log);
 
   await app.register(uploadRoutes);

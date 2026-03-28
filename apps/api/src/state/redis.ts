@@ -73,3 +73,7 @@ export async function closeRedis(): Promise<void> {
   await redis.close?.().catch(() => {});
   redis = null;
 }
+
+export function setRedisForTests(client: RedisClient | null): void {
+  redis = client;
+}

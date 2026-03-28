@@ -15,9 +15,9 @@ function isUuid(value: string): boolean {
 
 export async function reconcileOrphanUploads(
   log: FastifyBaseLogger
-) {
+): Promise<{ recovered: number; scanned: number }> {
   if (chunkStore.backend() !== "disk") {
-    return;
+    return { recovered: 0, scanned: 0 };
   }
 
   const redis = getRedis();
@@ -27,8 +27,11 @@ export async function reconcileOrphanUploads(
   try {
     entries = await fs.readdir(baseDir);
   } catch {
-    return;
+    return { recovered: 0, scanned: 0 };
   }
+
+  let recovered = 0;
+  let scanned = 0;
 
   for (const entry of entries) {
     const isBin = entry.endsWith(".bin");
@@ -46,6 +49,7 @@ export async function reconcileOrphanUploads(
 
     if (isBin && !stat.isFile()) continue;
     if (!isBin && !stat.isDirectory()) continue;
+    scanned += 1;
 
     const isTracked = await redis.sismember(
       uploadKeys.gcIndex(),
@@ -55,7 +59,7 @@ export async function reconcileOrphanUploads(
     if (isTracked) continue;
 
     log.warn(
-      { uploadId },
+      { uploadId, artifactType: isBin ? "final_bin" : "chunk_dir" },
       "Recovered orphan upload; registering for GC"
     );
 
@@ -63,8 +67,13 @@ export async function reconcileOrphanUploads(
       .hset(uploadKeys.meta(uploadId), {
         status: "expired",
         recoveredAt: String(Date.now()),
+        recoveredBy: "disk_reconcile",
+        recoveredArtifactType: isBin ? "final_bin" : "chunk_dir",
       })
       .sadd(uploadKeys.gcIndex(), uploadId)
       .exec();
+    recovered += 1;
   }
+
+  return { recovered, scanned };
 }

@@ -1,6 +1,8 @@
 import { FastifyInstance } from "fastify";
 import crypto from "node:crypto";
+import { getSession } from "../services/uploads/session.js";
 import { getRedis } from "../state/redis.js";
+import { uploadKeys } from "../state/keys.js";
 import {
   getUploadFinalizeQueueStats,
   syncFinalizeQueueMetrics,
@@ -8,7 +10,10 @@ import {
 import { renderPrometheusMetrics } from "../services/metrics/runtime.metrics.js";
 import { assessFinalizeQueueHealth } from "../services/uploads/finalize.shared.js";
 import { sendApiError } from "../utils/apiError.js";
-import { checkPostgresHealth, isPostgresConfigured } from "../state/postgres.js";
+import {
+  checkPostgresDependencyHealth,
+  checkRedisDependencyHealth,
+} from "../services/health/dependencies.js";
 
 function parseBoolEnv(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
@@ -45,30 +50,54 @@ function secureEqual(a: string, b: string): boolean {
   return crypto.timingSafeEqual(aBuf, bBuf);
 }
 
+function requireMetricsToken(req: any, reply: any): boolean {
+  if (!METRICS_ENABLED) {
+    sendApiError(reply, 404, "FILE_NOT_FOUND", "Not Found");
+    return false;
+  }
+
+  if (!METRICS_TOKEN) {
+    req.log.error("FLOE_METRICS_TOKEN is missing while ops auth is enabled");
+    sendApiError(
+      reply,
+      503,
+      "INTERNAL_ERROR",
+      "Metrics auth is not configured",
+      { retryable: true }
+    );
+    return false;
+  }
+
+  const supplied =
+    (typeof req.headers["x-metrics-token"] === "string"
+      ? req.headers["x-metrics-token"].trim()
+      : "") || bearerTokenFromAuthHeader(req.headers.authorization) || "";
+
+  if (!supplied || !secureEqual(supplied, METRICS_TOKEN)) {
+    sendApiError(reply, 401, "UNAUTHORIZED", "Unauthorized");
+    return false;
+  }
+
+  return true;
+}
+
+function isUuid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value
+    )
+  );
+}
+
+function parseBoolQuery(raw: unknown): boolean {
+  return raw === true || raw === "1" || raw === "true";
+}
+
 export default async function healthRoute(app: FastifyInstance) {
   app.get("/metrics", async (req, reply) => {
-    if (!METRICS_ENABLED) {
-      return sendApiError(reply, 404, "FILE_NOT_FOUND", "Not Found");
-    }
-
-    if (!METRICS_TOKEN) {
-      req.log.error("FLOE_METRICS_TOKEN is missing while /metrics is enabled");
-      return sendApiError(
-        reply,
-        503,
-        "INTERNAL_ERROR",
-        "Metrics auth is not configured",
-        { retryable: true }
-      );
-    }
-
-    const supplied =
-      (typeof req.headers["x-metrics-token"] === "string"
-        ? req.headers["x-metrics-token"].trim()
-        : "") || bearerTokenFromAuthHeader(req.headers.authorization) || "";
-
-    if (!supplied || !secureEqual(supplied, METRICS_TOKEN)) {
-      return sendApiError(reply, 401, "UNAUTHORIZED", "Unauthorized");
+    if (!requireMetricsToken(req, reply)) {
+      return;
     }
 
     await syncFinalizeQueueMetrics().catch((err) => {
@@ -81,12 +110,74 @@ export default async function healthRoute(app: FastifyInstance) {
       .send(renderPrometheusMetrics());
   });
 
-  app.get("/health", async (req, reply) => {
-    const start = Date.now();
-    const timestamp = new Date().toISOString();
+  app.get("/ops/uploads/:uploadId", async (req, reply) => {
+    if (!requireMetricsToken(req, reply)) {
+      return;
+    }
 
-    let redisOk = false;
-    let latencyMs: number | null = null;
+    const { uploadId } = req.params as { uploadId: string };
+    if (!isUuid(uploadId)) {
+      return sendApiError(reply, 400, "INVALID_UPLOAD_ID", "uploadId must be a UUID");
+    }
+
+    const redisHealth = await checkRedisDependencyHealth();
+    const postgresHealth = await checkPostgresDependencyHealth();
+    if (!redisHealth.ok) {
+      return sendApiError(
+        reply,
+        503,
+        "DEPENDENCY_UNAVAILABLE",
+        "Redis is unavailable, retry shortly",
+        { retryable: true, details: { dependency: "redis" } }
+      );
+    }
+
+    const redis = getRedis();
+    const metaKey = uploadKeys.meta(uploadId);
+    const lockKey = `${metaKey}:lock`;
+    const [session, meta, chunkMembers, pending, hasLock, lockTtlSeconds] = await Promise.all([
+      getSession(uploadId),
+      redis.hgetall<Record<string, string>>(metaKey),
+      redis.smembers<string[]>(uploadKeys.chunks(uploadId)),
+      redis.sismember(uploadKeys.finalizePending(), uploadId),
+      redis.exists(lockKey),
+      redis.ttl(lockKey),
+    ]);
+
+    const metaObject = meta && Object.keys(meta).length > 0 ? meta : null;
+    if (!session && !metaObject) {
+      return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
+    }
+
+    const queueStats = await getUploadFinalizeQueueStats().catch(() => null);
+    const chunkIndexes = Array.isArray(chunkMembers)
+      ? chunkMembers.map(Number).filter(Number.isInteger).sort((a, b) => a - b)
+      : [];
+    const includeReceivedIndexes = parseBoolQuery((req as any).query?.includeReceivedIndexes);
+
+    return reply.code(200).send({
+      uploadId,
+      dependencies: {
+        redis: redisHealth,
+        postgres: postgresHealth,
+      },
+      session: session ?? null,
+      meta: metaObject,
+      chunks: {
+        receivedCount: chunkIndexes.length,
+        ...(includeReceivedIndexes ? { receivedIndexes: chunkIndexes } : {}),
+      },
+      finalize: {
+        pending: Number(pending) === 1,
+        activeLock: Number(hasLock) === 1,
+        lockTtlSeconds: Number(lockTtlSeconds),
+        queue: queueStats,
+      },
+    });
+  });
+
+  app.get("/health", async (req, reply) => {
+    const timestamp = new Date().toISOString();
     let finalizeQueue:
       | {
           depth: number;
@@ -97,22 +188,14 @@ export default async function healthRoute(app: FastifyInstance) {
           oldestQueuedAgeMs: number | null;
         }
       | null = null;
-    let postgres = {
-      enabled: false,
-      ok: null as boolean | null,
-      latencyMs: null as number | null,
-    };
+    const redis = await checkRedisDependencyHealth();
+    const postgres = await checkPostgresDependencyHealth();
 
-    try {
-      const redis = getRedis();
-      await redis.ping();
-      redisOk = true;
-      latencyMs = Date.now() - start;
-    } catch (err) {
-      req.log.error({ err }, "Redis Health Check Failed");
+    if (!redis.ok) {
+      req.log.error("Redis Health Check Failed");
     }
 
-    if (redisOk) {
+    if (redis.ok) {
       try {
         finalizeQueue = await getUploadFinalizeQueueStats();
       } catch (err) {
@@ -120,29 +203,32 @@ export default async function healthRoute(app: FastifyInstance) {
       }
     }
 
-    if (isPostgresConfigured()) {
-      postgres = await checkPostgresHealth();
-    }
-
-    const baseReady = redisOk && (!postgres.enabled || postgres.ok === true);
+    const baseReady =
+      redis.status === "healthy" &&
+      (postgres.status === "healthy" ||
+        postgres.status === "disabled" ||
+        postgres.status === "degraded");
     const finalizeQueueHealth = assessFinalizeQueueHealth({
       ready: baseReady,
       finalizeQueue,
       stuckAgeThresholdMs: FINALIZE_QUEUE_STUCK_AGE_MS,
     });
+    const ready =
+      finalizeQueueHealth.ready &&
+      redis.status === "healthy" &&
+      postgres.status !== "unavailable";
+    const degraded =
+      finalizeQueueHealth.backlogStalled || postgres.status === "degraded";
+    const serviceStatus = ready ? (degraded ? "DEGRADED" : "UP") : "DOWN";
 
-    return reply.status(finalizeQueueHealth.ready ? 200 : 503).send({
-      status: finalizeQueueHealth.ready ? "UP" : "DOWN",
+    return reply.status(ready ? 200 : 503).send({
+      status: serviceStatus,
       service: "floe-api-v1",
-      ready: finalizeQueueHealth.ready,
-      degraded: finalizeQueueHealth.backlogStalled,
+      ready,
+      degraded,
       timestamp,
       checks: {
-        redis: {
-          ok: redisOk,
-          latencyMs,
-          timestamp,
-        },
+        redis,
         postgres,
         finalizeQueue: finalizeQueue ?? {
           depth: null,

@@ -3,6 +3,7 @@ import { Readable } from "node:stream";
 
 import { suiClient } from "../state/sui.js";
 import { getIndexedFile, upsertIndexedFile } from "../db/files.repository.js";
+import { isPostgresConfigured, isPostgresEnabled } from "../state/postgres.js";
 import { fetchWalrusBlob } from "../services/walrus/read.js";
 import { WalrusReadLimits } from "../config/walrus.config.js";
 import { sendApiError } from "../utils/apiError.js";
@@ -173,9 +174,11 @@ const FILE_FIELDS_MEMORY_CACHE_MAX = Number(
 const FILE_FIELDS_DEBUG = process.env.FLOE_FILE_FIELDS_DEBUG === "1";
 
 type FileFieldsSource = "memory" | "postgres" | "sui";
+type PostgresReadState = "disabled" | "healthy" | "degraded";
 type CachedFileFieldsResult = {
   fields: any | null;
   source: FileFieldsSource | null;
+  postgresState: PostgresReadState;
 };
 
 const fileFieldsMemoryCache = new Map<
@@ -228,11 +231,21 @@ function setMemoryFileFields(fileId: string, fields: any) {
 
 async function getFileFieldsCached(fileId: string): Promise<CachedFileFieldsResult> {
   const memory = getMemoryFileFields(fileId);
+  const postgresConfigured = isPostgresConfigured();
+  const postgresEnabled = isPostgresEnabled();
+  let postgresState: PostgresReadState = !postgresConfigured
+    ? "disabled"
+    : postgresEnabled
+      ? "healthy"
+      : "degraded";
   if (memory) {
-    return { fields: memory, source: "memory" };
+    return { fields: memory, source: "memory", postgresState };
   }
 
-  const indexed = await getIndexedFile(fileId).catch(() => null);
+  const indexed = await getIndexedFile(fileId).catch((err) => {
+    postgresState = "degraded";
+    return null;
+  });
   if (indexed) {
     const fields = {
       blob_id: indexed.blobId,
@@ -243,7 +256,7 @@ async function getFileFieldsCached(fileId: string): Promise<CachedFileFieldsResu
       walrus_end_epoch: indexed.walrusEndEpoch,
     };
     setMemoryFileFields(fileId, fields);
-    return { fields, source: "postgres" };
+    return { fields, source: "postgres", postgresState };
   }
 
   const obj = await suiClient.getObject({
@@ -252,7 +265,7 @@ async function getFileFieldsCached(fileId: string): Promise<CachedFileFieldsResu
   });
 
   if (!obj.data?.content || obj.data.content.dataType !== "moveObject") {
-    return { fields: null, source: null };
+    return { fields: null, source: null, postgresState };
   }
 
   const fields = obj.data.content.fields as any;
@@ -267,10 +280,20 @@ async function getFileFieldsCached(fileId: string): Promise<CachedFileFieldsResu
       mimeType: normalized.mimeType,
       walrusEndEpoch: normalized.walrusEndEpoch,
       createdAtMs: normalized.createdAt,
-    }).catch(() => {});
+    }).catch(() => {
+      postgresState = "degraded";
+    });
   }
 
-  return { fields, source: "sui" };
+  return { fields, source: "sui", postgresState };
+}
+
+function applyFileLookupHeaders(reply: any, params: {
+  source: FileFieldsSource | null;
+  postgresState: PostgresReadState;
+}) {
+  reply.header("x-floe-metadata-source", params.source ?? "unknown");
+  reply.header("x-floe-postgres-state", params.postgresState);
 }
 
 async function* walrusByteStream(params: {
@@ -417,11 +440,13 @@ export async function filesRoutes(app: FastifyInstance) {
 
     let fields: any | null = null;
     let fieldsSource: FileFieldsSource | null = null;
+    let postgresState: PostgresReadState = "disabled";
     const t0 = Date.now();
     try {
       const out = await getFileFieldsCached(fileId);
       fields = out.fields;
       fieldsSource = out.source;
+      postgresState = out.postgresState;
     } catch (err) {
       req.log.error({ err, fileId }, "Sui read failed");
       return sendApiError(
@@ -436,6 +461,7 @@ export async function filesRoutes(app: FastifyInstance) {
     if (!fields) {
       return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
     }
+    applyFileLookupHeaders(res, { source: fieldsSource, postgresState });
 
     const normalized = normalizeFileFields(fields);
     if (!normalized) {
@@ -511,11 +537,13 @@ export async function filesRoutes(app: FastifyInstance) {
 
     let fields: any | null = null;
     let fieldsSource: FileFieldsSource | null = null;
+    let postgresState: PostgresReadState = "disabled";
     const t0 = Date.now();
     try {
       const out = await getFileFieldsCached(fileId);
       fields = out.fields;
       fieldsSource = out.source;
+      postgresState = out.postgresState;
     } catch (err) {
       req.log.error({ err, fileId }, "Sui read failed");
       return sendApiError(
@@ -530,6 +558,7 @@ export async function filesRoutes(app: FastifyInstance) {
     if (!fields) {
       return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
     }
+    applyFileLookupHeaders(res, { source: fieldsSource, postgresState });
 
     const normalized = normalizeFileFields(fields);
     if (!normalized) {
@@ -622,11 +651,13 @@ export async function filesRoutes(app: FastifyInstance) {
 
       let fields: any | null = null;
       let fieldsSource: FileFieldsSource | null = null;
+      let postgresState: PostgresReadState = "disabled";
       const t0 = Date.now();
       try {
         const out = await getFileFieldsCached(fileId);
         fields = out.fields;
         fieldsSource = out.source;
+        postgresState = out.postgresState;
       } catch (err) {
         req.log.error({ err, fileId }, "Sui read failed");
         return sendApiError(
@@ -641,6 +672,7 @@ export async function filesRoutes(app: FastifyInstance) {
       if (!fields) {
         return sendApiError(reply, 404, "FILE_NOT_FOUND", "File not found");
       }
+      applyFileLookupHeaders(reply, { source: fieldsSource, postgresState });
 
       const normalized = normalizeFileFields(fields);
       if (!normalized) {
