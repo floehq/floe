@@ -534,6 +534,10 @@ test("head stream route reflects valid range headers without streaming a body", 
   assert.equal(res.headers["content-length"], "4");
   assert.equal((res.json() as any).payload, undefined);
 });
+<<<<<<< HEAD
+=======
+
+>>>>>>> 4a95174 (streaming range coverage and docs limits)
 test("metadata and manifest expose public streamUrl when configured", async () => {
   process.env.FLOE_PUBLIC_STREAM_BASE_URL = "https://cdn.example.com/floe/";
   (suiModule.suiClient as any).getObject = async () => ({
