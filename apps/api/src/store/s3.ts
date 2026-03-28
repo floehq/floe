@@ -135,7 +135,7 @@ export class S3ChunkStore implements ChunkStore {
     expectedHash: string,
     expectedSize: number,
     isLastChunk: boolean
-  ): Promise<void> {
+  ): Promise<{ alreadyExisted: boolean }> {
     const key = this.chunkKey(uploadId, index);
 
     try {
@@ -145,7 +145,7 @@ export class S3ChunkStore implements ChunkStore {
           Key: key,
         })
       );
-      return;
+      return { alreadyExisted: true };
     } catch {
       // Continue for missing keys.
     }
@@ -182,10 +182,13 @@ export class S3ChunkStore implements ChunkStore {
           IfNoneMatch: "*",
         })
       );
+      return { alreadyExisted: false };
     } catch (err: any) {
       const status = Number(err?.$metadata?.httpStatusCode ?? 0);
       const code = String(err?.name ?? "");
-      if (status === 412 || code === "PreconditionFailed") return;
+      if (status === 412 || code === "PreconditionFailed") {
+        return { alreadyExisted: true };
+      }
       throw err;
     }
   }

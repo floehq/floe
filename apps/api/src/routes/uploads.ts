@@ -9,7 +9,11 @@ import { WalrusEpochLimits } from "../config/walrus.config.js";
 import { AuthUploadPolicyConfig } from "../config/auth.config.js";
 import { checkRedisDependencyHealth } from "../services/health/dependencies.js";
 
-import { createSession, getSession } from "../services/uploads/session.js";
+import {
+  createSession,
+  getSession,
+  touchUploadActivity,
+} from "../services/uploads/session.js";
 import { buildFinalizeDiagnostics } from "../services/uploads/finalize.shared.js";
 import {
   enqueueUploadFinalize,
@@ -69,6 +73,46 @@ function authzStatusCode(code?: string): 401 | 403 {
   return code === "AUTH_REQUIRED" ? 401 : 403;
 }
 
+function readExpiresAt(meta?: Record<string, string> | null, session?: { expiresAt: number } | null): number | null {
+  if (session?.expiresAt && Number.isFinite(session.expiresAt)) {
+    return session.expiresAt;
+  }
+  const value = Number(meta?.expiresAt ?? 0);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+async function expireUploadIfNeeded(params: {
+  uploadId: string;
+  session?: { expiresAt: number } | null;
+  meta?: Record<string, string> | null;
+}): Promise<boolean> {
+  const terminalStatus = params.meta?.status;
+  if (
+    terminalStatus === "completed" ||
+    terminalStatus === "failed" ||
+    terminalStatus === "canceled" ||
+    terminalStatus === "expired"
+  ) {
+    return terminalStatus === "expired";
+  }
+
+  const expiresAt = readExpiresAt(params.meta, params.session);
+  if (!expiresAt || expiresAt > Date.now()) {
+    return false;
+  }
+
+  const redis = getRedis();
+  await redis.multi()
+    .hset(uploadKeys.meta(params.uploadId), {
+      status: "expired",
+      expiredAt: String(Date.now()),
+    })
+    .del(uploadKeys.session(params.uploadId))
+    .sadd(uploadKeys.gcIndex(), params.uploadId)
+    .exec();
+  return true;
+}
+
 async function tryReserveUploadCapacity(params: {
   maxActiveUploads: number;
   uploadId: string;
@@ -93,6 +137,33 @@ async function tryReserveUploadCapacity(params: {
   );
 
   return Number(reserved) === 1;
+}
+
+async function reconcileReceivedChunks(uploadId: string): Promise<number[]> {
+  const redis = getRedis();
+  const redisMembers = await redis.smembers<string[]>(uploadKeys.chunks(uploadId));
+  const redisChunks = Array.isArray(redisMembers)
+    ? redisMembers.map(Number).filter(Number.isInteger)
+    : [];
+
+  let storeChunks: number[] = [];
+  try {
+    storeChunks = await chunkStore.listChunks(uploadId);
+  } catch (err) {
+    throw Object.assign(new Error("CHUNK_STORE_UNAVAILABLE"), {
+      cause: err,
+    });
+  }
+
+  const merged = [...new Set([...redisChunks, ...storeChunks])].sort((a, b) => a - b);
+  const missingInRedis = merged.filter((idx) => !redisChunks.includes(idx));
+  if (missingInRedis.length > 0) {
+    await Promise.all(
+      missingInRedis.map((idx) => redis.sadd(uploadKeys.chunks(uploadId), String(idx)))
+    );
+  }
+
+  return merged;
 }
 
 async function requireRedis(reply: any): Promise<RedisClient | null> {
@@ -348,7 +419,14 @@ export default async function uploadRoutes(app: FastifyInstance) {
     const redis = await requireRedis(reply);
     if (!redis) return;
 
-    const session = await getSession(uploadId);
+    const [session, meta] = await Promise.all([
+      getSession(uploadId),
+      redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId)),
+    ]);
+    const expired = await expireUploadIfNeeded({ uploadId, session, meta });
+    if (expired) {
+      return sendApiError(reply, 409, "UPLOAD_EXPIRED", "Upload session expired");
+    }
     if (!session) {
       return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
     }
@@ -405,7 +483,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         ? session.sizeBytes - session.chunkSize * (session.totalChunks - 1)
         : session.chunkSize;
 
-      await chunkStore.writeChunk(
+      const writeResult = await chunkStore.writeChunk(
         uploadId,
         idx,
         part.file,
@@ -414,8 +492,13 @@ export default async function uploadRoutes(app: FastifyInstance) {
         isLastChunk
       );
       await redis.sadd(uploadKeys.chunks(uploadId), String(idx));
+      await touchUploadActivity({ uploadId, chunkIndex: idx });
 
-      return { ok: true, chunkIndex: idx };
+      return {
+        ok: true,
+        chunkIndex: idx,
+        ...(writeResult.alreadyExisted ? { reused: true } : {}),
+      };
     } catch (err: any) {
       const message = err?.message ?? "Chunk upload failed";
 
@@ -483,15 +566,30 @@ export default async function uploadRoutes(app: FastifyInstance) {
       });
     }
 
-    const [session, meta, members] = await Promise.all([
+    const [session, meta] = await Promise.all([
       getSession(uploadId),
       redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId)),
-      redis.smembers(uploadKeys.chunks(uploadId)),
     ]);
-    const receivedChunks = members.map(Number).sort((a, b) => a - b);
+    const expired = await expireUploadIfNeeded({ uploadId, session, meta });
+    const currentMeta = expired
+      ? await redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId))
+      : meta;
+    let receivedChunks: number[];
+    try {
+      receivedChunks = await reconcileReceivedChunks(uploadId);
+    } catch (err) {
+      req.log.error({ err, uploadId }, "Chunk store reconciliation failed during status");
+      return sendApiError(
+        reply,
+        503,
+        "CHUNK_STORE_UNAVAILABLE",
+        "Upload chunk state is temporarily unavailable",
+        { retryable: true }
+      );
+    }
 
     if (!session) {
-      const status = meta?.status;
+      const status = currentMeta?.status;
       if (!status) {
         return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
       }
@@ -499,7 +597,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         req,
         action: "status",
         uploadId,
-        uploadOwner: meta?.owner ?? null,
+        uploadOwner: currentMeta?.owner ?? null,
       });
       if (!authzStatus.allowed) {
         return sendApiError(
@@ -512,18 +610,18 @@ export default async function uploadRoutes(app: FastifyInstance) {
 
       return {
         uploadId,
-        chunkSize: meta?.chunkSize ? Number(meta.chunkSize) : null,
-        totalChunks: meta?.totalChunks ? Number(meta.totalChunks) : null,
+        chunkSize: currentMeta?.chunkSize ? Number(currentMeta.chunkSize) : null,
+        totalChunks: currentMeta?.totalChunks ? Number(currentMeta.totalChunks) : null,
         receivedChunks,
         receivedChunkCount: receivedChunks.length,
-        expiresAt: meta?.expiresAt ? Number(meta.expiresAt) : null,
+        expiresAt: currentMeta?.expiresAt ? Number(currentMeta.expiresAt) : null,
         status,
         ...(status === "finalizing" ? { pollAfterMs: FINALIZE_POLL_AFTER_MS } : {}),
-        ...(meta?.fileId ? { fileId: meta.fileId } : {}),
-        ...(exposeBlobId && meta?.blobId ? { blobId: meta.blobId } : {}),
-        ...(meta?.walrusEndEpoch ? { walrusEndEpoch: Number(meta.walrusEndEpoch) } : {}),
-        ...(meta?.error ? { error: meta.error } : {}),
-        ...buildFinalizeDiagnostics(meta),
+        ...(currentMeta?.fileId ? { fileId: currentMeta.fileId } : {}),
+        ...(exposeBlobId && currentMeta?.blobId ? { blobId: currentMeta.blobId } : {}),
+        ...(currentMeta?.walrusEndEpoch ? { walrusEndEpoch: Number(currentMeta.walrusEndEpoch) } : {}),
+        ...(currentMeta?.error ? { error: currentMeta.error } : {}),
+        ...buildFinalizeDiagnostics(currentMeta),
       };
     }
     const authzStatus = await req.server.authProvider.authorizeUploadAccess({
@@ -548,15 +646,15 @@ export default async function uploadRoutes(app: FastifyInstance) {
       receivedChunks,
       receivedChunkCount: receivedChunks.length,
       expiresAt: session.expiresAt,
-      status: meta?.status ?? session.status,
-      ...((meta?.status ?? session.status) === "finalizing"
+      status: currentMeta?.status ?? session.status,
+      ...((currentMeta?.status ?? session.status) === "finalizing"
         ? { pollAfterMs: FINALIZE_POLL_AFTER_MS }
         : {}),
-      ...(meta?.fileId ? { fileId: meta.fileId } : {}),
-      ...(exposeBlobId && meta?.blobId ? { blobId: meta.blobId } : {}),
-      ...(meta?.walrusEndEpoch ? { walrusEndEpoch: Number(meta.walrusEndEpoch) } : {}),
-      ...(meta?.error ? { error: meta.error } : {}),
-      ...buildFinalizeDiagnostics(meta),
+      ...(currentMeta?.fileId ? { fileId: currentMeta.fileId } : {}),
+      ...(exposeBlobId && currentMeta?.blobId ? { blobId: currentMeta.blobId } : {}),
+      ...(currentMeta?.walrusEndEpoch ? { walrusEndEpoch: Number(currentMeta.walrusEndEpoch) } : {}),
+      ...(currentMeta?.error ? { error: currentMeta.error } : {}),
+      ...buildFinalizeDiagnostics(currentMeta),
     };
   });
 
@@ -593,11 +691,15 @@ export default async function uploadRoutes(app: FastifyInstance) {
       getSession(uploadId),
       redis.hgetall<Record<string, string>>(metaKey),
     ]);
+    const expired = await expireUploadIfNeeded({ uploadId, session, meta });
+    const currentMeta = expired
+      ? await redis.hgetall<Record<string, string>>(metaKey)
+      : meta;
     const authzComplete = await req.server.authProvider.authorizeUploadAccess({
       req,
       action: "complete",
       uploadId,
-      uploadOwner: session?.owner ?? meta?.owner ?? null,
+      uploadOwner: session?.owner ?? currentMeta?.owner ?? null,
     });
     if (!authzComplete.allowed) {
       return sendApiError(
@@ -608,7 +710,11 @@ export default async function uploadRoutes(app: FastifyInstance) {
       );
     }
 
-    const metaStatus = meta?.status;
+    const metaStatus = currentMeta?.status;
+
+    if (metaStatus === "expired") {
+      return sendApiError(reply, 409, "UPLOAD_EXPIRED", "Upload session expired");
+    }
 
     if (!session) {
       if (metaStatus === "completed") {
@@ -637,7 +743,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           status: "finalizing",
           pollAfterMs: FINALIZE_POLL_AFTER_MS,
           ...(isUploadFinalizeQueued(uploadId) ? { inProgress: true } : {}),
-          ...buildFinalizeDiagnostics(meta),
+          ...buildFinalizeDiagnostics(currentMeta),
         });
       }
 
@@ -663,7 +769,19 @@ export default async function uploadRoutes(app: FastifyInstance) {
       );
     }
 
-    const receivedChunks = await redis.scard(uploadKeys.chunks(uploadId));
+    let receivedChunks: number;
+    try {
+      receivedChunks = (await reconcileReceivedChunks(uploadId)).length;
+    } catch (err) {
+      req.log.error({ err, uploadId }, "Chunk store reconciliation failed during complete");
+      return sendApiError(
+        reply,
+        503,
+        "CHUNK_STORE_UNAVAILABLE",
+        "Upload chunk state is temporarily unavailable",
+        { retryable: true }
+      );
+    }
 
     if (receivedChunks !== session.totalChunks) {
       return sendApiError(
@@ -692,7 +810,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       pollAfterMs: FINALIZE_POLL_AFTER_MS,
       enqueued: queued.enqueued,
       ...(isUploadFinalizeQueued(uploadId) ? { inProgress: true } : {}),
-      ...buildFinalizeDiagnostics(meta),
+      ...buildFinalizeDiagnostics(currentMeta),
     });
   });
 
@@ -731,11 +849,15 @@ export default async function uploadRoutes(app: FastifyInstance) {
       redis.hgetall<Record<string, string>>(metaKey),
       redis.exists(lockKey),
     ]);
+    const expired = await expireUploadIfNeeded({ uploadId, session, meta });
+    const currentMeta = expired
+      ? await redis.hgetall<Record<string, string>>(metaKey)
+      : meta;
     const authzCancel = await req.server.authProvider.authorizeUploadAccess({
       req,
       action: "cancel",
       uploadId,
-      uploadOwner: session?.owner ?? meta?.owner ?? null,
+      uploadOwner: session?.owner ?? currentMeta?.owner ?? null,
     });
     if (!authzCancel.allowed) {
       return sendApiError(
@@ -755,7 +877,11 @@ export default async function uploadRoutes(app: FastifyInstance) {
       );
     }
 
-    const status = meta?.status;
+    const status = currentMeta?.status;
+
+    if (status === "expired") {
+      return reply.code(200).send({ ok: true, uploadId, status: "expired" });
+    }
 
     if (!session) {
       if (!status) {
@@ -772,7 +898,14 @@ export default async function uploadRoutes(app: FastifyInstance) {
       }
 
       if (status === "canceled" || status === "failed" || status === "expired") {
-        await redis.srem(uploadKeys.gcIndex(), uploadId);
+        const cleanupResults = await Promise.allSettled([
+          chunkStore.cleanup(uploadId),
+          fs.rm(finalBinPath(uploadId), { force: true }),
+        ]);
+        const cleanupOk = cleanupResults.every((result) => result.status === "fulfilled");
+        if (cleanupOk) {
+          await redis.srem(uploadKeys.gcIndex(), uploadId);
+        }
         return reply.code(200).send({ ok: true, uploadId, status });
       }
 

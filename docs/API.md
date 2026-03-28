@@ -46,6 +46,14 @@ Returns:
 { "ok": true, "chunkIndex": 0 }
 ```
 
+Duplicate chunk retries are idempotent. When the chunk already exists in staging, the route returns:
+
+```json
+{ "ok": true, "chunkIndex": 0, "reused": true }
+```
+
+Successful chunk uploads also refresh upload activity and expiry state.
+
 ### `GET /v1/uploads/:uploadId/status`
 Status responses may include finalize diagnostics when an upload is finalizing, failed, or completed after asynchronous finalize work. Important fields:
 
@@ -58,6 +66,12 @@ Status responses may include finalize diagnostics when an upload is finalizing, 
 
 Read upload state and received chunk indexes.
 
+Behavior notes:
+
+- active uploads expire from `expiresAt`, not only from passive Redis TTL eviction
+- chunk presence is reconciled from the backing chunk store when Redis chunk membership is incomplete
+- returns `503 CHUNK_STORE_UNAVAILABLE` when chunk reconciliation cannot read from the staging backend
+
 Response may include:
 
 - `uploadId`
@@ -67,6 +81,7 @@ Response may include:
 - `receivedChunkCount`
 - `expiresAt`
 - `status`
+- `status: "expired"` when the upload timed out before finalize
 - `pollAfterMs` when finalizing
 - `fileId` when completed
 - `blobId` only when explicitly exposed
@@ -93,6 +108,12 @@ Possible responses:
   - `enqueued`
   - optional `inProgress`
 
+Possible errors:
+
+- `409 UPLOAD_EXPIRED` when the upload timed out before finalize
+- `400 UPLOAD_INCOMPLETE` when not all chunks are present after reconciliation
+- `503 CHUNK_STORE_UNAVAILABLE` when chunk reconciliation cannot read from the staging backend
+
 Finalize is asynchronous. Clients should poll `GET /v1/uploads/:uploadId/status`.
 
 ### `DELETE /v1/uploads/:uploadId`
@@ -102,7 +123,9 @@ Cancel an upload session.
 Behavior:
 
 - idempotent for `canceled`, `failed`, and `expired` sessions
+- returns `{ ok: true, uploadId, status: "expired" }` when the upload already timed out
 - returns `409` when finalize is in progress or the upload is already completed
+- best-effort staging cleanup runs for partial uploads before GC tracking is removed
 
 ## File Endpoints
 
@@ -280,8 +303,10 @@ Common error codes include:
 - `INVALID_*`
 - `UPLOAD_NOT_FOUND`
 - `UPLOAD_INCOMPLETE`
+- `UPLOAD_EXPIRED`
 - `UPLOAD_FINALIZATION_IN_PROGRESS`
 - `UPLOAD_CAPACITY_REACHED`
+- `CHUNK_STORE_UNAVAILABLE`
 - `FINALIZE_QUEUE_BACKPRESSURE`
 - `DEPENDENCY_UNAVAILABLE`
 - `RATE_LIMITED`

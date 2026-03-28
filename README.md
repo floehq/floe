@@ -27,6 +27,13 @@ Included today:
 - env-backed API key verification
 - optional owner-based authorization enforcement
 
+Current upload reliability behavior:
+
+- duplicate chunk retries are idempotent and may return `reused: true`
+- successful chunk uploads refresh upload activity and expiry state
+- upload status and complete reconcile chunk presence from staging when Redis chunk membership drifts
+- timed-out uploads transition to `expired` explicitly and return `UPLOAD_EXPIRED` on finalize attempts
+
 Not included yet:
 
 - auth management UI, key rotation workflows, or tenant auth control plane

@@ -205,8 +205,20 @@ GC reconciles tracked uploads and removes expired or terminal staging data.
 Important behavior:
 
 - active uploads are indexed in Redis
+- successful chunk uploads refresh upload activity timestamps and session/meta TTL so long-running active uploads do not expire mid-transfer
+- uploads can transition to `expired` from `expiresAt` even before passive Redis key eviction occurs
+- status and complete reconcile received chunk membership from the backing chunk store when Redis chunk membership drifts
+- if chunk-store reconciliation cannot read from staging, upload status and complete return retryable `503 CHUNK_STORE_UNAVAILABLE`
 - disk reconciliation only runs when the chunk backend is `disk`
 - staged chunk cleanup uses the chunk store abstraction, so `s3` and `disk` both work with the same lifecycle rules
+- terminal uploads are only removed from GC tracking after artifact cleanup succeeds; failed cleanup keeps them discoverable for later reconciliation
+
+### Upload Reliability Notes
+
+- duplicate chunk retries are intentionally idempotent and may return `reused: true`
+- partial upload cancel removes staged chunks, session state, and chunk membership when cleanup succeeds
+- expired uploads return `UPLOAD_EXPIRED` on finalize attempts instead of falling through as generic upload-not-found cases
+- incomplete Redis chunk membership does not by itself mean the upload is incomplete if staging already contains the chunks
 
 ## Playback Model
 
@@ -292,6 +304,20 @@ Operator inspection endpoint:
 - `floe_stream_read_errors_total` rapid growth
 
 ## Runbook Basics
+
+When upload status or complete returns `CHUNK_STORE_UNAVAILABLE`:
+
+1. verify the configured chunk staging backend is reachable and healthy
+2. if using `s3`/R2/MinIO, verify bucket access, credentials, and endpoint health
+3. if using `disk`, verify local filesystem availability and permissions under `UPLOAD_TMP_DIR`
+4. retry after backend recovery; these responses are intentionally retryable
+
+When uploads appear to expire unexpectedly:
+
+1. inspect whether chunk traffic is still arriving; successful chunk writes should refresh upload activity and TTL
+2. verify `FLOE_UPLOAD_SESSION_TTL_MS` is appropriate for the largest expected uploads
+3. inspect upload `expiresAt` in status responses rather than relying only on Redis key presence
+4. check for staging backend or client retry issues that prevented chunk progress from being recorded
 
 When `/health` is `DEGRADED`:
 

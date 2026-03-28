@@ -22,6 +22,14 @@ function ensureFsFolder(uploadId: string) {
   }
 }
 
+function sessionTtlSeconds() {
+  return Math.floor(UploadConfig.sessionTtlMs / 1000);
+}
+
+function metaTtlSeconds() {
+  return Math.floor((UploadConfig.sessionTtlMs + 30 * 60 * 1000) / 1000);
+}
+
 
 export async function createSession(input: {
   uploadId: string;
@@ -53,13 +61,8 @@ export async function createSession(input: {
   }
 
   const expiresAt = now + UploadConfig.sessionTtlMs;
-  const sessionTtlSeconds = Math.floor(
-    UploadConfig.sessionTtlMs / 1000
-  );
-
-  const metaTtlSeconds = Math.floor(
-    (UploadConfig.sessionTtlMs + 30 * 60 * 1000) / 1000
-  );
+  const sessionTtlSecondsValue = sessionTtlSeconds();
+  const metaTtlSecondsValue = metaTtlSeconds();
 
   const tx = redis.multi()
     .hset(uploadKeys.session(uploadId), {
@@ -73,20 +76,22 @@ export async function createSession(input: {
       epochs: String(epochs),
       status: "uploading",
       createdAt: String(now),
+      updatedAt: String(now),
       expiresAt: String(expiresAt),
     })
-    .expire(uploadKeys.session(uploadId), sessionTtlSeconds)
+    .expire(uploadKeys.session(uploadId), sessionTtlSecondsValue)
 
     .hset(uploadKeys.meta(uploadId), {
       status: "uploading",
       createdAt: String(now),
+      updatedAt: String(now),
       expiresAt: String(expiresAt),
       ...(owner ? { owner } : {}),
       sizeBytes: String(sizeBytes),
       chunkSize: String(chunkSize),
       totalChunks: String(totalChunks),
     })
-    .expire(uploadKeys.meta(uploadId), metaTtlSeconds)
+    .expire(uploadKeys.meta(uploadId), metaTtlSecondsValue)
 
     .sadd(uploadKeys.gcIndex(), uploadId);
 
@@ -126,6 +131,35 @@ export async function createSession(input: {
     createdAt: now,
     expiresAt,
   };
+}
+
+export async function touchUploadActivity(params: {
+  uploadId: string;
+  chunkIndex?: number;
+}): Promise<void> {
+  const redis = getRedis();
+  const now = Date.now();
+  const expiresAt = now + UploadConfig.sessionTtlMs;
+  const sessionKey = uploadKeys.session(params.uploadId);
+  const metaKey = uploadKeys.meta(params.uploadId);
+  const fields = {
+    updatedAt: String(now),
+    expiresAt: String(expiresAt),
+    ...(params.chunkIndex !== undefined
+      ? {
+          lastChunkIndex: String(params.chunkIndex),
+          lastChunkAt: String(now),
+        }
+      : {}),
+  };
+
+  await redis.multi()
+    .hset(sessionKey, fields)
+    .expire(sessionKey, sessionTtlSeconds())
+    .hset(metaKey, fields)
+    .expire(metaKey, metaTtlSeconds())
+    .sadd(uploadKeys.gcIndex(), params.uploadId)
+    .exec();
 }
 
 

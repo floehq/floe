@@ -51,7 +51,7 @@ export class DiskChunkStore implements ChunkStore {
     expectedHash: string,
     expectedSize: number,
     isLastChunk: boolean
-  ): Promise<void> {
+  ): Promise<{ alreadyExisted: boolean }> {
     const dir = this.dir(uploadId);
     const finalPath = this.chunkPath(uploadId, index);
     const tempPath = `${finalPath}.tmp`;
@@ -60,7 +60,7 @@ export class DiskChunkStore implements ChunkStore {
 
     // If the final chunk already exists, treat this as idempotent.
     if (fs.existsSync(finalPath)) {
-      return;
+      return { alreadyExisted: true };
     }
 
     const hash = crypto.createHash("sha256");
@@ -77,7 +77,7 @@ export class DiskChunkStore implements ChunkStore {
 
         // Another writer may be in progress, or a previous attempt crashed.
         if (fs.existsSync(finalPath)) {
-          return;
+          return { alreadyExisted: true };
         }
 
         try {
@@ -124,6 +124,7 @@ export class DiskChunkStore implements ChunkStore {
       try {
         fs.utimesSync(dir, new Date(), new Date());
       } catch {}
+      return { alreadyExisted: false };
 
     } catch (err) {
       try {

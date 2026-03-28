@@ -38,9 +38,27 @@ export async function runUploadGc(log: FastifyBaseLogger) {
     ]);
 
     let status = meta?.status;
+    const expiresAt = Number(meta?.expiresAt ?? 0);
 
     if (hasLock) {
       continue;
+    }
+
+    if (
+      (status === "uploading" || status === "finalizing" || (!status && hasSession)) &&
+      Number.isFinite(expiresAt) &&
+      expiresAt > 0 &&
+      expiresAt <= Date.now()
+    ) {
+      await redis.multi()
+        .hset(metaKey, {
+          status: "expired",
+          expiredAt: String(Date.now()),
+        })
+        .del(sessionKey)
+        .sadd(uploadKeys.gcIndex(), uploadId)
+        .exec();
+      status = "expired";
     }
 
     if (

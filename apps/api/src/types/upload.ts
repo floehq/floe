@@ -2,7 +2,9 @@ export type UploadStatus =
   | "uploading"
   | "finalizing"
   | "completed"
-  | "failed";
+  | "failed"
+  | "canceled"
+  | "expired";
 
 export interface UploadSession {
   uploadId: string;
