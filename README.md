@@ -106,6 +106,14 @@ SUI_PACKAGE_ID=0x<your-package-id>
 
 Use `.env.example` as the full environment reference.
 
+For production-style topology config, Floe can also load `config.yaml` before startup:
+
+```bash
+npm run dev -- --config ./config/floe.example.yaml --role read
+```
+
+The config file sets structured values like node role and Walrus gateway lists. Regular env vars still win for secrets and per-deploy overrides.
+
 Auth defaults to `hybrid` mode. Upload actions require a verified API key in `hybrid` and `private` mode. File reads remain public in `hybrid` mode and require auth in `private` mode.
 
 For Redis, Floe now supports two runtime modes:
@@ -117,6 +125,14 @@ For Redis, Floe now supports two runtime modes:
 
 ```bash
 npm run dev
+```
+
+Role-specific examples:
+
+```bash
+npm run dev -- --role read
+npm run dev -- --role write
+npm run dev -- --config ./config/floe.example.yaml
 ```
 
 ### Build

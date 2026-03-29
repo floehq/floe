@@ -17,6 +17,7 @@ const execFileAsync = promisify(execFile);
 const MIN_BALANCE_MIST = 1_000_000_000n;
 const IS_MAINNET = suiNetwork === "mainnet";
 const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
+let lastGoodWriterIdx = 0;
 
 type WalrusStoreMode = "sdk" | "cli";
 
@@ -28,7 +29,20 @@ function parseStoreMode(): WalrusStoreMode {
 
 const WALRUS_STORE_MODE = parseStoreMode();
 const WALRUS_CLI_BIN = (process.env.FLOE_WALRUS_CLI_BIN ?? "walrus").trim();
-const WALRUS_SDK_BASE_URL = (process.env.FLOE_WALRUS_SDK_BASE_URL ?? "").trim().replace(/\/$/, "");
+function parseSdkBaseUrls(): string[] {
+  const explicitList = (process.env.FLOE_WALRUS_SDK_BASE_URLS ?? "")
+    .split(",")
+    .map((value) => value.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+  if (explicitList.length > 0) {
+    return explicitList;
+  }
+
+  const single = (process.env.FLOE_WALRUS_SDK_BASE_URL ?? "").trim().replace(/\/$/, "");
+  return single ? [single] : [];
+}
+
+const WALRUS_SDK_BASE_URLS = parseSdkBaseUrls();
 const WALRUS_SEND_OBJECT_TO = parseOptionalSuiAddressEnv("WALRUS_SEND_OBJECT_TO");
 
 function parseOptionalSuiAddressEnv(name: string): string | undefined {
@@ -142,71 +156,108 @@ async function uploadToWalrusViaSdk(params: {
   endEpoch?: number;
   source: "newly_created" | "already_certified" | "unknown";
 }> {
-  if (!/^https?:\/\//.test(WALRUS_SDK_BASE_URL)) {
-    throw new Error("FLOE_WALRUS_SDK_BASE_URL must be set to http(s) URL when FLOE_WALRUS_STORE_MODE=sdk");
+  if (WALRUS_SDK_BASE_URLS.length === 0) {
+    throw new Error("FLOE_WALRUS_SDK_BASE_URL or FLOE_WALRUS_SDK_BASE_URLS must be set to http(s) URL when FLOE_WALRUS_STORE_MODE=sdk");
   }
-
-  const paramsQs = new URLSearchParams({ epochs: String(params.epochs) });
-  if (WALRUS_SEND_OBJECT_TO) {
-    paramsQs.set("send_object_to", WALRUS_SEND_OBJECT_TO);
-  }
-  const headers: Record<string, string> = {
-    "Content-Type": "application/octet-stream",
-  };
-
-  if (IS_MAINNET) {
-    const keypair = suiSigner;
-    await checkBalanceOnce(keypair.getPublicKey().toSuiAddress());
-    Object.assign(headers, await createAuthHeaders(keypair, WALRUS_SDK_BASE_URL));
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
-  try {
-    const res = await fetch(`${WALRUS_SDK_BASE_URL}/v1/blobs?${paramsQs.toString()}`, {
-      method: "PUT",
-      headers,
-      body: nodeToWeb(params.streamFactory()),
-      duplex: "half",
-      signal: controller.signal,
-    });
-
-    if (!res.ok) {
-      const text = await safeReadText(res);
-      throw new Error(`WALRUS_UPLOAD_FAILED:${res.status}:${text}`);
+  for (const baseUrl of WALRUS_SDK_BASE_URLS) {
+    if (!/^https?:\/\//.test(baseUrl)) {
+      throw new Error("FLOE_WALRUS_SDK_BASE_URLS entries must start with http:// or https://");
     }
+  }
 
-    const json = (await res.json()) as any;
-    const blobId =
-      json?.newlyCreated?.blobObject?.blobId ??
-      json?.alreadyCertified?.blobId ??
-      json?.blobObject?.blobId;
+  const startIdx =
+    Number.isInteger(lastGoodWriterIdx) &&
+    lastGoodWriterIdx >= 0 &&
+    lastGoodWriterIdx < WALRUS_SDK_BASE_URLS.length
+      ? lastGoodWriterIdx
+      : 0;
 
-    if (!blobId) {
-      throw new Error("WALRUS_MISSING_BLOB_ID");
+  let lastError: unknown = null;
+  for (let writerAttempt = 0; writerAttempt < WALRUS_SDK_BASE_URLS.length; writerAttempt += 1) {
+    const idx = (startIdx + writerAttempt) % WALRUS_SDK_BASE_URLS.length;
+    const baseUrl = WALRUS_SDK_BASE_URLS[idx];
+    const paramsQs = new URLSearchParams({ epochs: String(params.epochs) });
+    if (WALRUS_SEND_OBJECT_TO) {
+      paramsQs.set("send_object_to", WALRUS_SEND_OBJECT_TO);
     }
-
-    return {
-      blobId,
-      objectId:
-        json?.newlyCreated?.blobObject?.id ??
-        json?.alreadyCertified?.blobObject?.id ??
-        json?.blobObject?.id,
-      cost: json?.newlyCreated?.cost,
-      endEpoch:
-        json?.newlyCreated?.blobObject?.storage?.endEpoch ??
-        json?.alreadyCertified?.endEpoch ??
-        json?.blobObject?.storage?.endEpoch,
-      source: json?.newlyCreated
-        ? "newly_created"
-        : json?.alreadyCertified
-          ? "already_certified"
-          : "unknown",
+    const headers: Record<string, string> = {
+      "Content-Type": "application/octet-stream",
     };
-  } finally {
-    clearTimeout(timeout);
+
+    if (IS_MAINNET) {
+      const keypair = suiSigner;
+      await checkBalanceOnce(keypair.getPublicKey().toSuiAddress());
+      Object.assign(headers, await createAuthHeaders(keypair, baseUrl));
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+    try {
+      const res = await fetch(`${baseUrl}/v1/blobs?${paramsQs.toString()}`, {
+        method: "PUT",
+        headers,
+        body: nodeToWeb(params.streamFactory()),
+        duplex: "half",
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const text = await safeReadText(res);
+        const err = new Error(`WALRUS_UPLOAD_FAILED:${res.status}:${text}`);
+        lastError = err;
+        if (res.status === 429 || res.status >= 500) {
+          continue;
+        }
+        throw err;
+      }
+
+      const json = (await res.json()) as any;
+      const blobId =
+        json?.newlyCreated?.blobObject?.blobId ??
+        json?.alreadyCertified?.blobId ??
+        json?.blobObject?.blobId;
+
+      if (!blobId) {
+        throw new Error("WALRUS_MISSING_BLOB_ID");
+      }
+
+      lastGoodWriterIdx = idx;
+      return {
+        blobId,
+        objectId:
+          json?.newlyCreated?.blobObject?.id ??
+          json?.alreadyCertified?.blobObject?.id ??
+          json?.blobObject?.id,
+        cost: json?.newlyCreated?.cost,
+        endEpoch:
+          json?.newlyCreated?.blobObject?.storage?.endEpoch ??
+          json?.alreadyCertified?.endEpoch ??
+          json?.blobObject?.storage?.endEpoch,
+        source: json?.newlyCreated
+          ? "newly_created"
+          : json?.alreadyCertified
+            ? "already_certified"
+            : "unknown",
+      };
+    } catch (err) {
+      lastError = err;
+      const message = String((err as Error)?.message ?? "");
+      const retryable =
+        message.includes("fetch failed") ||
+        message.includes("ETIMEDOUT") ||
+        message.includes("ECONNRESET") ||
+        message.includes("WALRUS_UPLOAD_FAILED:429") ||
+        /WALRUS_UPLOAD_FAILED:5\d{2}/.test(message);
+      if (!retryable || writerAttempt === WALRUS_SDK_BASE_URLS.length - 1) {
+        throw err;
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
   }
+
+  throw lastError ?? new Error("WALRUS_UPLOAD_FAILED");
 }
 
 export async function uploadToWalrusOnce(
