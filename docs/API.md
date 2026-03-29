@@ -229,6 +229,15 @@ Requirements:
 
 Returns:
 
+- `summary` with operator-facing assessment:
+  - `status`
+  - `phase`
+  - `issue`
+  - `recommendedAction`
+  - `chunkProgress`
+  - `timing`
+  - `failure`
+  - `finalize`
 - dependency health for Redis and Postgres
 - upload `session` when present
 - upload `meta` when present
