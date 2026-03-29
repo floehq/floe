@@ -184,6 +184,9 @@ async function cleanupUpload(uploadId: string) {
   await redis.del(uploadKeys.meta(uploadId));
   await redis.del(uploadKeys.chunks(uploadId));
   await redis.srem(uploadKeys.gcIndex(), uploadId);
+  await redis.srem(uploadKeys.finalizePending(), uploadId);
+  await redis.zrem(uploadKeys.finalizePendingSince(), uploadId);
+  await redis.lrem(uploadKeys.finalizeQueue(), 0, uploadId);
   await fs.rm(path.join(uploadTmpDir, uploadId), { recursive: true, force: true }).catch(() => {});
   await fs.rm(path.join(uploadTmpDir, `${uploadId}.bin`), { force: true }).catch(() => {});
 }
@@ -499,6 +502,36 @@ test("cancel returns retry-after when finalization is in progress", async () => 
     assert.equal(res.headers["retry-after"], "2");
     assert.equal(body.error.code, "UPLOAD_FINALIZATION_IN_PROGRESS");
     assert.equal(body.error.retryable, false);
+  } finally {
+    await cleanupUpload(uploadId);
+  }
+});
+
+test("cancel returns retry-after when finalization is queued before lock acquisition", async () => {
+  const uploadId = await seedUpload();
+  const app = await createRouteApp();
+  try {
+    const redis = redisModule.getRedis();
+    const { uploadKeys } = keysModule;
+    await redis.hset(uploadKeys.meta(uploadId), {
+      status: "finalizing",
+      finalizingQueuedAt: String(Date.now()),
+    });
+    await redis.sadd(uploadKeys.finalizePending(), uploadId);
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/v1/uploads/${uploadId}`,
+      routePath: "/v1/uploads/:uploadId",
+      params: { uploadId },
+    });
+    const body = res.json();
+
+    assert.equal(res.statusCode, 409);
+    assert.equal(res.headers["retry-after"], "2");
+    assert.equal(body.error.code, "UPLOAD_FINALIZATION_IN_PROGRESS");
+    assert.equal(await redis.exists(uploadKeys.session(uploadId)), 1);
+    assert.equal(await redis.sismember(uploadKeys.finalizePending(), uploadId), 1);
   } finally {
     await cleanupUpload(uploadId);
   }

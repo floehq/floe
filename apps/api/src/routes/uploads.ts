@@ -860,10 +860,11 @@ export default async function uploadRoutes(app: FastifyInstance) {
     const metaKey = uploadKeys.meta(uploadId);
     const lockKey = `${metaKey}:lock`;
 
-    const [session, meta, hasLock] = await Promise.all([
+    const [session, meta, hasLock, isFinalizePending] = await Promise.all([
       getSession(uploadId),
       redis.hgetall<Record<string, string>>(metaKey),
       redis.exists(lockKey),
+      redis.sismember(uploadKeys.finalizePending(), uploadId),
     ]);
     const expired = await expireUploadIfNeeded({ uploadId, session, meta });
     const currentMeta = expired
@@ -884,7 +885,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       );
     }
 
-    if (hasLock) {
+    if (hasLock || currentMeta?.status === "finalizing" || isFinalizePending === 1) {
       reply.header("Retry-After", finalizePollRetryAfterSeconds());
       return sendApiError(
         reply,
