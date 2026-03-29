@@ -235,6 +235,8 @@ Returns:
   - `issue`
   - `recommendedAction`
   - `chunkProgress`
+  - `timing`
+  - `failure`
   - `finalize`
 - dependency health for Redis and Postgres
 - upload `session` when present

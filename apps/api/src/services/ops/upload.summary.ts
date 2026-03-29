@@ -27,6 +27,7 @@ export function buildOperatorUploadSummary(params: {
   finalizeLockTtlSeconds: number;
   finalizeQueue: QueueStats;
   dependencies: Dependencies;
+  finalizeStuckAgeThresholdMs?: number;
   nowMs?: number;
 }) {
   const nowMs = params.nowMs ?? Date.now();
@@ -43,6 +44,21 @@ export function buildOperatorUploadSummary(params: {
     typeof finalize.failedReasonCode === "string" ? finalize.failedReasonCode : null;
   const failedRetryable =
     typeof finalize.failedRetryable === "boolean" ? finalize.failedRetryable : null;
+  const failedStage =
+    typeof finalize.failedStage === "string" ? finalize.failedStage : null;
+  const finalizeWarning =
+    typeof finalize.finalizeWarning === "string" ? finalize.finalizeWarning : null;
+  const finalizeWarningAt =
+    typeof finalize.finalizeWarningAt === "number" ? finalize.finalizeWarningAt : null;
+  const lastFinalizeRetryAt =
+    typeof finalize.lastFinalizeRetryAt === "number" ? finalize.lastFinalizeRetryAt : null;
+  const lastFinalizeRetryDelayMs =
+    typeof finalize.lastFinalizeRetryDelayMs === "number" ? finalize.lastFinalizeRetryDelayMs : null;
+  const finalizingQueuedAt =
+    typeof finalize.finalizingQueuedAt === "number" ? finalize.finalizingQueuedAt : null;
+  const finalizeLastProgressAt =
+    typeof finalize.finalizeLastProgressAt === "number" ? finalize.finalizeLastProgressAt : null;
+  const finalizeStuckAgeThresholdMs = params.finalizeStuckAgeThresholdMs ?? 5 * 60_000;
   const dependencyIssue =
     params.dependencies.redis.status !== "healthy"
       ? "redis_unavailable"
@@ -55,9 +71,20 @@ export function buildOperatorUploadSummary(params: {
     params.finalizeQueue &&
       params.finalizeQueue.oldestQueuedAgeMs !== null &&
       params.finalizeQueue.pendingUnique > params.finalizeQueue.activeLocal &&
-      params.finalizeQueue.oldestQueuedAgeMs >= 5 * 60_000
+      params.finalizeQueue.oldestQueuedAgeMs >= finalizeStuckAgeThresholdMs
   );
   const expired = params.session ? params.session.expiresAt <= nowMs && status === "uploading" : false;
+  const expiresInMs = params.session ? Math.max(0, params.session.expiresAt - nowMs) : null;
+  const queuedAgeMs =
+    finalizingQueuedAt !== null ? Math.max(0, nowMs - finalizingQueuedAt) : null;
+  const lastProgressAgeMs =
+    finalizeLastProgressAt !== null ? Math.max(0, nowMs - finalizeLastProgressAt) : null;
+  const finalizeStalled = Boolean(
+    status === "finalizing" &&
+      lastProgressAgeMs !== null &&
+      lastProgressAgeMs >= finalizeStuckAgeThresholdMs &&
+      !params.finalizeActiveLock
+  );
 
   let phase:
     | "uploading"
@@ -92,10 +119,15 @@ export function buildOperatorUploadSummary(params: {
     phase = "expired";
     recommendedAction = "cancel_or_cleanup";
   } else if (status === "finalizing") {
-    if (finalizeAttemptState === "retryable_failure") {
+    if (finalizeStalled) {
+      phase = "finalize_queued";
+      issue = "finalize_stalled";
+      recommendedAction = "inspect_dependencies";
+    } else if (finalizeAttemptState === "retryable_failure") {
       phase = "finalize_retrying";
       issue = failedReasonCode ?? "retryable_finalize_failure";
-      recommendedAction = dependencyIssue ? "inspect_dependencies" : "wait_for_finalize";
+      recommendedAction =
+        dependencyIssue || queueBacklogStalled ? "inspect_dependencies" : "wait_for_finalize";
     } else if (params.finalizeActiveLock) {
       phase = "finalize_active";
       issue = dependencyIssue;
@@ -139,6 +171,20 @@ export function buildOperatorUploadSummary(params: {
       missingChunkCount,
       uploadComplete,
     },
+    timing: {
+      expiresInMs,
+      queuedAgeMs,
+      lastProgressAgeMs,
+    },
+    failure: {
+      stage: failedStage,
+      reasonCode: failedReasonCode,
+      retryable: failedRetryable,
+      retryAt: lastFinalizeRetryAt,
+      retryDelayMs: lastFinalizeRetryDelayMs,
+      warning: finalizeWarning,
+      warningAt: finalizeWarningAt,
+    },
     finalize: {
       pending: params.finalizePending,
       activeLock: params.finalizeActiveLock,
@@ -147,6 +193,7 @@ export function buildOperatorUploadSummary(params: {
       failedReasonCode,
       failedRetryable,
       queueBacklogStalled,
+      stalled: finalizeStalled,
     },
   };
 }

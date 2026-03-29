@@ -167,6 +167,7 @@ export default async function healthRoute(app: FastifyInstance) {
         redis: redisHealth,
         postgres: postgresHealth,
       },
+      finalizeStuckAgeThresholdMs: FINALIZE_QUEUE_STUCK_AGE_MS,
     });
 
     return reply.code(200).send({

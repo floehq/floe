@@ -724,6 +724,8 @@ test("ops upload route returns operator snapshot for an upload", async () => {
     assert.equal(body.summary.issue, "retryable_finalize_failure");
     assert.equal(body.summary.recommendedAction, "wait_for_finalize");
     assert.equal(body.summary.chunkProgress.missingChunkCount, 1);
+    assert.equal(body.summary.failure.reasonCode, null);
+    assert.equal(body.summary.finalize.stalled, false);
 
     const withIndexes = await app.inject({
       method: "GET",
@@ -798,6 +800,52 @@ test("ops upload route distinguishes active finalize lock from queued work", asy
     assert.equal(body.summary.finalize.activeLock, true);
     assert.equal(body.finalize.activeLock, true);
     assert.equal(body.finalize.lockTtlSeconds > 0, true);
+    assert.equal(body.summary.finalize.stalled, false);
+  } finally {
+    await cleanupUpload(uploadId);
+  }
+});
+
+test("ops upload route flags stalled finalization with dependency-focused action", async () => {
+  const uploadId = await seedUpload({ totalChunks: 2 });
+  const app = await createRouteApp();
+  try {
+    const redis = redisModule.getRedis();
+    const { uploadKeys } = keysModule;
+    const now = Date.now();
+    await redis.hset(uploadKeys.meta(uploadId), {
+      status: "finalizing",
+      finalizeAttemptState: "running",
+      finalizingQueuedAt: String(now - 5_000),
+      finalizeLastProgressAt: String(now - 2_500),
+      failedReasonCode: "walrus_unavailable",
+      failedRetryable: "1",
+      failedStage: "walrus_publish",
+      lastFinalizeRetryAt: String(now - 1_000),
+      lastFinalizeRetryDelayMs: "1500",
+    });
+    await queueModule.finalizeQueueTestHooks.forceEnqueue(uploadId);
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/ops/uploads/${uploadId}`,
+      routePath: "/ops/uploads/:uploadId",
+      params: { uploadId },
+      headers: { "x-metrics-token": "ops-test-token" },
+    });
+    const body = res.json();
+
+    assert.equal(res.statusCode, 200);
+    assert.equal(body.summary.phase, "finalize_queued");
+    assert.equal(body.summary.issue, "finalize_stalled");
+    assert.equal(body.summary.recommendedAction, "inspect_dependencies");
+    assert.equal(body.summary.finalize.stalled, true);
+    assert.equal(body.summary.failure.reasonCode, "walrus_unavailable");
+    assert.equal(body.summary.failure.stage, "walrus_publish");
+    assert.equal(body.summary.failure.retryable, true);
+    assert.equal(body.summary.failure.retryDelayMs, 1500);
+    assert.equal(body.summary.timing.lastProgressAgeMs >= 2_000, true);
+    assert.equal(body.summary.timing.queuedAgeMs >= 4_000, true);
   } finally {
     await cleanupUpload(uploadId);
   }

@@ -333,6 +333,8 @@ Operator summary highlights:
 - `summary.issue` surfaces the top operator concern such as `missing_chunks`, a finalize failure reason, or dependency degradation
 - `summary.recommendedAction` points to the next move: resume upload, wait for finalize, inspect dependencies, inspect failure, or cleanup
 - `summary.chunkProgress` shows total, received, missing, and whether upload ingest is complete
+- `summary.timing` shows queue age, last finalize progress age, and upload expiry proximity
+- `summary.failure` surfaces failed stage, reason code, retryability, retry timing, and any post-commit warning
 - `summary.finalize` surfaces retry state, lock presence, and queue-stall suspicion without requiring raw meta parsing
 
 ## Operational Recommendations
@@ -435,8 +437,9 @@ Operator upload inspection:
 1. call `GET /ops/uploads/:uploadId` with `x-metrics-token` or bearer auth
 2. inspect `summary.phase`, `summary.issue`, and `summary.recommendedAction` first
 3. inspect `summary.chunkProgress` and `chunks.receivedIndexes` to confirm whether the upload is incomplete, fully uploaded, or missing chunk state
-4. inspect `summary.finalize`, `finalize.pending`, `finalize.activeLock`, and `finalize.lockTtlSeconds` to distinguish queued work from an active lock holder or retry loop
-5. inspect `dependencies.redis` and `dependencies.postgres` in the same response before assuming application-level corruption
+4. inspect `summary.timing` and `summary.failure` to see whether progress has stalled, what failed last, and whether a retry is still expected
+5. inspect `summary.finalize`, `finalize.pending`, `finalize.activeLock`, and `finalize.lockTtlSeconds` to distinguish queued work from an active lock holder or retry loop
+6. inspect `dependencies.redis` and `dependencies.postgres` in the same response before assuming application-level corruption
 
 Postgres outage handling:
 
