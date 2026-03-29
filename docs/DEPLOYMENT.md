@@ -178,6 +178,13 @@ Minimal split deployment:
 - `full` node:
   - valid for smaller deployments or staging
 
+`/health` now reports:
+
+- node `role`
+- enabled route/worker `capabilities`
+- configured Walrus reader gateway pool
+- configured Walrus writer/publisher pool
+
 ## Local Docker Note
 
 If MinIO or another S3-compatible endpoint is running on the host machine, do not use `127.0.0.1` from inside the Floe container.

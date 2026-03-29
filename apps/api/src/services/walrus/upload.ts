@@ -43,6 +43,16 @@ function parseSdkBaseUrls(): string[] {
 }
 
 const WALRUS_SDK_BASE_URLS = parseSdkBaseUrls();
+
+export function describeWalrusWriters() {
+  return {
+    mode: WALRUS_STORE_MODE,
+    primary: WALRUS_STORE_MODE === "sdk" ? (WALRUS_SDK_BASE_URLS[0] ?? null) : null,
+    fallbacks: WALRUS_STORE_MODE === "sdk" ? WALRUS_SDK_BASE_URLS.slice(1) : [],
+    count: WALRUS_STORE_MODE === "sdk" ? WALRUS_SDK_BASE_URLS.length : 0,
+    cliBin: WALRUS_STORE_MODE === "cli" ? WALRUS_CLI_BIN : null,
+  };
+}
 const WALRUS_SEND_OBJECT_TO = parseOptionalSuiAddressEnv("WALRUS_SEND_OBJECT_TO");
 
 function parseOptionalSuiAddressEnv(name: string): string | undefined {

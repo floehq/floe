@@ -16,6 +16,8 @@ import {
 } from "../services/health/dependencies.js";
 import { buildOperatorUploadSummary } from "../services/ops/upload.summary.js";
 import { TopologyConfig } from "../config/topology.config.js";
+import { describeWalrusReaders } from "../config/walrus.config.js";
+import { describeWalrusWriters } from "../services/walrus/upload.js";
 
 function parseBoolEnv(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
@@ -247,6 +249,10 @@ export default async function healthRoute(app: FastifyInstance) {
         files: TopologyConfig.routes.files,
         ops: TopologyConfig.routes.ops,
         finalizeWorker: TopologyConfig.workers.finalize,
+      },
+      walrus: {
+        readers: describeWalrusReaders(),
+        writers: describeWalrusWriters(),
       },
       status: serviceStatus,
       service: "floe-api-v1",
