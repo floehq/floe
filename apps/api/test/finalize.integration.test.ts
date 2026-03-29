@@ -574,6 +574,22 @@ test("health route reports stalled finalize backlog as degraded", async () => {
   }
 });
 
+test("health route exposes node role capabilities", async () => {
+  const app = await createRouteApp();
+
+  const res = await app.inject({ method: "GET", url: "/health", routePath: "/health" });
+  const body = res.json();
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(body.role, "full");
+  assert.deepEqual(body.capabilities, {
+    uploads: true,
+    files: true,
+    ops: true,
+    finalizeWorker: true,
+  });
+});
+
 test("health route reports optional postgres outage as degraded but ready", async () => {
   const previousDatabaseUrl = process.env.DATABASE_URL;
   process.env.DATABASE_URL = "postgres://127.0.0.1:1/floe";
