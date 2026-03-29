@@ -25,11 +25,35 @@ Optional JSON fields:
 
 Returns:
 
+- `201 Created`
 - `uploadId`
 - `chunkSize`
 - `totalChunks`
 - `epochs`
 - `expiresAt`
+
+Possible errors:
+
+- `400 INVALID_REQUEST_BODY`
+- `400 INVALID_CREATE_UPLOAD_REQUEST`
+- `400 INVALID_FILENAME`
+- `400 INVALID_CONTENT_TYPE`
+- `400 INVALID_FILE_SIZE`
+- `400 INVALID_CHUNK_SIZE`
+- `400 INVALID_EPOCHS`
+- `400 INVALID_TOTAL_CHUNKS`
+- `413 FILE_TOO_LARGE`
+- `413 TOO_MANY_CHUNKS`
+- `429 UPLOAD_CAPACITY_REACHED`
+- `429 RATE_LIMITED`
+- `503 DEPENDENCY_UNAVAILABLE`
+- `500 SESSION_CREATE_FAILED`
+
+Rate limiting:
+
+- uses the `upload_control` scope
+- `429 RATE_LIMITED` includes `Retry-After`
+- rate-limit headers are included on both allowed and rejected responses
 
 ### `PUT /v1/uploads/:uploadId/chunk/:index`
 
@@ -54,6 +78,12 @@ Duplicate chunk retries are idempotent. When the chunk already exists in staging
 
 Successful chunk uploads also refresh upload activity and expiry state.
 
+Rate limiting:
+
+- uses the `upload_chunk` scope
+- `429 RATE_LIMITED` includes `Retry-After`
+- rate-limit headers are included on both allowed and rejected responses
+
 ### `GET /v1/uploads/:uploadId/status`
 Status responses may include finalize diagnostics when an upload is finalizing, failed, or completed after asynchronous finalize work. Important fields:
 
@@ -71,6 +101,10 @@ Behavior notes:
 - active uploads expire from `expiresAt`, not only from passive Redis TTL eviction
 - chunk presence is reconciled from the backing chunk store when Redis chunk membership is incomplete
 - returns `503 CHUNK_STORE_UNAVAILABLE` when chunk reconciliation cannot read from the staging backend
+- retryable `503` responses include `Retry-After`
+- uses `upload_control` rate limiting for most upload states
+- switches to `file_meta_read` rate limiting while `status` is `finalizing`
+- `429 RATE_LIMITED` includes `Retry-After`
 
 Response may include:
 
@@ -107,14 +141,32 @@ Possible responses:
   - `pollAfterMs`
   - `enqueued`
   - optional `inProgress`
+  - optional finalize diagnostics such as `finalizeAttemptState`
+
+Notes:
+
+- `202` uses the same response shape whether finalize was just enqueued or was already in progress
+- when finalize is already in progress, the response includes `enqueued: false`
 
 Possible errors:
 
 - `409 UPLOAD_EXPIRED` when the upload timed out before finalize
 - `400 UPLOAD_INCOMPLETE` when not all chunks are present after reconciliation
 - `503 CHUNK_STORE_UNAVAILABLE` when chunk reconciliation cannot read from the staging backend
+- `503 FINALIZE_QUEUE_BACKPRESSURE` when finalize admission is saturated
+
+Retry behavior:
+
+- `202 finalizing` includes `Retry-After`
+- retryable `503` responses from `complete` also include `Retry-After`
 
 Finalize is asynchronous. Clients should poll `GET /v1/uploads/:uploadId/status`.
+
+Rate limiting:
+
+- uses the `upload_control` scope
+- `429 RATE_LIMITED` includes `Retry-After`
+- rate-limit headers are included on both allowed and rejected responses
 
 ### `DELETE /v1/uploads/:uploadId`
 
@@ -125,7 +177,14 @@ Behavior:
 - idempotent for `canceled`, `failed`, and `expired` sessions
 - returns `{ ok: true, uploadId, status: "expired" }` when the upload already timed out
 - returns `409` when finalize is in progress or the upload is already completed
+- `409 UPLOAD_FINALIZATION_IN_PROGRESS` includes `Retry-After`
 - best-effort staging cleanup runs for partial uploads before GC tracking is removed
+
+Rate limiting:
+
+- uses the `upload_control` scope
+- `429 RATE_LIMITED` includes `Retry-After`
+- rate-limit headers are included on both allowed and rejected responses
 
 ## File Endpoints
 
@@ -148,6 +207,11 @@ Response headers also include:
 - `x-floe-metadata-source`: `memory`, `postgres`, or `sui`
 - `x-floe-postgres-state`: `healthy`, `degraded`, or `disabled`
 
+Rate limiting:
+
+- uses the `file_meta_read` scope
+- `429 RATE_LIMITED` includes `Retry-After`
+
 ### `GET /v1/files/:fileId/manifest`
 
 Returns the current read contract for the file:
@@ -165,6 +229,11 @@ Response headers also include:
 - `x-floe-metadata-source`
 - `x-floe-postgres-state`
 
+Rate limiting:
+
+- uses the `file_meta_read` scope
+- `429 RATE_LIMITED` includes `Retry-After`
+
 ### `GET /v1/files/:fileId/stream`
 
 Byte-range stream endpoint.
@@ -178,6 +247,11 @@ Behavior:
 - includes `ETag`
 - includes `x-floe-metadata-source`
 - includes `x-floe-postgres-state`
+
+Rate limiting:
+
+- uses the `file_stream_read` scope
+- `429 RATE_LIMITED` includes `Retry-After`
 
 ### `HEAD /v1/files/:fileId/stream`
 
@@ -363,3 +437,10 @@ Rate-limited endpoints also include:
 - `x-ratelimit-remaining`
 - `x-ratelimit-window`
 - `retry-after` when applicable
+
+Scope summary:
+
+- `upload_control`: create, status for non-finalizing uploads, complete, cancel
+- `upload_chunk`: chunk upload
+- `file_meta_read`: file metadata, file manifest, and upload status while finalizing
+- `file_stream_read`: file stream and head stream
