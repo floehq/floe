@@ -2,18 +2,70 @@
 
 ## Goal
 
-This branch establishes one intentional deployment baseline for Floe: a single containerized API service with explicit external dependencies and a persistent writable upload temp path.
+This branch establishes one intentional deployment baseline for Floe: a single build artifact that can run as `read`, `write`, or `full` by config, with explicit external dependencies and a persistent writable upload temp path.
 
 ## Baseline
 
 Recommended phase-1 beta runtime:
 
-- one HTTPS-exposed API service
+- one or more HTTPS-exposed Floe services
 - persistent Redis
 - optional but intentional Postgres
 - `s3`/R2/MinIO-compatible chunk staging for multi-instance safety
 - persistent writable volume mounted at `UPLOAD_TMP_DIR`
 - stdout/stderr log collection from the hosting platform
+- one shared image/binary with role-based startup
+
+## Role Model
+
+Floe should be shipped as one image or executable, not separate builds per role.
+
+Current roles:
+
+- `full`: uploads, files, ops, and background workers enabled
+- `read`: file read routes enabled, upload routes and write-path workers disabled
+- `write`: upload routes, ops routes, and write-path workers enabled; public file routes disabled
+
+Set the role with either:
+
+```dotenv
+FLOE_NODE_ROLE=read
+```
+
+or through structured config:
+
+```yaml
+node:
+  role: write
+```
+
+## Structured Config
+
+Floe now supports a structured YAML config file for topology-oriented settings.
+
+Use:
+
+```dotenv
+FLOE_CONFIG=/etc/floe/config.yaml
+```
+
+Example file: `config/floe.example.yaml`
+
+Use the YAML file for:
+
+- node role
+- HTTP port and CORS origins
+- Walrus reader gateway lists
+- Walrus writer/publisher endpoint lists
+
+Keep env vars for:
+
+- secrets
+- tokens
+- database URLs
+- Redis URLs
+- S3 credentials
+- quick per-environment overrides
 
 ## Why `UPLOAD_TMP_DIR` Is Required
 
@@ -57,6 +109,7 @@ The container:
 - runs production with `node apps/api/dist/server.js`
 - exposes port `3001`
 - uses `/health` as the readiness/health check
+- accepts `FLOE_NODE_ROLE` and `FLOE_CONFIG` at runtime
 
 ## Minimal Production Environment
 
@@ -91,15 +144,46 @@ DATABASE_URL=postgresql://...
 FLOE_POSTGRES_REQUIRED=0
 ```
 
+Optional topology config:
+
+```dotenv
+FLOE_CONFIG=/etc/floe/config.yaml
+FLOE_NODE_ROLE=read
+```
+
 ## Deploy Flow
 
 1. Build and publish the container image.
 2. Provision or verify Redis persistence.
 3. Provision a persistent writable volume for `UPLOAD_TMP_DIR`.
 4. Set production env vars from `.env.example`.
-5. Deploy the container behind HTTPS.
-6. Verify `/health` reports a usable state.
-7. Verify startup logs show dependency initialization and successful boot.
+5. Add `FLOE_CONFIG` when using YAML topology config.
+6. Deploy one or more role-specific containers behind HTTPS.
+7. Verify `/health` reports a usable state and expected capabilities for that role.
+8. Verify startup logs show dependency initialization and successful boot.
+
+## Example Topology
+
+Minimal split deployment:
+
+- `read` nodes:
+  - `FLOE_NODE_ROLE=read`
+  - public metadata/manifest/stream traffic
+  - local stream cache enabled
+- `write` nodes:
+  - `FLOE_NODE_ROLE=write`
+  - upload create/chunk/complete/cancel
+  - finalize worker and upload GC enabled
+  - ops endpoints enabled
+- `full` node:
+  - valid for smaller deployments or staging
+
+`/health` now reports:
+
+- node `role`
+- enabled route/worker `capabilities`
+- configured Walrus reader gateway pool
+- configured Walrus writer/publisher pool
 
 ## Local Docker Note
 

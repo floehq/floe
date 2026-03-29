@@ -23,6 +23,10 @@ process.env.FLOE_FINALIZE_RETRYABLE_FAILURE_MAX_ATTEMPTS = "2";
 process.env.FLOE_FINALIZE_QUEUE_STUCK_AGE_MS = "1000";
 process.env.FLOE_FINALIZE_TIMEOUT_MS = "1000";
 process.env.WALRUS_AGGREGATOR_URL = "http://127.0.0.1:1";
+process.env.FLOE_WALRUS_STORE_MODE = "sdk";
+process.env.FLOE_WALRUS_SDK_BASE_URL = "http://127.0.0.1:1";
+process.env.FLOE_NETWORK = "testnet";
+process.env.SUI_PRIVATE_KEY = Buffer.alloc(32, 7).toString("base64");
 process.env.FLOE_METRICS_TOKEN = "ops-test-token";
 delete process.env.DATABASE_URL;
 
@@ -572,6 +576,27 @@ test("health route reports stalled finalize backlog as degraded", async () => {
   } finally {
     await cleanupUpload(uploadId);
   }
+});
+
+test("health route exposes node role capabilities", async () => {
+  const app = await createRouteApp();
+
+  const res = await app.inject({ method: "GET", url: "/health", routePath: "/health" });
+  const body = res.json();
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(body.role, "full");
+  assert.deepEqual(body.capabilities, {
+    uploads: true,
+    files: true,
+    ops: true,
+    finalizeWorker: true,
+  });
+  assert.equal(body.walrus.readers.count >= 1, true);
+  assert.equal(typeof body.walrus.readers.primary, "string");
+  assert.equal(body.walrus.writers.mode, "sdk");
+  assert.equal(body.walrus.writers.count >= 1, true);
+  assert.equal(typeof body.walrus.writers.primary, "string");
 });
 
 test("health route reports optional postgres outage as degraded but ready", async () => {

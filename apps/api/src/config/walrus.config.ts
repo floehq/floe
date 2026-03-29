@@ -39,6 +39,14 @@ export const WalrusEnv = {
   aggregatorUrls: [primaryAggregator, ...fallbackAggregators],
 };
 
+export function describeWalrusReaders() {
+  return {
+    primary: WalrusEnv.aggregatorUrls[0] ?? null,
+    fallbacks: WalrusEnv.aggregatorUrls.slice(1),
+    count: WalrusEnv.aggregatorUrls.length,
+  };
+}
+
 export const WalrusReadLimits = {
   timeoutMs: parsePositiveIntEnv("WALRUS_READ_TIMEOUT_MS", 10 * 60_000),
 

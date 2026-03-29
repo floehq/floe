@@ -15,6 +15,9 @@ import {
   checkRedisDependencyHealth,
 } from "../services/health/dependencies.js";
 import { buildOperatorUploadSummary } from "../services/ops/upload.summary.js";
+import { TopologyConfig } from "../config/topology.config.js";
+import { describeWalrusReaders } from "../config/walrus.config.js";
+import { describeWalrusWriters } from "../services/walrus/upload.js";
 
 function parseBoolEnv(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
@@ -111,86 +114,88 @@ export default async function healthRoute(app: FastifyInstance) {
       .send(renderPrometheusMetrics());
   });
 
-  app.get("/ops/uploads/:uploadId", async (req, reply) => {
-    if (!requireMetricsToken(req, reply)) {
-      return;
-    }
+  if (TopologyConfig.routes.ops) {
+    app.get("/ops/uploads/:uploadId", async (req, reply) => {
+      if (!requireMetricsToken(req, reply)) {
+        return;
+      }
 
-    const { uploadId } = req.params as { uploadId: string };
-    if (!isUuid(uploadId)) {
-      return sendApiError(reply, 400, "INVALID_UPLOAD_ID", "uploadId must be a UUID");
-    }
+      const { uploadId } = req.params as { uploadId: string };
+      if (!isUuid(uploadId)) {
+        return sendApiError(reply, 400, "INVALID_UPLOAD_ID", "uploadId must be a UUID");
+      }
 
-    const redisHealth = await checkRedisDependencyHealth();
-    const postgresHealth = await checkPostgresDependencyHealth();
-    if (!redisHealth.ok) {
-      return sendApiError(
-        reply,
-        503,
-        "DEPENDENCY_UNAVAILABLE",
-        "Redis is unavailable, retry shortly",
-        { retryable: true, details: { dependency: "redis" } }
-      );
-    }
+      const redisHealth = await checkRedisDependencyHealth();
+      const postgresHealth = await checkPostgresDependencyHealth();
+      if (!redisHealth.ok) {
+        return sendApiError(
+          reply,
+          503,
+          "DEPENDENCY_UNAVAILABLE",
+          "Redis is unavailable, retry shortly",
+          { retryable: true, details: { dependency: "redis" } }
+        );
+      }
 
-    const redis = getRedis();
-    const metaKey = uploadKeys.meta(uploadId);
-    const lockKey = `${metaKey}:lock`;
-    const [session, meta, chunkMembers, pending, hasLock, lockTtlSeconds] = await Promise.all([
-      getSession(uploadId),
-      redis.hgetall<Record<string, string>>(metaKey),
-      redis.smembers<string[]>(uploadKeys.chunks(uploadId)),
-      redis.sismember(uploadKeys.finalizePending(), uploadId),
-      redis.exists(lockKey),
-      redis.ttl(lockKey),
-    ]);
+      const redis = getRedis();
+      const metaKey = uploadKeys.meta(uploadId);
+      const lockKey = `${metaKey}:lock`;
+      const [session, meta, chunkMembers, pending, hasLock, lockTtlSeconds] = await Promise.all([
+        getSession(uploadId),
+        redis.hgetall<Record<string, string>>(metaKey),
+        redis.smembers<string[]>(uploadKeys.chunks(uploadId)),
+        redis.sismember(uploadKeys.finalizePending(), uploadId),
+        redis.exists(lockKey),
+        redis.ttl(lockKey),
+      ]);
 
-    const metaObject = meta && Object.keys(meta).length > 0 ? meta : null;
-    if (!session && !metaObject) {
-      return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
-    }
+      const metaObject = meta && Object.keys(meta).length > 0 ? meta : null;
+      if (!session && !metaObject) {
+        return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
+      }
 
-    const queueStats = await getUploadFinalizeQueueStats().catch(() => null);
-    const chunkIndexes = Array.isArray(chunkMembers)
-      ? chunkMembers.map(Number).filter(Number.isInteger).sort((a, b) => a - b)
-      : [];
-    const includeReceivedIndexes = parseBoolQuery((req as any).query?.includeReceivedIndexes);
-    const operatorSummary = buildOperatorUploadSummary({
-      session,
-      meta: metaObject,
-      receivedChunkIndexes: chunkIndexes,
-      finalizePending: Number(pending) === 1,
-      finalizeActiveLock: Number(hasLock) === 1,
-      finalizeLockTtlSeconds: Number(lockTtlSeconds),
-      finalizeQueue: queueStats,
-      dependencies: {
-        redis: redisHealth,
-        postgres: postgresHealth,
-      },
-      finalizeStuckAgeThresholdMs: FINALIZE_QUEUE_STUCK_AGE_MS,
+      const queueStats = await getUploadFinalizeQueueStats().catch(() => null);
+      const chunkIndexes = Array.isArray(chunkMembers)
+        ? chunkMembers.map(Number).filter(Number.isInteger).sort((a, b) => a - b)
+        : [];
+      const includeReceivedIndexes = parseBoolQuery((req as any).query?.includeReceivedIndexes);
+      const operatorSummary = buildOperatorUploadSummary({
+        session,
+        meta: metaObject,
+        receivedChunkIndexes: chunkIndexes,
+        finalizePending: Number(pending) === 1,
+        finalizeActiveLock: Number(hasLock) === 1,
+        finalizeLockTtlSeconds: Number(lockTtlSeconds),
+        finalizeQueue: queueStats,
+        dependencies: {
+          redis: redisHealth,
+          postgres: postgresHealth,
+        },
+        finalizeStuckAgeThresholdMs: FINALIZE_QUEUE_STUCK_AGE_MS,
+      });
+
+      return reply.code(200).send({
+        uploadId,
+        summary: operatorSummary,
+        dependencies: {
+          redis: redisHealth,
+          postgres: postgresHealth,
+        },
+        session: session ?? null,
+        meta: metaObject,
+        chunks: {
+          receivedCount: chunkIndexes.length,
+          ...(includeReceivedIndexes ? { receivedIndexes: chunkIndexes } : {}),
+        },
+        finalize: {
+          pending: Number(pending) === 1,
+          activeLock: Number(hasLock) === 1,
+          lockTtlSeconds: Number(lockTtlSeconds),
+          queue: queueStats,
+        },
+      });
     });
-
-    return reply.code(200).send({
-      uploadId,
-      summary: operatorSummary,
-      dependencies: {
-        redis: redisHealth,
-        postgres: postgresHealth,
-      },
-      session: session ?? null,
-      meta: metaObject,
-      chunks: {
-        receivedCount: chunkIndexes.length,
-        ...(includeReceivedIndexes ? { receivedIndexes: chunkIndexes } : {}),
-      },
-      finalize: {
-        pending: Number(pending) === 1,
-        activeLock: Number(hasLock) === 1,
-        lockTtlSeconds: Number(lockTtlSeconds),
-        queue: queueStats,
-      },
-    });
-  });
+  }
 
   app.get("/health", async (req, reply) => {
     const timestamp = new Date().toISOString();
@@ -238,6 +243,17 @@ export default async function healthRoute(app: FastifyInstance) {
     const serviceStatus = ready ? (degraded ? "DEGRADED" : "UP") : "DOWN";
 
     return reply.status(ready ? 200 : 503).send({
+      role: TopologyConfig.role,
+      capabilities: {
+        uploads: TopologyConfig.routes.uploads,
+        files: TopologyConfig.routes.files,
+        ops: TopologyConfig.routes.ops,
+        finalizeWorker: TopologyConfig.workers.finalize,
+      },
+      walrus: {
+        readers: describeWalrusReaders(),
+        writers: describeWalrusWriters(),
+      },
       status: serviceStatus,
       service: "floe-api-v1",
       ready,
