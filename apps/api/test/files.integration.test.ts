@@ -1,6 +1,7 @@
 import test, { afterEach, before } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { Readable } from "node:stream";
 
 process.env.FLOE_NETWORK = "testnet";
@@ -444,6 +445,18 @@ test("ensureCachedStreamRange persists exact bytes for a cached segment", async 
   const bytes = await fs.readFile(cachedPath);
 
   assert.deepEqual([...bytes], [2, 3, 4, 5, 6]);
+});
+
+test("getCachedStreamPath evicts truncated full-cache files before they false-hit", async () => {
+  const blobId = "full-cache-invalid";
+  const manualPath = path.join(process.env.UPLOAD_TMP_DIR!, "_stream_cache", "full", `${blobId}.blob`);
+  await fs.mkdir(path.dirname(manualPath), { recursive: true });
+  await fs.writeFile(manualPath, Buffer.from([0, 1, 2]));
+
+  const resolved = await streamCacheModule.getCachedStreamPath(blobId, 6);
+
+  assert.equal(resolved, null);
+  assert.equal(await fs.stat(manualPath).catch(() => null), null);
 });
 
 test("stream route rejects invalid ranges with 416 and content-range size", async () => {

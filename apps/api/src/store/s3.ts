@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { createRequire } from "module";
-import { Readable } from "stream";
+import { Readable, Transform } from "stream";
 
 import type { ChunkStore } from "./chunk.js";
 
@@ -51,31 +51,57 @@ type S3RuntimeConfig = {
   cmd: Omit<AwsS3Module, "S3Client">;
 };
 
-async function streamToBuffer(
-  stream: Readable,
-  expectedSize: number,
-  maxChunkBytes: number
-): Promise<{ buf: Buffer; actualSize: number; sha256: string }> {
-  const hash = crypto.createHash("sha256");
-  const chunks: Buffer[] = [];
-  let written = 0;
+class ChunkValidationStream extends Transform {
+  private readonly hash = crypto.createHash("sha256");
+  private written = 0;
 
-  for await (const part of stream) {
-    const chunk = Buffer.isBuffer(part) ? part : Buffer.from(part);
-    written += chunk.length;
-    if (written > expectedSize || written > maxChunkBytes) {
-      throw new Error("CHUNK_TOO_LARGE");
-    }
-    hash.update(chunk);
-    chunks.push(chunk);
+  constructor(
+    private readonly expectedHash: string,
+    private readonly expectedSize: number,
+    private readonly maxChunkBytes: number,
+    private readonly isLastChunk: boolean
+  ) {
+    super();
   }
 
-  const buf = Buffer.concat(chunks, written);
-  return {
-    buf,
-    actualSize: written,
-    sha256: hash.digest("hex"),
-  };
+  override _transform(
+    chunk: Buffer | string,
+    _encoding: BufferEncoding,
+    callback: (error?: Error | null, data?: Buffer) => void
+  ) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    this.written += buf.length;
+    if (this.written > this.expectedSize || this.written > this.maxChunkBytes) {
+      callback(new Error("CHUNK_TOO_LARGE"));
+      return;
+    }
+    this.hash.update(buf);
+    callback(null, buf);
+  }
+
+  override _flush(callback: (error?: Error | null) => void) {
+    const sha256 = this.hash.digest("hex");
+    if (sha256 !== this.expectedHash) {
+      callback(new Error("HASH_MISMATCH"));
+      return;
+    }
+
+    if (this.isLastChunk) {
+      if (this.written <= 0 || this.written > this.expectedSize) {
+        callback(new Error("INVALID_LAST_CHUNK_SIZE"));
+        return;
+      }
+    } else if (this.written !== this.expectedSize) {
+      callback(new Error("CHUNK_SIZE_MISMATCH"));
+      return;
+    }
+
+    callback();
+  }
+
+  get contentLength() {
+    return this.expectedSize;
+  }
 }
 
 export class S3ChunkStore implements ChunkStore {
@@ -150,34 +176,24 @@ export class S3ChunkStore implements ChunkStore {
       // Continue for missing keys.
     }
 
-    const { buf, actualSize, sha256 } = await streamToBuffer(
-      stream,
+    const validator = new ChunkValidationStream(
+      expectedHash.toLowerCase(),
       expectedSize,
-      this.cfg.maxChunkBytes
+      this.cfg.maxChunkBytes,
+      isLastChunk
     );
-
-    if (sha256 !== expectedHash.toLowerCase()) {
-      throw new Error("HASH_MISMATCH");
-    }
-
-    if (isLastChunk) {
-      if (actualSize <= 0 || actualSize > expectedSize) {
-        throw new Error("INVALID_LAST_CHUNK_SIZE");
-      }
-    } else if (actualSize !== expectedSize) {
-      throw new Error("CHUNK_SIZE_MISMATCH");
-    }
+    const validatedStream = stream.pipe(validator);
 
     try {
       await this.cfg.client.send(
         new this.cfg.cmd.PutObjectCommand({
           Bucket: this.cfg.bucket,
           Key: key,
-          Body: buf,
-          ContentLength: actualSize,
+          Body: validatedStream,
+          ContentLength: validator.contentLength,
           ContentType: "application/octet-stream",
           Metadata: {
-            sha256,
+            sha256: expectedHash.toLowerCase(),
           },
           IfNoneMatch: "*",
         })

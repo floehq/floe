@@ -121,12 +121,21 @@ export function shouldCacheFullObject(sizeBytes: number): boolean {
   );
 }
 
-export async function getCachedStreamPath(blobId: string): Promise<string | null> {
+export async function getCachedStreamPath(
+  blobId: string,
+  expectedSize?: number
+): Promise<string | null> {
   await ensureStreamCacheDir();
   const filePath = streamCachePath(blobId);
   await expireStreamCacheIfNeeded(filePath);
   const stat = await fsp.stat(filePath).catch(() => null);
   if (!stat?.isFile()) {
+    recordStreamCacheAccess({ cacheType: "full", outcome: "miss" });
+    return null;
+  }
+  if (expectedSize !== undefined && stat.size !== expectedSize) {
+    await fsp.rm(filePath, { force: true }).catch(() => {});
+    recordStreamCacheEviction({ reason: "invalid", bytes: stat.size });
     recordStreamCacheAccess({ cacheType: "full", outcome: "miss" });
     return null;
   }
@@ -168,7 +177,7 @@ export async function ensureCachedStreamBlob(params: {
     return null;
   }
 
-  const existing = await getCachedStreamPath(params.blobId);
+  const existing = await getCachedStreamPath(params.blobId, params.sizeBytes);
   if (existing) return existing;
 
   const inFlight = inFlightCacheFill.get(params.blobId);
@@ -203,9 +212,13 @@ export async function ensureCachedStreamBlob(params: {
       const body = res.body;
       if (!body) throw new Error("WALRUS_CACHE_FILL_MISSING_BODY");
 
+      let bytesWritten = 0;
       await new Promise<void>((resolve, reject) => {
         const ws = fs.createWriteStream(tempPath, { flags: "wx" });
         const rs = Readable.fromWeb(body as any);
+        rs.on("data", (chunk: Uint8Array) => {
+          bytesWritten += chunk.byteLength;
+        });
         rs.once("error", reject);
         ws.once("error", reject);
         ws.once("finish", resolve);
@@ -214,6 +227,13 @@ export async function ensureCachedStreamBlob(params: {
         await fsp.rm(tempPath, { force: true }).catch(() => {});
         throw err;
       });
+
+      if (bytesWritten !== params.sizeBytes) {
+        await fsp.rm(tempPath, { force: true }).catch(() => {});
+        throw new Error(
+          `STREAM_CACHE_FULL_TRUNCATED expected=${params.sizeBytes} read=${bytesWritten}`
+        );
+      }
 
       await fsp.rename(tempPath, filePath).catch(async (err) => {
         await fsp.rm(tempPath, { force: true }).catch(() => {});

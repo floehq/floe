@@ -928,7 +928,7 @@ export async function filesRoutes(app: FastifyInstance) {
       }
 
       const cachedPath =
-        (await getCachedStreamPath(blobId)) ??
+        (await getCachedStreamPath(blobId, sizeBytes)) ??
         (status === 200
           ? await ensureCachedStreamBlob({
               blobId,
