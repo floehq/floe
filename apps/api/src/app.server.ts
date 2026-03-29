@@ -46,6 +46,14 @@ process.on("uncaughtException", (err) => {
   process.exit(1);
 });
 
+function parseTrustProxy() {
+  const raw = process.env.FLOE_TRUST_PROXY?.trim().toLowerCase();
+  if (!raw) return false;
+  if (raw === "1" || raw === "true") return true;
+  if (raw === "0" || raw === "false") return false;
+  throw new Error("FLOE_TRUST_PROXY must be one of: 1, 0, true, false");
+}
+
 function createFastifyApp() {
   return Fastify({
     logger: {
@@ -59,6 +67,7 @@ function createFastifyApp() {
       },
     },
     bodyLimit: ChunkConfig.maxBytes + 1024 * 1024,
+    trustProxy: parseTrustProxy(),
   });
 }
 

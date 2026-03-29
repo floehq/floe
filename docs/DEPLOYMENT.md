@@ -55,6 +55,7 @@ Use the YAML file for:
 
 - node role
 - HTTP port and CORS origins
+- proxy trust for forwarded client IPs
 - Walrus reader gateway lists
 - Walrus writer/publisher endpoint lists
 
@@ -150,6 +151,14 @@ Optional topology config:
 FLOE_CONFIG=/etc/floe/config.yaml
 FLOE_NODE_ROLE=read
 ```
+
+If Floe is behind a trusted reverse proxy or CDN and you want public rate limiting to key on real client IPs instead of the proxy IP, also set:
+
+```dotenv
+FLOE_TRUST_PROXY=1
+```
+
+Only enable this when `X-Forwarded-For` is coming from infrastructure you control or trust.
 
 Health recommendation:
 

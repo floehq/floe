@@ -22,7 +22,7 @@ test("parseRuntimeArgs reads config path and role flags", () => {
 test("normalizeRuntimeConfig validates structured topology config", () => {
   const config = normalizeRuntimeConfig({
     node: { role: "read" },
-    http: { port: 4100, corsOrigins: ["http://localhost:3000"] },
+    http: { port: 4100, corsOrigins: ["http://localhost:3000"], trustProxy: true },
     walrus: {
       readers: ["https://reader-1.example.com", "https://reader-2.example.com"],
       writers: ["https://writer-1.example.com", "https://writer-2.example.com"],
@@ -33,6 +33,7 @@ test("normalizeRuntimeConfig validates structured topology config", () => {
   assert.equal(config.node?.role, "read");
   assert.equal(config.http?.port, 4100);
   assert.deepEqual(config.http?.corsOrigins, ["http://localhost:3000"]);
+  assert.equal(config.http?.trustProxy, true);
   assert.deepEqual(config.walrus?.readers, [
     "https://reader-1.example.com",
     "https://reader-2.example.com",
@@ -49,6 +50,7 @@ test("applyRuntimeConfig projects yaml topology values into env defaults", () =>
     FLOE_NODE_ROLE: process.env.FLOE_NODE_ROLE,
     PORT: process.env.PORT,
     FLOE_CORS_ORIGINS: process.env.FLOE_CORS_ORIGINS,
+    FLOE_TRUST_PROXY: process.env.FLOE_TRUST_PROXY,
     WALRUS_AGGREGATOR_URL: process.env.WALRUS_AGGREGATOR_URL,
     WALRUS_AGGREGATOR_FALLBACK_URLS: process.env.WALRUS_AGGREGATOR_FALLBACK_URLS,
     FLOE_WALRUS_SDK_BASE_URL: process.env.FLOE_WALRUS_SDK_BASE_URL,
@@ -59,6 +61,7 @@ test("applyRuntimeConfig projects yaml topology values into env defaults", () =>
   delete process.env.FLOE_NODE_ROLE;
   delete process.env.PORT;
   delete process.env.FLOE_CORS_ORIGINS;
+  delete process.env.FLOE_TRUST_PROXY;
   delete process.env.WALRUS_AGGREGATOR_URL;
   delete process.env.WALRUS_AGGREGATOR_FALLBACK_URLS;
   delete process.env.FLOE_WALRUS_SDK_BASE_URL;
@@ -69,7 +72,11 @@ test("applyRuntimeConfig projects yaml topology values into env defaults", () =>
     applyRuntimeConfig(
       {
         node: { role: "full" },
-        http: { port: 3001, corsOrigins: ["http://localhost:3000", "http://localhost:5173"] },
+        http: {
+          port: 3001,
+          corsOrigins: ["http://localhost:3000", "http://localhost:5173"],
+          trustProxy: true,
+        },
         walrus: {
           readers: ["https://reader-1.example.com", "https://reader-2.example.com"],
           writers: ["https://writer-1.example.com", "https://writer-2.example.com"],
@@ -82,6 +89,7 @@ test("applyRuntimeConfig projects yaml topology values into env defaults", () =>
     assert.equal(process.env.FLOE_NODE_ROLE, "write");
     assert.equal(process.env.PORT, "3001");
     assert.equal(process.env.FLOE_CORS_ORIGINS, "http://localhost:3000,http://localhost:5173");
+    assert.equal(process.env.FLOE_TRUST_PROXY, "1");
     assert.equal(process.env.WALRUS_AGGREGATOR_URL, "https://reader-1.example.com");
     assert.equal(
       process.env.WALRUS_AGGREGATOR_FALLBACK_URLS,

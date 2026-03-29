@@ -11,6 +11,7 @@ export type RuntimeFileConfig = {
   http?: {
     port?: number;
     corsOrigins?: string[];
+    trustProxy?: boolean;
   };
   walrus?: {
     readers?: string[];
@@ -88,6 +89,10 @@ export function normalizeRuntimeConfig(raw: unknown): RuntimeFileConfig {
   if (portRaw !== undefined && (!Number.isInteger(portRaw) || Number(portRaw) <= 0)) {
     throw new Error("http.port must be a positive integer");
   }
+  const trustProxyRaw = (value.http as any)?.trustProxy;
+  if (trustProxyRaw !== undefined && typeof trustProxyRaw !== "boolean") {
+    throw new Error("http.trustProxy must be a boolean");
+  }
 
   const metricsEnabled = (value.metrics as any)?.enabled;
   if (
@@ -102,6 +107,7 @@ export function normalizeRuntimeConfig(raw: unknown): RuntimeFileConfig {
     http: {
       port: portRaw as number | undefined,
       corsOrigins: normalizeStringList((value.http as any)?.corsOrigins, "http.corsOrigins"),
+      trustProxy: trustProxyRaw as boolean | undefined,
     },
     walrus: {
       readers: normalizeStringList((value.walrus as any)?.readers, "walrus.readers"),
@@ -136,6 +142,9 @@ export function applyRuntimeConfig(config: RuntimeFileConfig, argvRole?: NodeRol
     config.http?.port !== undefined ? String(config.http.port) : undefined
   );
   setEnvDefault("FLOE_CORS_ORIGINS", config.http?.corsOrigins?.join(","));
+  if (config.http?.trustProxy !== undefined) {
+    setEnvDefault("FLOE_TRUST_PROXY", config.http.trustProxy ? "1" : "0");
+  }
 
   const readers = config.walrus?.readers ?? [];
   if (readers.length > 0) {

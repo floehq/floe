@@ -3,6 +3,7 @@ node:
 
 http:
   port: 3001
+  trustProxy: false
   corsOrigins:
     - http://localhost:3000
     - http://localhost:5173
