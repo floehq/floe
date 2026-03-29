@@ -63,6 +63,21 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function makeRedisMethodFailureStub(originalRedis: any, methods: string[]) {
+  const failing = new Set(methods);
+  return new Proxy(originalRedis, {
+    get(target, prop, receiver) {
+      if (typeof prop === "string" && failing.has(prop)) {
+        return async () => {
+          throw new Error("redis unavailable");
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as any;
+}
+
 async function waitForRedis(port: number) {
   for (let attempt = 0; attempt < 50; attempt++) {
     const ok = await new Promise<boolean>((resolve) => {
@@ -667,11 +682,7 @@ test("health route reports optional postgres outage as degraded but ready", asyn
 
 test("create upload returns retryable 503 when redis is unavailable", async () => {
   const originalRedis = redisModule.getRedis();
-  redisModule.setRedisForTests({
-    ping: async () => {
-      throw new Error("redis unavailable");
-    },
-  } as any);
+  redisModule.setRedisForTests(makeRedisMethodFailureStub(originalRedis, ["eval"]));
 
   const app = await createRouteApp();
   try {
@@ -700,11 +711,7 @@ test("create upload returns retryable 503 when redis is unavailable", async () =
 test("upload routes return retryable 503 when redis is unavailable", async () => {
   const uploadId = await seedUpload({ totalChunks: 2 });
   const originalRedis = redisModule.getRedis();
-  redisModule.setRedisForTests({
-    ping: async () => {
-      throw new Error("redis unavailable");
-    },
-  } as any);
+  redisModule.setRedisForTests(makeRedisMethodFailureStub(originalRedis, ["hget", "hgetall"]));
 
   const app = await createRouteApp();
   try {
