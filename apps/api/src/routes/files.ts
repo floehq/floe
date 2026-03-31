@@ -630,7 +630,6 @@ export async function filesRoutes(app: FastifyInstance) {
       return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
     }
     applyFileLookupHeaders(res, { source: fieldsSource, postgresState });
-    applyFileReadCacheHeaders(res);
 
     const normalized = normalizeFileFields(fields);
     if (!normalized) {
@@ -667,6 +666,7 @@ export async function filesRoutes(app: FastifyInstance) {
     if (!authz.allowed) {
       return sendFileAccessDenied(res, authz);
     }
+    applyFileReadCacheHeaders(res);
 
     return {
       fileId,
@@ -734,7 +734,6 @@ export async function filesRoutes(app: FastifyInstance) {
       return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
     }
     applyFileLookupHeaders(res, { source: fieldsSource, postgresState });
-    applyFileReadCacheHeaders(res);
 
     const normalized = normalizeFileFields(fields);
     if (!normalized) {
@@ -771,6 +770,7 @@ export async function filesRoutes(app: FastifyInstance) {
     if (!authz.allowed) {
       return sendFileAccessDenied(res, authz);
     }
+    applyFileReadCacheHeaders(res);
 
     return {
       manifestVersion: 1,
@@ -855,7 +855,6 @@ export async function filesRoutes(app: FastifyInstance) {
         return sendApiError(reply, 404, "FILE_NOT_FOUND", "File not found");
       }
       applyFileLookupHeaders(reply, { source: fieldsSource, postgresState });
-      applyFileReadCacheHeaders(reply);
 
       const normalized = normalizeFileFields(fields);
       if (!normalized) {
@@ -889,6 +888,7 @@ export async function filesRoutes(app: FastifyInstance) {
       if (!authz.allowed) {
         return sendFileAccessDenied(reply, authz);
       }
+      applyFileReadCacheHeaders(reply);
 
       const blobId = normalized.blobId;
       const sizeBytes = normalized.sizeBytes;

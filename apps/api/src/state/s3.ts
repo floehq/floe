@@ -58,6 +58,26 @@ function buildS3Client() {
   };
 }
 
+export function isS3BucketMissingError(err: unknown): boolean {
+  const candidate = err as {
+    name?: string;
+    Code?: string;
+    code?: string;
+    $metadata?: { httpStatusCode?: number };
+  };
+  const statusCode = Number(candidate?.$metadata?.httpStatusCode ?? 0);
+  if (statusCode === 404) return true;
+
+  const errorCode = String(
+    candidate?.Code ?? candidate?.code ?? candidate?.name ?? ""
+  ).trim();
+  return (
+    errorCode === "NotFound" ||
+    errorCode === "NoSuchBucket" ||
+    errorCode === "NoSuchContainer"
+  );
+}
+
 export async function initS3IfEnabled(log: FastifyBaseLogger): Promise<void> {
   const mode = (process.env.FLOE_CHUNK_STORE_MODE ?? "s3").trim().toLowerCase();
   if (mode !== "s3") return;
@@ -79,7 +99,7 @@ export async function initS3IfEnabled(log: FastifyBaseLogger): Promise<void> {
     log.info({ bucket }, "S3 chunk store bucket verified");
     return;
   } catch (err) {
-    if (!createIfMissing) throw err;
+    if (!createIfMissing || !isS3BucketMissingError(err)) throw err;
   }
 
   await client.send(
@@ -89,4 +109,3 @@ export async function initS3IfEnabled(log: FastifyBaseLogger): Promise<void> {
   );
   log.info({ bucket }, "S3 chunk store bucket created");
 }
-

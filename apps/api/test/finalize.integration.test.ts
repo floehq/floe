@@ -594,6 +594,33 @@ test("stopUploadFinalizeWorker clears scheduled retry timers", async () => {
   }
 });
 
+test("enqueueUploadFinalize enforces queue backpressure atomically under concurrency", async () => {
+  const firstUploadId = await seedUpload();
+  const secondUploadId = await seedUpload();
+  try {
+    queueModule.finalizeQueueTestHooks.setQueueMaxDepth(1);
+    queueModule.finalizeQueueTestHooks.setAutoDrain(false);
+
+    const [first, second] = await Promise.all([
+      queueModule.enqueueUploadFinalize({ uploadId: firstUploadId, log }),
+      queueModule.enqueueUploadFinalize({ uploadId: secondUploadId, log }),
+    ]);
+
+    const results = [first, second];
+    const enqueuedCount = results.filter((result) => result.enqueued).length;
+    const rejectedCount = results.filter((result) => result.rejectedByBackpressure).length;
+    const stats = await queueModule.getUploadFinalizeQueueStats();
+
+    assert.equal(enqueuedCount, 1);
+    assert.equal(rejectedCount, 1);
+    assert.equal(stats.depth, 1);
+    assert.equal(stats.pendingUnique, 1);
+  } finally {
+    await cleanupUpload(firstUploadId);
+    await cleanupUpload(secondUploadId);
+  }
+});
+
 test("health route reports stalled finalize backlog as degraded", async () => {
   const uploadId = await seedUpload();
   const app = await createRouteApp();

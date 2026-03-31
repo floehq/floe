@@ -657,6 +657,7 @@ test("metadata auth precheck rejects before file lookup", async () => {
   assert.equal(res.statusCode, 401);
   assert.equal(body.error.code, "AUTH_REQUIRED");
   assert.equal(suiLookups, 0);
+  assert.equal(res.headers["cache-control"], undefined);
 });
 
 test("metadata owner mismatch is masked as file not found", async () => {
@@ -685,4 +686,49 @@ test("metadata owner mismatch is masked as file not found", async () => {
 
   assert.equal(res.statusCode, 404);
   assert.equal(body.error.code, "FILE_NOT_FOUND");
+});
+
+test("metadata invalid metadata does not inherit public cache headers", async () => {
+  await mockSuiFile({ size_bytes: "not-a-number" });
+  const app = await createRouteApp();
+  const fileId = "0x5555555555555555555555555555555555555555555555555555555555555556";
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/metadata`,
+    routePath: "/v1/files/:fileId/metadata",
+    params: { fileId },
+  });
+  const body = res.json() as any;
+
+  assert.equal(res.statusCode, 502);
+  assert.equal(body.error.code, "INVALID_FILE_METADATA");
+  assert.equal(res.headers["cache-control"], undefined);
+});
+
+test("stream auth denial does not inherit public cache headers", async () => {
+  const app = await createRouteApp({
+    async authorizeFileAccess({ fileOwner }: { fileOwner?: string | null }) {
+      if (!fileOwner) {
+        return {
+          allowed: false,
+          code: "AUTH_REQUIRED",
+          message: "Authenticated access is required",
+        };
+      }
+      return { allowed: true };
+    },
+  });
+
+  const fileId = "0x6666666666666666666666666666666666666666666666666666666666666667";
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+  });
+  const body = res.json() as any;
+
+  assert.equal(res.statusCode, 401);
+  assert.equal(body.error.code, "AUTH_REQUIRED");
+  assert.equal(res.headers["cache-control"], undefined);
 });

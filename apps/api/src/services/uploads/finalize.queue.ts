@@ -117,7 +117,7 @@ const FINALIZE_DRAIN_INTERVAL_MS = parsePositiveIntEnv(
   500,
   100
 );
-const FINALIZE_QUEUE_MAX_DEPTH = parsePositiveIntEnv(
+let finalizeQueueMaxDepth = parsePositiveIntEnv(
   "FLOE_FINALIZE_QUEUE_MAX_DEPTH",
   5000
 );
@@ -132,6 +132,7 @@ const activeLocal = new Set<string>();
 let processFinalizeImpl: typeof processFinalize = processFinalize;
 let scheduleRetryImpl: typeof scheduleRetry = scheduleRetry;
 let finalizeWorkerRunning = false;
+let autoDrainEnabled = true;
 
 function queueKey() {
   return uploadKeys.finalizeQueue();
@@ -168,16 +169,6 @@ async function markUploadFailed(params: {
   }
 }
 
-async function markUploadFinalizing(uploadId: string) {
-  const redis = getRedis();
-  await redis
-    .hset(uploadKeys.meta(uploadId), {
-      status: "finalizing",
-      finalizingQueuedAt: String(Date.now()),
-    })
-    .catch(() => {});
-}
-
 async function enqueueUploadId(uploadId: string): Promise<boolean> {
   const redis = getRedis();
   const queuedAt = Date.now();
@@ -202,6 +193,51 @@ async function enqueueUploadId(uploadId: string): Promise<boolean> {
     [uploadId, String(queuedAt)]
   );
   return Number(added) === 1;
+}
+
+async function admitUploadFinalize(uploadId: string): Promise<"enqueued" | "duplicate" | "rejected_backpressure"> {
+  const redis = getRedis();
+  const queuedAt = Date.now();
+  const script = `
+    local metaKey = KEYS[1]
+    local pendingKey = KEYS[2]
+    local queueKey = KEYS[3]
+    local pendingSinceKey = KEYS[4]
+    local uploadId = ARGV[1]
+    local queuedAt = ARGV[2]
+    local maxDepth = tonumber(ARGV[3])
+
+    redis.call("HSET", metaKey, "status", "finalizing", "finalizingQueuedAt", queuedAt)
+
+    if redis.call("SISMEMBER", pendingKey, uploadId) == 1 then
+      return 0
+    end
+
+    if redis.call("LLEN", queueKey) >= maxDepth then
+      return -1
+    end
+
+    redis.call("SADD", pendingKey, uploadId)
+    redis.call("LPUSH", queueKey, uploadId)
+    redis.call("ZADD", pendingSinceKey, queuedAt, uploadId)
+    return 1
+  `;
+
+  const result = Number(
+    await redis.eval(
+      script,
+      [
+        uploadKeys.meta(uploadId),
+        pendingKey(),
+        queueKey(),
+        uploadKeys.finalizePendingSince(),
+      ],
+      [uploadId, String(queuedAt), String(finalizeQueueMaxDepth)]
+    )
+  );
+  if (result === 1) return "enqueued";
+  if (result === 0) return "duplicate";
+  return "rejected_backpressure";
 }
 
 async function enqueueUploadIdForce(uploadId: string): Promise<void> {
@@ -545,6 +581,8 @@ export const finalizeQueueTestHooks = {
   reset() {
     activeLocal.clear();
     finalizeWorkerRunning = false;
+    autoDrainEnabled = true;
+    finalizeQueueMaxDepth = parsePositiveIntEnv("FLOE_FINALIZE_QUEUE_MAX_DEPTH", 5000);
     for (const timer of retryTimers) {
       clearTimeout(timer);
     }
@@ -560,6 +598,13 @@ export const finalizeQueueTestHooks = {
   },
   getRetryTimerCount() {
     return retryTimers.size;
+  },
+  setQueueMaxDepth(value?: number) {
+    finalizeQueueMaxDepth =
+      value ?? parsePositiveIntEnv("FLOE_FINALIZE_QUEUE_MAX_DEPTH", 5000);
+  },
+  setAutoDrain(enabled?: boolean) {
+    autoDrainEnabled = enabled ?? true;
   },
 };
 
@@ -597,16 +642,17 @@ export async function enqueueUploadFinalize(params: {
   uploadId: string;
   log: FastifyBaseLogger;
 }): Promise<{ enqueued: boolean; rejectedByBackpressure: boolean }> {
-  const stats = await getUploadFinalizeQueueStats();
-  if (stats.depth >= FINALIZE_QUEUE_MAX_DEPTH) {
+  const admission = await admitUploadFinalize(params.uploadId);
+  if (admission === "rejected_backpressure") {
     recordFinalizeEnqueue({ result: "rejected_backpressure" });
     return { enqueued: false, rejectedByBackpressure: true };
   }
 
-  await markUploadFinalizing(params.uploadId);
-  const enqueued = await enqueueUploadId(params.uploadId);
+  const enqueued = admission === "enqueued";
   recordFinalizeEnqueue({ result: enqueued ? "enqueued" : "duplicate" });
-  await drainOnce(params.log);
+  if (autoDrainEnabled) {
+    await drainOnce(params.log);
+  }
   return { enqueued, rejectedByBackpressure: false };
 }
 
