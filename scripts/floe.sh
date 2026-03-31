@@ -29,6 +29,7 @@ GLOBAL_MAX_FILE_SIZE_BYTES="${FLOE_GLOBAL_MAX_FILE_SIZE_BYTES:-$((15 * 1024 * 10
 declare -a CURL_AUTH_HEADERS=()
 
 API_BASE="${FLOE_API_BASE:-http://localhost:3001/v1/uploads}"
+READ_API_BASE="${FLOE_READ_API_BASE:-}"
 
 CURL_CONNECT_TIMEOUT_S="${FLOE_CURL_CONNECT_TIMEOUT_S:-5}"
 CURL_MAX_TIME_S="${FLOE_CURL_MAX_TIME_S:-240}"
@@ -314,6 +315,7 @@ Options:
   -p, --parallel <n>    Parallel uploads (default: 1)
       --resume <id>     Resume an existing uploadId (skips already uploaded chunks)
       --api <url>       Override API base (default: ${API_BASE})
+      --read-api <url>  Override read/file API base used for output links
       --state <path>    Override state file path (disables auto state naming)
       --state-dir <dir> Store state files under this directory
       --keep-state      Keep the state file after a successful upload
@@ -341,6 +343,7 @@ while [[ $# -gt 0 ]]; do
     -p|--parallel) PARALLEL_JOBS="$2"; shift ;;
     --resume) RESUME_UPLOAD_ID="$2"; EXPLICIT_RESUME=1; shift ;;
     --api) API_BASE="$2"; shift ;;
+    --read-api) READ_API_BASE="$2"; shift ;;
     --state) STATE_FILE_OVERRIDE="$2"; shift ;;
     --state-dir) STATE_DIR_OVERRIDE="$2"; shift ;;
     --keep-state) KEEP_STATE=1 ;;
@@ -1305,6 +1308,9 @@ print_kv "Skipped"       "$(numfmt --to=iec-i "$TRANSFER_BYTES_SKIPPED")"
 print_kv "Throughput"    "$(numfmt --to=iec-i "$AVG_UPLOAD_BPS")/s"
 ui_newline
 FILES_BASE="${API_BASE%/v1/uploads}"
+if [[ -n "$READ_API_BASE" ]]; then
+  FILES_BASE="${READ_API_BASE%/}"
+fi
 print_kv "Metadata" "${FILES_BASE}/v1/files/$FILE_ID/metadata"
 print_kv "Manifest" "${FILES_BASE}/v1/files/$FILE_ID/manifest"
 print_kv "Stream"   "${FILES_BASE}/v1/files/$FILE_ID/stream"

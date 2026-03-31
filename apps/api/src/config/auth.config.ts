@@ -78,6 +78,13 @@ export interface StaticApiKeyConfig {
   tier: RateLimitTier;
 }
 
+function buildLocalLeaseSize() {
+  return {
+    file_meta_read: parsePositiveIntEnv("FLOE_RATE_LIMIT_FILE_META_LOCAL_LEASE", 1),
+    file_stream_read: parsePositiveIntEnv("FLOE_RATE_LIMIT_FILE_STREAM_LOCAL_LEASE", 1),
+  } as const;
+}
+
 function buildLimits() {
   const limits = {} as Record<RateLimitScope, Record<RateLimitTier, number>>;
 
@@ -172,6 +179,7 @@ function parseApiKeys(): StaticApiKeyConfig[] {
 
 const builtLimits = buildLimits();
 assertTierOrder(builtLimits);
+const localLeaseSize = buildLocalLeaseSize();
 
 const maxFileSizeBytes = {
   public: parsePositiveIntEnv(
@@ -193,6 +201,7 @@ if (maxFileSizeBytes.authenticated < maxFileSizeBytes.public) {
 export const AuthRateLimitConfig = {
   windowSeconds: parsePositiveIntEnv("FLOE_RATE_LIMIT_WINDOW_SECONDS", 60),
   limits: builtLimits,
+  localLeaseSize,
 } as const;
 
 export const AuthUploadPolicyConfig = {

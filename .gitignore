@@ -6,6 +6,8 @@ dist/
 # temp uploads
 apps/api/tmp/
 apps/api/tmp/**
+tmp/
+tmp/**
 
 # env
 .env

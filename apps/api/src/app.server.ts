@@ -173,6 +173,7 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
           uploadChunk: AuthRateLimitConfig.limits.upload_chunk,
           fileMetaRead: AuthRateLimitConfig.limits.file_meta_read,
           fileStreamRead: AuthRateLimitConfig.limits.file_stream_read,
+          localReadLeaseSize: AuthRateLimitConfig.localLeaseSize,
           uploadMaxFileSizeBytes: UploadConfig.maxFileSizeBytes,
           publicMaxFileSizeBytes: AuthUploadPolicyConfig.maxFileSizeBytes.public,
           authMaxFileSizeBytes: AuthUploadPolicyConfig.maxFileSizeBytes.authenticated,

@@ -104,7 +104,7 @@ SUI_PRIVATE_KEY=suiprivkey...
 SUI_PACKAGE_ID=0x<your-package-id>
 ```
 
-Use `.env.example` as the full environment reference.
+Use `.env.example` as the full environment reference. The read path supports optional local Redis lease batching for metadata and stream rate limits so hot read traffic does not need a Redis round-trip on every request.
 
 For production-style topology config, Floe can also load `config.yaml` before startup:
 
@@ -153,6 +153,14 @@ Floe now includes a container-first deployment baseline for phase-1 beta.
 - if local MinIO runs on the host, use `host.docker.internal` instead of `127.0.0.1` from inside Docker
 
 See `docs/DEPLOYMENT.md` for the deploy, restart, and recovery flow.
+
+### Stream Benchmark
+
+```bash
+npm run bench:stream -- --base http://localhost:3001 --file <fileId>
+```
+
+This writes CSV output under `tmp/stream-load/<timestamp>/` with per-run TTFB, total duration, bytes, status, and request mode so you can compare branches or config changes.
 
 ## Upload CLI
 
