@@ -93,7 +93,8 @@ export async function createSession(input: {
     })
     .expire(uploadKeys.meta(uploadId), metaTtlSecondsValue)
 
-    .sadd(uploadKeys.gcIndex(), uploadId);
+    .sadd(uploadKeys.gcIndex(), uploadId)
+    .sadd(uploadKeys.activeIndex(), uploadId);
 
   const results = await tx.exec();
   if (!results) {
@@ -112,6 +113,7 @@ export async function createSession(input: {
       .del(uploadKeys.meta(uploadId))
       .del(uploadKeys.chunks(uploadId))
       .srem(uploadKeys.gcIndex(), uploadId)
+      .srem(uploadKeys.activeIndex(), uploadId)
       .exec()
       .catch(() => {});
     throw err;
@@ -159,6 +161,7 @@ export async function touchUploadActivity(params: {
     .hset(metaKey, fields)
     .expire(metaKey, metaTtlSeconds())
     .sadd(uploadKeys.gcIndex(), params.uploadId)
+    .sadd(uploadKeys.activeIndex(), params.uploadId)
     .exec();
 }
 

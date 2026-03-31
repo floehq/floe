@@ -57,6 +57,7 @@ export async function runUploadGc(log: FastifyBaseLogger) {
         })
         .del(sessionKey)
         .sadd(uploadKeys.gcIndex(), uploadId)
+        .srem(uploadKeys.activeIndex(), uploadId)
         .exec();
       status = "expired";
     }
@@ -69,6 +70,7 @@ export async function runUploadGc(log: FastifyBaseLogger) {
         status: "expired",
         expiredAt: String(Date.now()),
       });
+      await redis.srem(uploadKeys.activeIndex(), uploadId);
       status = "expired";
     }
 
@@ -77,6 +79,7 @@ export async function runUploadGc(log: FastifyBaseLogger) {
         .multi()
         .del(uploadKeys.chunks(uploadId))
         .srem(uploadKeys.gcIndex(), uploadId)
+        .srem(uploadKeys.activeIndex(), uploadId)
         .exec();
       continue;
     }
@@ -103,6 +106,7 @@ export async function runUploadGc(log: FastifyBaseLogger) {
             .del(uploadKeys.chunks(uploadId))
             .del(sessionKey)
             .srem(uploadKeys.gcIndex(), uploadId)
+            .srem(uploadKeys.activeIndex(), uploadId)
             .exec();
           continue;
         }
@@ -139,6 +143,7 @@ export async function runUploadGc(log: FastifyBaseLogger) {
         .del(uploadKeys.chunks(uploadId))
         .del(sessionKey)
         .srem(uploadKeys.gcIndex(), uploadId)
+        .srem(uploadKeys.activeIndex(), uploadId)
         .exec(),
     ]);
 

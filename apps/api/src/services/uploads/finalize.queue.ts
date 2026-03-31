@@ -127,9 +127,11 @@ const finalizeWorkers = new LocalAsyncQueue({
 });
 
 let drainTimer: NodeJS.Timeout | null = null;
+const retryTimers = new Set<NodeJS.Timeout>();
 const activeLocal = new Set<string>();
 let processFinalizeImpl: typeof processFinalize = processFinalize;
 let scheduleRetryImpl: typeof scheduleRetry = scheduleRetry;
+let finalizeWorkerRunning = false;
 
 function queueKey() {
   return uploadKeys.finalizeQueue();
@@ -161,6 +163,9 @@ async function markUploadFailed(params: {
         : {}),
     })
     .catch(() => {});
+  if (!params.retryable) {
+    await redis.srem(uploadKeys.activeIndex(), params.uploadId).catch(() => {});
+  }
 }
 
 async function markUploadFinalizing(uploadId: string) {
@@ -268,9 +273,18 @@ async function lockRetryDelayMs(uploadId: string): Promise<number> {
 }
 
 async function scheduleRetry(uploadId: string, log: FastifyBaseLogger, delayMs: number) {
-  setTimeout(() => {
+  if (!finalizeWorkerRunning) {
+    log.warn({ uploadId, delayMs }, "Skipping finalize retry scheduling while worker is stopping");
+    return;
+  }
+
+  const timer = setTimeout(() => {
+    retryTimers.delete(timer);
     void (async () => {
       try {
+        if (!finalizeWorkerRunning) {
+          return;
+        }
         await enqueueUploadIdForce(uploadId);
         await drainOnce(log);
       } catch (err: any) {
@@ -284,6 +298,8 @@ async function scheduleRetry(uploadId: string, log: FastifyBaseLogger, delayMs: 
       }
     })();
   }, delayMs);
+  timer.unref?.();
+  retryTimers.add(timer);
 }
 
 async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
@@ -528,6 +544,11 @@ export const finalizeQueueTestHooks = {
   },
   reset() {
     activeLocal.clear();
+    finalizeWorkerRunning = false;
+    for (const timer of retryTimers) {
+      clearTimeout(timer);
+    }
+    retryTimers.clear();
     processFinalizeImpl = processFinalize;
     scheduleRetryImpl = scheduleRetry;
   },
@@ -537,6 +558,9 @@ export const finalizeQueueTestHooks = {
   setScheduleRetry(fn?: typeof scheduleRetry) {
     scheduleRetryImpl = fn ?? scheduleRetry;
   },
+  getRetryTimerCount() {
+    return retryTimers.size;
+  },
 };
 
 export async function startUploadFinalizeWorker(log: FastifyBaseLogger): Promise<{
@@ -544,6 +568,7 @@ export async function startUploadFinalizeWorker(log: FastifyBaseLogger): Promise
   recovered: number;
   cleaned: number;
 }> {
+  finalizeWorkerRunning = true;
   const recovery = await recoverFinalizingUploads(log);
   await drainOnce(log);
 
@@ -556,10 +581,15 @@ export async function startUploadFinalizeWorker(log: FastifyBaseLogger): Promise
 }
 
 export async function stopUploadFinalizeWorker(): Promise<void> {
+  finalizeWorkerRunning = false;
   if (drainTimer) {
     clearInterval(drainTimer);
     drainTimer = null;
   }
+  for (const timer of retryTimers) {
+    clearTimeout(timer);
+  }
+  retryTimers.clear();
   await finalizeWorkers.onIdle();
 }
 

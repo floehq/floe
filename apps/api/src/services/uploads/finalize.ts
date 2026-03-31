@@ -320,6 +320,7 @@ export async function finalizeUpload(
         .del(uploadKeys.session(uploadId))
         .del(uploadKeys.chunks(uploadId))
         .srem(uploadKeys.gcIndex(), uploadId)
+        .srem(uploadKeys.activeIndex(), uploadId)
         .exec()
     );
 

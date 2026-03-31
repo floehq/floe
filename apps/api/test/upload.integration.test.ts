@@ -24,12 +24,14 @@ process.env.WALRUS_AGGREGATOR_URL = "http://127.0.0.1:1";
 delete process.env.DATABASE_URL;
 
 type RedisModule = typeof import("../src/state/redis.ts");
+type UploadConfigModule = typeof import("../src/config/uploads.config.ts");
 type SessionModule = typeof import("../src/services/uploads/session.ts");
 type UploadRoutesModule = typeof import("../src/routes/uploads.ts");
 type KeysModule = typeof import("../src/state/keys.ts");
 type StoreIndexModule = typeof import("../src/store/index.ts");
 let redisProcess: ChildProcess | null = null;
 let redisModule: RedisModule;
+let uploadConfigModule: UploadConfigModule;
 let sessionModule: SessionModule;
 let uploadRoutesModule: UploadRoutesModule;
 let keysModule: KeysModule;
@@ -184,6 +186,7 @@ async function cleanupUpload(uploadId: string) {
   await redis.del(uploadKeys.meta(uploadId));
   await redis.del(uploadKeys.chunks(uploadId));
   await redis.srem(uploadKeys.gcIndex(), uploadId);
+  await redis.srem(uploadKeys.activeIndex(), uploadId);
   await redis.srem(uploadKeys.finalizePending(), uploadId);
   await redis.zrem(uploadKeys.finalizePendingSince(), uploadId);
   await redis.lrem(uploadKeys.finalizeQueue(), 0, uploadId);
@@ -218,6 +221,7 @@ before(async () => {
   await waitForRedis(redisPort);
 
   redisModule = await import("../src/state/redis.ts");
+  uploadConfigModule = await import("../src/config/uploads.config.ts");
   sessionModule = await import("../src/services/uploads/session.ts");
   uploadRoutesModule = await import("../src/routes/uploads.ts");
   keysModule = await import("../src/state/keys.ts");
@@ -257,8 +261,13 @@ test("create rejects authenticated keys missing uploads:write scope", async () =
 afterEach(async () => {
   const redis = redisModule.getRedis();
   const { uploadKeys } = keysModule;
-  const activeIds = await redis.smembers<string[]>(uploadKeys.gcIndex());
-  await Promise.all(activeIds.map((uploadId) => cleanupUpload(uploadId)));
+  const [gcIds, activeIds] = await Promise.all([
+    redis.smembers<string[]>(uploadKeys.gcIndex()),
+    redis.smembers<string[]>(uploadKeys.activeIndex()),
+  ]);
+  await Promise.all(
+    [...new Set([...gcIds, ...activeIds])].map((uploadId) => cleanupUpload(uploadId))
+  );
 });
 
 after(async () => {
@@ -416,6 +425,52 @@ test("status marks stale uploads as expired from expiresAt", async () => {
     assert.equal(Number(meta.expiredAt) > 0, true);
   } finally {
     await cleanupUpload(uploadId);
+  }
+});
+
+test("expired uploads release active capacity before GC cleanup runs", async () => {
+  const originalMaxActiveUploads = uploadConfigModule.UploadConfig.maxActiveUploads;
+  uploadConfigModule.UploadConfig.maxActiveUploads = 1;
+  const uploadId = await seedUpload();
+  const app = await createRouteApp();
+
+  try {
+    const redis = redisModule.getRedis();
+    const { uploadKeys } = keysModule;
+    await redis.hset(uploadKeys.meta(uploadId), {
+      expiresAt: String(Date.now() - 1000),
+      status: "uploading",
+    });
+    await redis.hset(uploadKeys.session(uploadId), {
+      expiresAt: String(Date.now() - 1000),
+      status: "uploading",
+    });
+
+    const expired = await app.inject({
+      method: "GET",
+      url: `/v1/uploads/${uploadId}/status`,
+      routePath: "/v1/uploads/:uploadId/status",
+      params: { uploadId },
+    });
+    assert.equal(expired.statusCode, 200);
+    assert.equal(expired.json().status, "expired");
+    assert.equal(await redis.sismember(uploadKeys.gcIndex(), uploadId), 1);
+    assert.equal(await redis.sismember(uploadKeys.activeIndex(), uploadId), 0);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/uploads/create",
+      routePath: "/v1/uploads/create",
+      body: {
+        filename: "next.mp4",
+        contentType: "video/mp4",
+        sizeBytes: 8,
+      },
+    });
+
+    assert.equal(created.statusCode, 201);
+  } finally {
+    uploadConfigModule.UploadConfig.maxActiveUploads = originalMaxActiveUploads;
   }
 });
 

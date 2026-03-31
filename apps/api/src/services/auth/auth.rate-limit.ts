@@ -27,9 +27,12 @@ type LocalLeaseState = {
   remaining: number;
   current: number;
   denied: boolean;
+  touchedAt: number;
 };
 
 const localLeaseCache = new Map<string, LocalLeaseState>();
+const localLeaseInflight = new Map<string, { bucket: number; promise: Promise<RateLimitDecision> }>();
+const LOCAL_LEASE_CACHE_MAX_ENTRIES = 10_000;
 
 function getLeaseSize(scope: RateLimitScope): number | null {
   if (scope === "file_meta_read") {
@@ -43,6 +46,24 @@ function getLeaseSize(scope: RateLimitScope): number | null {
 
 function localLeaseKey(scope: LeaseScope, subject: string): string {
   return `${scope}:${subject}`;
+}
+
+function pruneLocalLeaseCache(currentBucket: number) {
+  for (const [key, value] of localLeaseCache) {
+    if (value.bucket !== currentBucket) {
+      localLeaseCache.delete(key);
+    }
+  }
+
+  if (localLeaseCache.size <= LOCAL_LEASE_CACHE_MAX_ENTRIES) return;
+
+  const overflow = localLeaseCache.size - LOCAL_LEASE_CACHE_MAX_ENTRIES;
+  const oldest = [...localLeaseCache.entries()]
+    .sort((a, b) => a[1].touchedAt - b[1].touchedAt)
+    .slice(0, overflow);
+  for (const [key] of oldest) {
+    localLeaseCache.delete(key);
+  }
 }
 
 function tryConsumeLocalLease(params: {
@@ -60,6 +81,7 @@ function tryConsumeLocalLease(params: {
     }
     return null;
   }
+  hit.touchedAt = Date.now();
 
   if (hit.denied) {
     return {
@@ -99,29 +121,42 @@ async function leaseRemoteAllowance(params: {
   const script = `
     local key = KEYS[1]
     local ttl = tonumber(ARGV[1])
-    local incr = tonumber(ARGV[2])
-    local current = redis.call("INCRBY", key, incr)
-    if current == incr then
-      redis.call("EXPIRE", key, ttl)
+    local leaseSize = tonumber(ARGV[2])
+    local limit = tonumber(ARGV[3])
+    local current = tonumber(redis.call("GET", key) or "0")
+    local remaining = math.max(0, limit - current)
+    local reserved = math.min(leaseSize, remaining)
+    if reserved > 0 then
+      current = redis.call("INCRBY", key, reserved)
+      if current == reserved then
+        redis.call("EXPIRE", key, ttl)
+      end
     end
-    return current
+    return { current, reserved }
   `;
 
-  const currentRaw = await redis.eval(script, [key], [String(params.windowSeconds), String(leaseSize)]);
+  const result = await redis.eval(script, [key], [
+    String(params.windowSeconds),
+    String(leaseSize),
+    String(params.limit),
+  ]);
+  const [currentRaw, reservedRaw] = Array.isArray(result) ? result : [result, 0];
   const current = Number(currentRaw);
-  const firstInLease = current - leaseSize + 1;
-  const allowedCount = Math.max(0, Math.min(leaseSize, params.limit - firstInLease + 1));
+  const reserved = Number(reservedRaw);
+  const firstInLease = reserved > 0 ? current - reserved + 1 : params.limit + 1;
 
   localLeaseCache.set(localLeaseKey(params.scope, params.identity.subject), {
     bucket: params.bucket,
-    remaining: Math.max(0, allowedCount - 1),
+    remaining: Math.max(0, reserved - 1),
     current: firstInLease,
-    denied: allowedCount === 0,
+    denied: reserved === 0,
+    touchedAt: Date.now(),
   });
+  pruneLocalLeaseCache(params.bucket);
 
   return {
-    allowed: allowedCount > 0,
-    current: allowedCount > 0 ? firstInLease : Math.max(current, params.limit + 1),
+    allowed: reserved > 0,
+    current: reserved > 0 ? firstInLease : Math.max(current, params.limit + 1),
     limit: params.limit,
     windowSeconds: params.windowSeconds,
     identity: params.identity,
@@ -130,6 +165,11 @@ async function leaseRemoteAllowance(params: {
 
 export function clearLocalRateLimitLeaseCacheForTests() {
   localLeaseCache.clear();
+  localLeaseInflight.clear();
+}
+
+export function getLocalRateLimitLeaseCacheSizeForTests() {
+  return localLeaseCache.size;
 }
 
 export async function checkTieredRateLimit(params: {
@@ -148,24 +188,44 @@ export async function checkTieredRateLimit(params: {
     (params.scope === "file_meta_read" || params.scope === "file_stream_read")
   ) {
     const leaseScope: LeaseScope = params.scope;
-    const local = tryConsumeLocalLease({
-      scope: leaseScope,
-      identity,
-      limit,
-      bucket,
-      windowSeconds,
-    });
-    if (local) {
-      return local;
-    }
+    const key = localLeaseKey(leaseScope, identity.subject);
+    pruneLocalLeaseCache(bucket);
 
-    return leaseRemoteAllowance({
-      scope: leaseScope,
-      identity,
-      limit,
-      bucket,
-      windowSeconds,
-    });
+    while (true) {
+      const local = tryConsumeLocalLease({
+        scope: leaseScope,
+        identity,
+        limit,
+        bucket,
+        windowSeconds,
+      });
+      if (local) {
+        return local;
+      }
+
+      const inflight = localLeaseInflight.get(key);
+      if (inflight && inflight.bucket === bucket) {
+        await inflight.promise;
+        continue;
+      }
+
+      const promise = leaseRemoteAllowance({
+        scope: leaseScope,
+        identity,
+        limit,
+        bucket,
+        windowSeconds,
+      });
+      localLeaseInflight.set(key, { bucket, promise });
+      try {
+        return await promise;
+      } finally {
+        const active = localLeaseInflight.get(key);
+        if (active?.promise === promise) {
+          localLeaseInflight.delete(key);
+        }
+      }
+    }
   }
 
   const key = `floe:v1:ratelimit:${params.scope}:${bucket}:${identity.subject}`;

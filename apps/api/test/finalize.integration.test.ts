@@ -211,6 +211,7 @@ async function cleanupUpload(uploadId: string) {
   await redis.del(uploadKeys.meta(uploadId));
   await redis.del(uploadKeys.chunks(uploadId));
   await redis.srem(uploadKeys.gcIndex(), uploadId);
+  await redis.srem(uploadKeys.activeIndex(), uploadId);
   await redis.srem(uploadKeys.finalizePending(), uploadId);
   await redis.zrem(uploadKeys.finalizePendingSince(), uploadId);
   await redis.lrem(uploadKeys.finalizeQueue(), 0, uploadId);
@@ -563,6 +564,31 @@ test("runFinalizeJob turns timeout into retryable recovery instead of holding th
     assert.equal(meta.failedRetryable, "1");
     assert.equal(meta.finalizeAttemptState, "retryable_failure");
     assert.equal(scheduled.length, 1);
+  } finally {
+    await cleanupUpload(uploadId);
+  }
+});
+
+test("stopUploadFinalizeWorker clears scheduled retry timers", async () => {
+  const uploadId = await seedUpload();
+  try {
+    await markUploadReadyForFinalize(uploadId);
+    await queueModule.startUploadFinalizeWorker(log);
+    await queueModule.finalizeQueueTestHooks.forceEnqueue(uploadId);
+
+    queueModule.finalizeQueueTestHooks.setProcessFinalize(async () => {
+      throw new Error("WALRUS temporary outage");
+    });
+
+    await queueModule.finalizeQueueTestHooks.runNextQueuedJob(log);
+    assert.equal(queueModule.finalizeQueueTestHooks.getRetryTimerCount() > 0, true);
+
+    await queueModule.stopUploadFinalizeWorker();
+    assert.equal(queueModule.finalizeQueueTestHooks.getRetryTimerCount(), 0);
+
+    await sleep(300);
+    const stats = await queueModule.getUploadFinalizeQueueStats();
+    assert.equal(stats.depth, 0);
   } finally {
     await cleanupUpload(uploadId);
   }

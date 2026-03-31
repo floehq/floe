@@ -120,6 +120,7 @@ async function expireUploadIfNeeded(params: {
     })
     .del(uploadKeys.session(params.uploadId))
     .sadd(uploadKeys.gcIndex(), params.uploadId)
+    .srem(uploadKeys.activeIndex(), params.uploadId)
     .exec();
   return true;
 }
@@ -143,7 +144,7 @@ async function tryReserveUploadCapacity(params: {
 
   const reserved = await redis.eval(
     script,
-    [uploadKeys.gcIndex()],
+    [uploadKeys.activeIndex()],
     [String(params.maxActiveUploads), params.uploadId]
   );
 
@@ -434,6 +435,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           .del(uploadKeys.meta(uploadId))
           .del(uploadKeys.chunks(uploadId))
           .srem(uploadKeys.gcIndex(), uploadId)
+          .srem(uploadKeys.activeIndex(), uploadId)
           .exec()
           .catch(() => {});
       }
@@ -1019,7 +1021,11 @@ export default async function uploadRoutes(app: FastifyInstance) {
         ]);
         const cleanupOk = cleanupResults.every((result) => result.status === "fulfilled");
         if (cleanupOk) {
-          await redis.srem(uploadKeys.gcIndex(), uploadId);
+          await redis
+            .multi()
+            .srem(uploadKeys.gcIndex(), uploadId)
+            .srem(uploadKeys.activeIndex(), uploadId)
+            .exec();
         }
         return reply.code(200).send({ ok: true, uploadId, status });
       }
@@ -1043,6 +1049,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           .del(uploadKeys.session(uploadId))
           .del(uploadKeys.chunks(uploadId))
           .srem(uploadKeys.gcIndex(), uploadId)
+          .srem(uploadKeys.activeIndex(), uploadId)
           .exec()
       );
       if (cleaned === REDIS_DEPENDENCY_UNAVAILABLE) return;
@@ -1079,6 +1086,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         .del(uploadKeys.session(uploadId))
         .del(uploadKeys.chunks(uploadId))
         .srem(uploadKeys.gcIndex(), uploadId)
+        .srem(uploadKeys.activeIndex(), uploadId)
         .exec()
     );
     if (cleaned === REDIS_DEPENDENCY_UNAVAILABLE) return;
