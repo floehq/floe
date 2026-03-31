@@ -359,6 +359,7 @@ test("manifest route exposes degraded postgres fallback headers", async () => {
   assert.equal(res.statusCode, 200);
   assert.equal(res.headers["x-floe-metadata-source"], "sui");
   assert.equal(res.headers["x-floe-postgres-state"], "degraded");
+  assert.equal(res.headers["cache-control"], "public, max-age=31536000, immutable");
 });
 
 test("stream routes expose metadata source headers", async () => {

@@ -631,7 +631,6 @@ export async function filesRoutes(app: FastifyInstance) {
     }
     applyFileLookupHeaders(res, { source: fieldsSource, postgresState });
     applyFileReadCacheHeaders(res);
-    applyFileReadCacheHeaders(res);
 
     const normalized = normalizeFileFields(fields);
     if (!normalized) {
@@ -735,6 +734,7 @@ export async function filesRoutes(app: FastifyInstance) {
       return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
     }
     applyFileLookupHeaders(res, { source: fieldsSource, postgresState });
+    applyFileReadCacheHeaders(res);
 
     const normalized = normalizeFileFields(fields);
     if (!normalized) {
