@@ -18,7 +18,14 @@ export interface RateLimitDecision {
   current: number;
   limit: number;
   windowSeconds: number;
+  retryAfterSeconds?: number;
   identity: RequestIdentity;
+}
+
+function retryAfterSeconds(nowMs: number, windowSeconds: number): number {
+  const windowMs = windowSeconds * 1000;
+  const resetAtMs = Math.ceil((nowMs + 1) / windowMs) * windowMs;
+  return Math.max(1, Math.ceil((resetAtMs - nowMs) / 1000));
 }
 
 type LeaseScope = "file_meta_read" | "file_stream_read";
@@ -72,6 +79,7 @@ function tryConsumeLocalLease(params: {
   limit: number;
   bucket: number;
   windowSeconds: number;
+  nowMs: number;
 }): RateLimitDecision | null {
   const key = localLeaseKey(params.scope, params.identity.subject);
   const hit = localLeaseCache.get(key);
@@ -89,6 +97,7 @@ function tryConsumeLocalLease(params: {
       current: Math.max(hit.current, params.limit + 1),
       limit: params.limit,
       windowSeconds: params.windowSeconds,
+      retryAfterSeconds: retryAfterSeconds(params.nowMs, params.windowSeconds),
       identity: params.identity,
     };
   }
@@ -114,6 +123,7 @@ async function leaseRemoteAllowance(params: {
   limit: number;
   bucket: number;
   windowSeconds: number;
+  nowMs: number;
 }): Promise<RateLimitDecision> {
   const leaseSize = Math.max(1, getLeaseSize(params.scope) ?? 1);
   const key = `floe:v1:ratelimit:${params.scope}:${params.bucket}:${params.identity.subject}`;
@@ -128,7 +138,7 @@ async function leaseRemoteAllowance(params: {
     local reserved = math.min(leaseSize, remaining)
     if reserved > 0 then
       current = redis.call("INCRBY", key, reserved)
-      if current == reserved then
+      if current == reserved or redis.call("TTL", key) < 0 then
         redis.call("EXPIRE", key, ttl)
       end
     end
@@ -159,6 +169,7 @@ async function leaseRemoteAllowance(params: {
     current: reserved > 0 ? firstInLease : Math.max(current, params.limit + 1),
     limit: params.limit,
     windowSeconds: params.windowSeconds,
+    ...(reserved > 0 ? {} : { retryAfterSeconds: retryAfterSeconds(params.nowMs, params.windowSeconds) }),
     identity: params.identity,
   };
 }
@@ -177,9 +188,10 @@ export async function checkTieredRateLimit(params: {
   identity: RequestIdentity;
 }): Promise<RateLimitDecision> {
   const identity = params.identity;
+  const nowMs = Date.now();
   const windowSeconds = AuthRateLimitConfig.windowSeconds;
   const limit = selectLimit(params.scope, identity);
-  const bucket = windowBucket(Date.now(), windowSeconds);
+  const bucket = windowBucket(nowMs, windowSeconds);
   const leaseSize = getLeaseSize(params.scope);
 
   if (
@@ -198,6 +210,7 @@ export async function checkTieredRateLimit(params: {
         limit,
         bucket,
         windowSeconds,
+        nowMs,
       });
       if (local) {
         return local;
@@ -215,6 +228,7 @@ export async function checkTieredRateLimit(params: {
         limit,
         bucket,
         windowSeconds,
+        nowMs,
       });
       localLeaseInflight.set(key, { bucket, promise });
       try {
@@ -235,7 +249,7 @@ export async function checkTieredRateLimit(params: {
     local key = KEYS[1]
     local ttl = tonumber(ARGV[1])
     local current = redis.call("INCR", key)
-    if current == 1 then
+    if current == 1 or redis.call("TTL", key) < 0 then
       redis.call("EXPIRE", key, ttl)
     end
     return current
@@ -250,6 +264,7 @@ export async function checkTieredRateLimit(params: {
     current: Number.isFinite(current) ? current : limit + 1,
     limit,
     windowSeconds,
+    ...(!allowed ? { retryAfterSeconds: retryAfterSeconds(nowMs, windowSeconds) } : {}),
     identity,
   };
 }

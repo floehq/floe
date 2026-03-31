@@ -8,6 +8,6 @@ export function applyRateLimitHeaders(reply: FastifyReply, decision: RateLimitDe
   reply.header("X-RateLimit-Window", String(decision.windowSeconds));
 
   if (!decision.allowed) {
-    reply.header("Retry-After", String(decision.windowSeconds));
+    reply.header("Retry-After", String(decision.retryAfterSeconds ?? decision.windowSeconds));
   }
 }
