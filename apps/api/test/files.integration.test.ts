@@ -616,3 +616,72 @@ test("metadata rejects authenticated keys missing files:read scope", async () =>
   assert.equal(body.error.code, "INSUFFICIENT_SCOPE");
   assert.equal(body.error.message.includes("files:read"), true);
 });
+
+test("metadata auth precheck rejects before file lookup", async () => {
+  let suiLookups = 0;
+  (suiModule.suiClient as any).getObject = async () => {
+    suiLookups += 1;
+    return {
+      data: {
+        content: {
+          dataType: "moveObject",
+          fields: buildFileFields(),
+        },
+      },
+    };
+  };
+
+  const app = await createRouteApp({
+    async authorizeFileAccess({ fileOwner }: { fileOwner?: string | null }) {
+      if (!fileOwner) {
+        return {
+          allowed: false,
+          code: "AUTH_REQUIRED",
+          message: "Authenticated access is required",
+        };
+      }
+      return { allowed: true };
+    },
+  });
+
+  const fileId = "0x3333333333333333333333333333333333333333333333333333333333333333";
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/metadata`,
+    routePath: "/v1/files/:fileId/metadata",
+    params: { fileId },
+  });
+  const body = res.json() as any;
+
+  assert.equal(res.statusCode, 401);
+  assert.equal(body.error.code, "AUTH_REQUIRED");
+  assert.equal(suiLookups, 0);
+});
+
+test("metadata owner mismatch is masked as file not found", async () => {
+  await mockSuiFile();
+  const app = await createRouteApp({
+    async authorizeFileAccess({ fileOwner }: { fileOwner?: string | null }) {
+      if (!fileOwner) {
+        return { allowed: true };
+      }
+      return {
+        allowed: false,
+        code: "OWNER_MISMATCH",
+        message: "File owner mismatch",
+      };
+    },
+  });
+
+  const fileId = "0x4444444444444444444444444444444444444444444444444444444444444444";
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/metadata`,
+    routePath: "/v1/files/:fileId/metadata",
+    params: { fileId },
+  });
+  const body = res.json() as any;
+
+  assert.equal(res.statusCode, 404);
+  assert.equal(body.error.code, "FILE_NOT_FOUND");
+});

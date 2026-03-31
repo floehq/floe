@@ -62,6 +62,18 @@ function authzErrorCode(code?: string): "AUTH_REQUIRED" | "OWNER_MISMATCH" | "IN
   return "OWNER_MISMATCH";
 }
 
+function sendFileAccessDenied(reply: any, authz: { code?: string; message?: string }) {
+  if (authz.code === "OWNER_MISMATCH") {
+    return sendApiError(reply, 404, "FILE_NOT_FOUND", "File not found");
+  }
+  return sendApiError(
+    reply,
+    authzStatusCode(authz.code),
+    authzErrorCode(authz.code),
+    authz.message ?? "File access denied"
+  );
+}
+
 export type StreamReadPlan = {
   initialSegmentBytes: number;
   segmentBytes: number;
@@ -585,6 +597,15 @@ export async function filesRoutes(app: FastifyInstance) {
       return sendApiError(res, 400, "INVALID_FILE_ID", "fileId must be a valid Sui object id");
     }
 
+    const authzPrecheck = await req.server.authProvider.authorizeFileAccess({
+      req,
+      action: "metadata",
+      fileId,
+    });
+    if (!authzPrecheck.allowed) {
+      return sendFileAccessDenied(res, authzPrecheck);
+    }
+
     let fields: any | null = null;
     let fieldsSource: FileFieldsSource | null = null;
     let postgresState: PostgresReadState = "disabled";
@@ -645,12 +666,7 @@ export async function filesRoutes(app: FastifyInstance) {
       fileOwner: normalized.ownerAddress,
     });
     if (!authz.allowed) {
-      return sendApiError(
-        res,
-        authzStatusCode(authz.code),
-        authzErrorCode(authz.code),
-        authz.message ?? "File access denied"
-      );
+      return sendFileAccessDenied(res, authz);
     }
 
     return {
@@ -684,6 +700,15 @@ export async function filesRoutes(app: FastifyInstance) {
     if (!fileId) {
       req.log.warn({ fileId: rawFileId }, "Invalid file id");
       return sendApiError(res, 400, "INVALID_FILE_ID", "fileId must be a valid Sui object id");
+    }
+
+    const authzPrecheck = await req.server.authProvider.authorizeFileAccess({
+      req,
+      action: "manifest",
+      fileId,
+    });
+    if (!authzPrecheck.allowed) {
+      return sendFileAccessDenied(res, authzPrecheck);
     }
 
     let fields: any | null = null;
@@ -744,12 +769,7 @@ export async function filesRoutes(app: FastifyInstance) {
       fileOwner: normalized.ownerAddress,
     });
     if (!authz.allowed) {
-      return sendApiError(
-        res,
-        authzStatusCode(authz.code),
-        authzErrorCode(authz.code),
-        authz.message ?? "File access denied"
-      );
+      return sendFileAccessDenied(res, authz);
     }
 
     return {
@@ -800,6 +820,15 @@ export async function filesRoutes(app: FastifyInstance) {
           "INVALID_FILE_ID",
           "fileId must be a valid Sui object id"
         );
+      }
+
+      const authzPrecheck = await req.server.authProvider.authorizeFileAccess({
+        req,
+        action: "stream",
+        fileId,
+      });
+      if (!authzPrecheck.allowed) {
+        return sendFileAccessDenied(reply, authzPrecheck);
       }
 
       let fields: any | null = null;
@@ -858,12 +887,7 @@ export async function filesRoutes(app: FastifyInstance) {
         fileOwner: normalized.ownerAddress,
       });
       if (!authz.allowed) {
-        return sendApiError(
-          reply,
-          authzStatusCode(authz.code),
-          authzErrorCode(authz.code),
-          authz.message ?? "File access denied"
-        );
+        return sendFileAccessDenied(reply, authz);
       }
 
       const blobId = normalized.blobId;

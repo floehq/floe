@@ -178,6 +178,7 @@ export class NativeRedisClient implements RedisClient {
   private buffer = Buffer.alloc(0);
   private readonly pending: PendingRequest[] = [];
   private connected = false;
+  private operationChain: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: NativeRedisOptions) {}
 
@@ -225,7 +226,16 @@ export class NativeRedisClient implements RedisClient {
     }
   }
 
-  private async send(parts: Array<string | number>): Promise<unknown> {
+  private enqueueOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.operationChain.then(operation, operation);
+    this.operationChain = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private async sendRaw(parts: Array<string | number>): Promise<unknown> {
     if (!this.socket || !this.connected) {
       throw new Error("Redis socket is not connected");
     }
@@ -239,6 +249,10 @@ export class NativeRedisClient implements RedisClient {
         }
       });
     });
+  }
+
+  private async send(parts: Array<string | number>): Promise<unknown> {
+    return await this.enqueueOperation(() => this.sendRaw(parts));
   }
 
   private drainResponses() {
@@ -349,11 +363,13 @@ export class NativeRedisClient implements RedisClient {
   }
 
   async execMulti(commands: MultiCommand[]) {
-    await this.send(["MULTI"]);
-    for (const command of commands) {
-      await this.send(command);
-    }
-    return normalizeExecReply(await this.send(["EXEC"]));
+    return await this.enqueueOperation(async () => {
+      await this.sendRaw(["MULTI"]);
+      for (const command of commands) {
+        await this.sendRaw(command);
+      }
+      return normalizeExecReply(await this.sendRaw(["EXEC"]));
+    });
   }
 
   async close() {
