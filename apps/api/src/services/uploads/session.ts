@@ -23,11 +23,11 @@ function ensureFsFolder(uploadId: string) {
 }
 
 function sessionTtlSeconds() {
-  return Math.floor(UploadConfig.sessionTtlMs / 1000);
+  return Math.max(1, Math.ceil(UploadConfig.sessionTtlMs / 1000));
 }
 
 function metaTtlSeconds() {
-  return Math.floor((UploadConfig.sessionTtlMs + 30 * 60 * 1000) / 1000);
+  return Math.max(1, Math.ceil((UploadConfig.sessionTtlMs + 30 * 60 * 1000) / 1000));
 }
 
 

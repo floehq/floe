@@ -474,6 +474,42 @@ test("expired uploads release active capacity before GC cleanup runs", async () 
   }
 });
 
+test("create prunes untouched expired uploads from active capacity before counting", async () => {
+  const originalMaxActiveUploads = uploadConfigModule.UploadConfig.maxActiveUploads;
+  uploadConfigModule.UploadConfig.maxActiveUploads = 1;
+  const uploadId = await seedUpload();
+  const app = await createRouteApp();
+
+  try {
+    const redis = redisModule.getRedis();
+    const { uploadKeys } = keysModule;
+    await redis.hset(uploadKeys.meta(uploadId), {
+      expiresAt: String(Date.now() - 1000),
+      status: "uploading",
+    });
+    await redis.hset(uploadKeys.session(uploadId), {
+      expiresAt: String(Date.now() - 1000),
+      status: "uploading",
+    });
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/uploads/create",
+      routePath: "/v1/uploads/create",
+      body: {
+        filename: "pruned.mp4",
+        contentType: "video/mp4",
+        sizeBytes: 8,
+      },
+    });
+
+    assert.equal(created.statusCode, 201);
+    assert.equal(await redis.sismember(uploadKeys.activeIndex(), uploadId), 0);
+  } finally {
+    uploadConfigModule.UploadConfig.maxActiveUploads = originalMaxActiveUploads;
+  }
+});
+
 test("complete rejects expired uploads cleanly", async () => {
   const uploadId = await seedUpload();
   const app = await createRouteApp();

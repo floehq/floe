@@ -132,6 +132,22 @@ async function tryReserveUploadCapacity(params: {
   const redis = getRedis();
   const script = `
     local key = KEYS[1]
+    local nowMs = tonumber(ARGV[3])
+    local activeIds = redis.call("SMEMBERS", key)
+    for _, activeUploadId in ipairs(activeIds) do
+      local metaKey = "floe:v1:upload:" .. activeUploadId .. ":meta"
+      local sessionKey = "floe:v1:upload:" .. activeUploadId .. ":session"
+      local status = redis.call("HGET", metaKey, "status")
+      local expiresAt = tonumber(redis.call("HGET", metaKey, "expiresAt") or "0")
+      local hasSession = tonumber(redis.call("EXISTS", sessionKey))
+      if status == "completed" or status == "failed" or status == "canceled" or status == "expired" then
+        redis.call("SREM", key, activeUploadId)
+      elseif expiresAt > 0 and expiresAt <= nowMs then
+        redis.call("SREM", key, activeUploadId)
+      elseif hasSession == 0 then
+        redis.call("SREM", key, activeUploadId)
+      end
+    end
     local max = tonumber(ARGV[1])
     local uploadId = ARGV[2]
     local count = tonumber(redis.call("SCARD", key))
@@ -145,7 +161,7 @@ async function tryReserveUploadCapacity(params: {
   const reserved = await redis.eval(
     script,
     [uploadKeys.activeIndex()],
-    [String(params.maxActiveUploads), params.uploadId]
+    [String(params.maxActiveUploads), params.uploadId, String(Date.now())]
   );
 
   return Number(reserved) === 1;
