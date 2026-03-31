@@ -181,6 +181,12 @@ export class NativeRedisClient implements RedisClient {
 
   constructor(private readonly options: NativeRedisOptions) {}
 
+  private rejectPending(err: Error) {
+    while (this.pending.length > 0) {
+      this.pending.shift()?.reject(err);
+    }
+  }
+
   async connect() {
     if (this.connected) return;
     const parsed = parseRedisUrl(this.options.url);
@@ -203,11 +209,10 @@ export class NativeRedisClient implements RedisClient {
       this.drainResponses();
     });
     socket.on("error", (err) => {
-      while (this.pending.length > 0) {
-        this.pending.shift()?.reject(err instanceof Error ? err : new Error(String(err)));
-      }
+      this.rejectPending(err instanceof Error ? err : new Error(String(err)));
     });
     socket.on("close", () => {
+      this.rejectPending(new Error("Redis socket closed"));
       this.connected = false;
       this.socket = null;
     });
@@ -358,6 +363,7 @@ export class NativeRedisClient implements RedisClient {
 
   async close() {
     if (!this.socket) return;
+    this.rejectPending(new Error("Redis client closed"));
     this.socket.end();
     this.socket.destroy();
     this.socket = null;

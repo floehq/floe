@@ -7,7 +7,6 @@ import { sendApiError } from "../utils/apiError.js";
 import { ChunkConfig, UploadConfig } from "../config/uploads.config.js";
 import { WalrusEpochLimits } from "../config/walrus.config.js";
 import { AuthUploadPolicyConfig } from "../config/auth.config.js";
-import { checkRedisDependencyHealth } from "../services/health/dependencies.js";
 
 import {
   createSession,
@@ -69,6 +68,7 @@ const DEFAULT_OWNER_ADDRESS = parseOptionalSuiAddressEnv("FLOE_DEFAULT_OWNER_ADD
 
 const FINALIZE_POLL_AFTER_MS = parsePositiveIntEnv("FLOE_FINALIZE_STATUS_POLL_MS", 2000);
 const RETRYABLE_RETRY_AFTER_SECONDS = 5;
+const REDIS_DEPENDENCY_UNAVAILABLE = Symbol("REDIS_DEPENDENCY_UNAVAILABLE");
 
 function authzStatusCode(code?: string): 401 | 403 {
   return code === "AUTH_REQUIRED" ? 401 : 403;
@@ -120,6 +120,7 @@ async function expireUploadIfNeeded(params: {
     })
     .del(uploadKeys.session(params.uploadId))
     .sadd(uploadKeys.gcIndex(), params.uploadId)
+    .srem(uploadKeys.activeIndex(), params.uploadId)
     .exec();
   return true;
 }
@@ -131,6 +132,22 @@ async function tryReserveUploadCapacity(params: {
   const redis = getRedis();
   const script = `
     local key = KEYS[1]
+    local nowMs = tonumber(ARGV[3])
+    local activeIds = redis.call("SMEMBERS", key)
+    for _, activeUploadId in ipairs(activeIds) do
+      local metaKey = "floe:v1:upload:" .. activeUploadId .. ":meta"
+      local sessionKey = "floe:v1:upload:" .. activeUploadId .. ":session"
+      local status = redis.call("HGET", metaKey, "status")
+      local expiresAt = tonumber(redis.call("HGET", metaKey, "expiresAt") or "0")
+      local hasSession = tonumber(redis.call("EXISTS", sessionKey))
+      if status == "completed" or status == "failed" or status == "canceled" or status == "expired" then
+        redis.call("SREM", key, activeUploadId)
+      elseif expiresAt > 0 and expiresAt <= nowMs then
+        redis.call("SREM", key, activeUploadId)
+      elseif hasSession == 0 then
+        redis.call("SREM", key, activeUploadId)
+      end
+    end
     local max = tonumber(ARGV[1])
     local uploadId = ARGV[2]
     local count = tonumber(redis.call("SCARD", key))
@@ -143,8 +160,8 @@ async function tryReserveUploadCapacity(params: {
 
   const reserved = await redis.eval(
     script,
-    [uploadKeys.gcIndex()],
-    [String(params.maxActiveUploads), params.uploadId]
+    [uploadKeys.activeIndex()],
+    [String(params.maxActiveUploads), params.uploadId, String(Date.now())]
   );
 
   return Number(reserved) === 1;
@@ -178,13 +195,31 @@ async function reconcileReceivedChunks(uploadId: string): Promise<number[]> {
 }
 
 async function requireRedis(reply: any): Promise<RedisClient | null> {
-  const health = await checkRedisDependencyHealth();
-  if (health.status === "healthy") {
+  try {
     return getRedis();
+  } catch (err) {
+    if (isRedisDependencyError(err)) {
+      sendRedisUnavailable(reply);
+      return null;
+    }
+    throw err;
   }
+}
 
+function isRedisDependencyError(err: unknown): boolean {
+  const message = String((err as Error)?.message ?? "").toLowerCase();
+  return (
+    message.includes("redis") ||
+    message.includes("not initialized") ||
+    message.includes("econn") ||
+    message.includes("socket") ||
+    message.includes("connection")
+  );
+}
+
+function sendRedisUnavailable(reply: any) {
   reply.header("Retry-After", String(RETRYABLE_RETRY_AFTER_SECONDS));
-  sendApiError(
+  return sendApiError(
     reply,
     503,
     "DEPENDENCY_UNAVAILABLE",
@@ -196,7 +231,21 @@ async function requireRedis(reply: any): Promise<RedisClient | null> {
       },
     }
   );
-  return null;
+}
+
+async function guardRedisDependency<T>(
+  reply: any,
+  op: () => Promise<T>
+): Promise<T | typeof REDIS_DEPENDENCY_UNAVAILABLE> {
+  try {
+    return await op();
+  } catch (err) {
+    if (isRedisDependencyError(err)) {
+      sendRedisUnavailable(reply);
+      return REDIS_DEPENDENCY_UNAVAILABLE;
+    }
+    throw err;
+  }
 }
 
 export default async function uploadRoutes(app: FastifyInstance) {
@@ -343,10 +392,13 @@ export default async function uploadRoutes(app: FastifyInstance) {
     const uploadId = crypto.randomUUID();
     const redis = await requireRedis(reply);
     if (!redis) return;
-    const capacityReserved = await tryReserveUploadCapacity({
-      maxActiveUploads: UploadConfig.maxActiveUploads,
-      uploadId,
-    });
+    const capacityReserved = await guardRedisDependency(reply, () =>
+      tryReserveUploadCapacity({
+        maxActiveUploads: UploadConfig.maxActiveUploads,
+        uploadId,
+      })
+    );
+    if (capacityReserved === REDIS_DEPENDENCY_UNAVAILABLE) return;
 
     if (!capacityReserved) {
       return sendApiError(reply, 429, "UPLOAD_CAPACITY_REACHED", "Too many active uploads", {
@@ -378,6 +430,9 @@ export default async function uploadRoutes(app: FastifyInstance) {
         expiresAt: session.expiresAt,
       });
     } catch (err) {
+      if (isRedisDependencyError(err)) {
+        return sendRedisUnavailable(reply);
+      }
       log.error({ err }, "Session creation failed");
       return sendApiError(
         reply,
@@ -396,6 +451,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           .del(uploadKeys.meta(uploadId))
           .del(uploadKeys.chunks(uploadId))
           .srem(uploadKeys.gcIndex(), uploadId)
+          .srem(uploadKeys.activeIndex(), uploadId)
           .exec()
           .catch(() => {});
       }
@@ -430,11 +486,18 @@ export default async function uploadRoutes(app: FastifyInstance) {
     const redis = await requireRedis(reply);
     if (!redis) return;
 
-    const [session, meta] = await Promise.all([
-      getSession(uploadId),
-      redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId)),
-    ]);
-    const expired = await expireUploadIfNeeded({ uploadId, session, meta });
+    const loaded = await guardRedisDependency(reply, () =>
+      Promise.all([
+        getSession(uploadId),
+        redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId)),
+      ] as const)
+    );
+    if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
+    const [session, meta] = loaded;
+    const expired = await guardRedisDependency(reply, () =>
+      expireUploadIfNeeded({ uploadId, session, meta })
+    );
+    if (expired === REDIS_DEPENDENCY_UNAVAILABLE) return;
     if (expired) {
       return sendApiError(reply, 409, "UPLOAD_EXPIRED", "Upload session expired");
     }
@@ -502,8 +565,24 @@ export default async function uploadRoutes(app: FastifyInstance) {
         expectedSize,
         isLastChunk
       );
-      await redis.sadd(uploadKeys.chunks(uploadId), String(idx));
-      await touchUploadActivity({ uploadId, chunkIndex: idx });
+      const persisted = await guardRedisDependency(reply, async () => {
+        await redis.sadd(uploadKeys.chunks(uploadId), String(idx));
+        return await touchUploadActivity({ uploadId, chunkIndex: idx });
+      });
+      if (persisted === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      if (!persisted) {
+        await Promise.all([
+          redis.srem(uploadKeys.chunks(uploadId), String(idx)).catch(() => {}),
+          chunkStore.cleanup(uploadId).catch(() => {}),
+        ]);
+        const status = await redis
+          .hget<string>(uploadKeys.meta(uploadId), "status")
+          .catch(() => null);
+        if (status === "expired") {
+          return sendApiError(reply, 409, "UPLOAD_EXPIRED", "Upload session expired");
+        }
+        return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
+      }
 
       return {
         ok: true,
@@ -533,6 +612,10 @@ export default async function uploadRoutes(app: FastifyInstance) {
         return sendApiError(reply, 400, "INVALID_CHUNK", message, {
           retryable: false,
         });
+      }
+
+      if (isRedisDependencyError(err)) {
+        return sendRedisUnavailable(reply);
       }
 
       log.warn({ uploadId, idx, err }, "Chunk upload failed");

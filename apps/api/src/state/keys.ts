@@ -11,6 +11,7 @@ export const uploadKeys = {
 
   // GC index (single source of truth)
   gcIndex: () => key("upload:gc:active"),
+  activeIndex: () => key("upload:active"),
 
   finalizeQueue: () => key("upload:finalize:queue"),
   finalizePending: () => key("upload:finalize:pending"),

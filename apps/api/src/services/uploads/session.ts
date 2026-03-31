@@ -23,11 +23,11 @@ function ensureFsFolder(uploadId: string) {
 }
 
 function sessionTtlSeconds() {
-  return Math.floor(UploadConfig.sessionTtlMs / 1000);
+  return Math.max(1, Math.ceil(UploadConfig.sessionTtlMs / 1000));
 }
 
 function metaTtlSeconds() {
-  return Math.floor((UploadConfig.sessionTtlMs + 30 * 60 * 1000) / 1000);
+  return Math.max(1, Math.ceil((UploadConfig.sessionTtlMs + 30 * 60 * 1000) / 1000));
 }
 
 
@@ -93,7 +93,8 @@ export async function createSession(input: {
     })
     .expire(uploadKeys.meta(uploadId), metaTtlSecondsValue)
 
-    .sadd(uploadKeys.gcIndex(), uploadId);
+    .sadd(uploadKeys.gcIndex(), uploadId)
+    .sadd(uploadKeys.activeIndex(), uploadId);
 
   const results = await tx.exec();
   if (!results) {
@@ -112,6 +113,7 @@ export async function createSession(input: {
       .del(uploadKeys.meta(uploadId))
       .del(uploadKeys.chunks(uploadId))
       .srem(uploadKeys.gcIndex(), uploadId)
+      .srem(uploadKeys.activeIndex(), uploadId)
       .exec()
       .catch(() => {});
     throw err;
@@ -136,7 +138,7 @@ export async function createSession(input: {
 export async function touchUploadActivity(params: {
   uploadId: string;
   chunkIndex?: number;
-}): Promise<void> {
+}): Promise<boolean> {
   const redis = getRedis();
   const now = Date.now();
   const expiresAt = now + UploadConfig.sessionTtlMs;
@@ -152,14 +154,43 @@ export async function touchUploadActivity(params: {
         }
       : {}),
   };
+  const script = `
+    local sessionKey = KEYS[1]
+    local metaKey = KEYS[2]
+    local gcKey = KEYS[3]
+    local activeKey = KEYS[4]
+    local uploadId = ARGV[1]
+    local sessionTtl = tonumber(ARGV[2])
+    local metaTtl = tonumber(ARGV[3])
+    if redis.call("EXISTS", sessionKey) == 0 then
+      return 0
+    end
 
-  await redis.multi()
-    .hset(sessionKey, fields)
-    .expire(sessionKey, sessionTtlSeconds())
-    .hset(metaKey, fields)
-    .expire(metaKey, metaTtlSeconds())
-    .sadd(uploadKeys.gcIndex(), params.uploadId)
-    .exec();
+    local status = redis.call("HGET", metaKey, "status")
+    if status ~= false and status ~= "uploading" then
+      return 0
+    end
+
+    redis.call("HSET", sessionKey, unpack(ARGV, 4))
+    redis.call("EXPIRE", sessionKey, sessionTtl)
+    redis.call("HSET", metaKey, unpack(ARGV, 4))
+    redis.call("EXPIRE", metaKey, metaTtl)
+    redis.call("SADD", gcKey, uploadId)
+    redis.call("SADD", activeKey, uploadId)
+    return 1
+  `;
+  const kvArgs = Object.entries(fields).flatMap(([field, value]) => [field, value]);
+  const result = await redis.eval(
+    script,
+    [sessionKey, metaKey, uploadKeys.gcIndex(), uploadKeys.activeIndex()],
+    [
+      params.uploadId,
+      String(sessionTtlSeconds()),
+      String(metaTtlSeconds()),
+      ...kvArgs,
+    ]
+  );
+  return Number(result) === 1;
 }
 
 

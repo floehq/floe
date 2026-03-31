@@ -117,7 +117,7 @@ const FINALIZE_DRAIN_INTERVAL_MS = parsePositiveIntEnv(
   500,
   100
 );
-const FINALIZE_QUEUE_MAX_DEPTH = parsePositiveIntEnv(
+let finalizeQueueMaxDepth = parsePositiveIntEnv(
   "FLOE_FINALIZE_QUEUE_MAX_DEPTH",
   5000
 );
@@ -127,9 +127,13 @@ const finalizeWorkers = new LocalAsyncQueue({
 });
 
 let drainTimer: NodeJS.Timeout | null = null;
+const retryTimers = new Set<NodeJS.Timeout>();
 const activeLocal = new Set<string>();
 let processFinalizeImpl: typeof processFinalize = processFinalize;
 let scheduleRetryImpl: typeof scheduleRetry = scheduleRetry;
+let finalizeWorkerRunning = false;
+let autoDrainEnabled = true;
+const activeFinalizeProcesses = new Set<Promise<unknown>>();
 
 function queueKey() {
   return uploadKeys.finalizeQueue();
@@ -161,6 +165,9 @@ async function markUploadFailed(params: {
         : {}),
     })
     .catch(() => {});
+  if (!params.retryable) {
+    await redis.srem(uploadKeys.activeIndex(), params.uploadId).catch(() => {});
+  }
 }
 
 async function markUploadFinalizing(uploadId: string) {
@@ -171,6 +178,53 @@ async function markUploadFinalizing(uploadId: string) {
       finalizingQueuedAt: String(Date.now()),
     })
     .catch(() => {});
+}
+
+async function admitUploadFinalize(
+  uploadId: string
+): Promise<"enqueued" | "duplicate" | "rejected_backpressure"> {
+  const redis = getRedis();
+  const queuedAt = Date.now();
+  const script = `
+    local metaKey = KEYS[1]
+    local pendingKey = KEYS[2]
+    local queueKey = KEYS[3]
+    local pendingSinceKey = KEYS[4]
+    local uploadId = ARGV[1]
+    local queuedAt = ARGV[2]
+    local maxDepth = tonumber(ARGV[3])
+
+    redis.call("HSET", metaKey, "status", "finalizing", "finalizingQueuedAt", queuedAt)
+
+    if redis.call("SISMEMBER", pendingKey, uploadId) == 1 then
+      return 0
+    end
+
+    if redis.call("LLEN", queueKey) >= maxDepth then
+      return -1
+    end
+
+    redis.call("SADD", pendingKey, uploadId)
+    redis.call("LPUSH", queueKey, uploadId)
+    redis.call("ZADD", pendingSinceKey, queuedAt, uploadId)
+    return 1
+  `;
+
+  const result = Number(
+    await redis.eval(
+      script,
+      [
+        uploadKeys.meta(uploadId),
+        pendingKey(),
+        queueKey(),
+        uploadKeys.finalizePendingSince(),
+      ],
+      [uploadId, String(queuedAt), String(finalizeQueueMaxDepth)]
+    )
+  );
+  if (result === 1) return "enqueued";
+  if (result === 0) return "duplicate";
+  return "rejected_backpressure";
 }
 
 async function enqueueUploadId(uploadId: string): Promise<boolean> {
@@ -242,7 +296,13 @@ async function processFinalize(params: {
     const meta = await redis.hgetall<Record<string, string>>(
       uploadKeys.meta(params.uploadId)
     );
-    if (meta?.status === "completed") return;
+    if (
+      meta?.status === "completed" ||
+      meta?.status === "canceled" ||
+      meta?.status === "expired"
+    ) {
+      return;
+    }
     throw new Error("UPLOAD_NOT_FOUND");
   }
 
@@ -268,9 +328,18 @@ async function lockRetryDelayMs(uploadId: string): Promise<number> {
 }
 
 async function scheduleRetry(uploadId: string, log: FastifyBaseLogger, delayMs: number) {
-  setTimeout(() => {
+  if (!finalizeWorkerRunning) {
+    log.warn({ uploadId, delayMs }, "Skipping finalize retry scheduling while worker is stopping");
+    return;
+  }
+
+  const timer = setTimeout(() => {
+    retryTimers.delete(timer);
     void (async () => {
       try {
+        if (!finalizeWorkerRunning) {
+          return;
+        }
         await enqueueUploadIdForce(uploadId);
         await drainOnce(log);
       } catch (err: any) {
@@ -284,6 +353,8 @@ async function scheduleRetry(uploadId: string, log: FastifyBaseLogger, delayMs: 
       }
     })();
   }, delayMs);
+  timer.unref?.();
+  retryTimers.add(timer);
 }
 
 async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
@@ -305,6 +376,15 @@ async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
 
   try {
     const processPromise = processFinalizeImpl({ uploadId, log, attempt, queueWaitMs });
+    activeFinalizeProcesses.add(processPromise);
+    void processPromise.then(
+      () => {
+        activeFinalizeProcesses.delete(processPromise);
+      },
+      () => {
+        activeFinalizeProcesses.delete(processPromise);
+      }
+    );
     void processPromise.then(
       () => {
         if (timedOut) {
@@ -528,6 +608,14 @@ export const finalizeQueueTestHooks = {
   },
   reset() {
     activeLocal.clear();
+    activeFinalizeProcesses.clear();
+    finalizeWorkerRunning = false;
+    autoDrainEnabled = true;
+    finalizeQueueMaxDepth = parsePositiveIntEnv("FLOE_FINALIZE_QUEUE_MAX_DEPTH", 5000);
+    for (const timer of retryTimers) {
+      clearTimeout(timer);
+    }
+    retryTimers.clear();
     processFinalizeImpl = processFinalize;
     scheduleRetryImpl = scheduleRetry;
   },
@@ -537,6 +625,19 @@ export const finalizeQueueTestHooks = {
   setScheduleRetry(fn?: typeof scheduleRetry) {
     scheduleRetryImpl = fn ?? scheduleRetry;
   },
+  getRetryTimerCount() {
+    return retryTimers.size;
+  },
+  setQueueMaxDepth(value?: number) {
+    finalizeQueueMaxDepth =
+      value ?? parsePositiveIntEnv("FLOE_FINALIZE_QUEUE_MAX_DEPTH", 5000);
+  },
+  setAutoDrain(enabled?: boolean) {
+    autoDrainEnabled = enabled ?? true;
+  },
+  getActiveFinalizeProcessCount() {
+    return activeFinalizeProcesses.size;
+  },
 };
 
 export async function startUploadFinalizeWorker(log: FastifyBaseLogger): Promise<{
@@ -544,6 +645,7 @@ export async function startUploadFinalizeWorker(log: FastifyBaseLogger): Promise
   recovered: number;
   cleaned: number;
 }> {
+  finalizeWorkerRunning = true;
   const recovery = await recoverFinalizingUploads(log);
   await drainOnce(log);
 
@@ -556,27 +658,36 @@ export async function startUploadFinalizeWorker(log: FastifyBaseLogger): Promise
 }
 
 export async function stopUploadFinalizeWorker(): Promise<void> {
+  finalizeWorkerRunning = false;
   if (drainTimer) {
     clearInterval(drainTimer);
     drainTimer = null;
   }
+  for (const timer of retryTimers) {
+    clearTimeout(timer);
+  }
+  retryTimers.clear();
   await finalizeWorkers.onIdle();
+  while (activeFinalizeProcesses.size > 0) {
+    await Promise.allSettled([...activeFinalizeProcesses]);
+  }
 }
 
 export async function enqueueUploadFinalize(params: {
   uploadId: string;
   log: FastifyBaseLogger;
 }): Promise<{ enqueued: boolean; rejectedByBackpressure: boolean }> {
-  const stats = await getUploadFinalizeQueueStats();
-  if (stats.depth >= FINALIZE_QUEUE_MAX_DEPTH) {
+  const admission = await admitUploadFinalize(params.uploadId);
+  if (admission === "rejected_backpressure") {
     recordFinalizeEnqueue({ result: "rejected_backpressure" });
     return { enqueued: false, rejectedByBackpressure: true };
   }
 
-  await markUploadFinalizing(params.uploadId);
-  const enqueued = await enqueueUploadId(params.uploadId);
+  const enqueued = admission === "enqueued";
   recordFinalizeEnqueue({ result: enqueued ? "enqueued" : "duplicate" });
-  await drainOnce(params.log);
+  if (autoDrainEnabled) {
+    await drainOnce(params.log);
+  }
   return { enqueued, rejectedByBackpressure: false };
 }
 

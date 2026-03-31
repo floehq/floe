@@ -196,6 +196,7 @@ async function cleanupUpload(uploadId: string) {
   await redis.del(uploadKeys.meta(uploadId));
   await redis.del(uploadKeys.chunks(uploadId));
   await redis.srem(uploadKeys.gcIndex(), uploadId);
+  await redis.srem(uploadKeys.activeIndex(), uploadId);
   await redis.srem(uploadKeys.finalizePending(), uploadId);
   await redis.zrem(uploadKeys.finalizePendingSince(), uploadId);
   await redis.lrem(uploadKeys.finalizeQueue(), 0, uploadId);
@@ -553,6 +554,92 @@ test("runFinalizeJob turns timeout into retryable recovery instead of holding th
   }
 });
 
+test("stopUploadFinalizeWorker clears scheduled retry timers", async () => {
+  const uploadId = await seedUpload();
+  try {
+    await markUploadReadyForFinalize(uploadId);
+    await queueModule.startUploadFinalizeWorker(log);
+    await queueModule.finalizeQueueTestHooks.forceEnqueue(uploadId);
+
+    queueModule.finalizeQueueTestHooks.setProcessFinalize(async () => {
+      throw new Error("WALRUS temporary outage");
+    });
+
+    await queueModule.finalizeQueueTestHooks.runNextQueuedJob(log);
+    assert.equal(queueModule.finalizeQueueTestHooks.getRetryTimerCount() > 0, true);
+
+    await queueModule.stopUploadFinalizeWorker();
+    assert.equal(queueModule.finalizeQueueTestHooks.getRetryTimerCount(), 0);
+
+    await sleep(300);
+    const stats = await queueModule.getUploadFinalizeQueueStats();
+    assert.equal(stats.depth, 0);
+  } finally {
+    await cleanupUpload(uploadId);
+  }
+});
+
+test("stopUploadFinalizeWorker waits for timed-out finalize work to settle", async () => {
+  const uploadId = await seedUpload();
+  try {
+    await markUploadReadyForFinalize(uploadId);
+    let releaseFinalize: (() => void) | null = null;
+    queueModule.finalizeQueueTestHooks.setProcessFinalize(
+      async () =>
+        await new Promise<void>((resolve) => {
+          releaseFinalize = resolve;
+        })
+    );
+    await queueModule.finalizeQueueTestHooks.forceEnqueue(uploadId);
+
+    const jobPromise = queueModule.finalizeQueueTestHooks.runNextQueuedJob(log);
+    await sleep(1100);
+    await jobPromise;
+    assert.equal(queueModule.finalizeQueueTestHooks.getActiveFinalizeProcessCount(), 1);
+
+    let stopResolved = false;
+    const stopPromise = queueModule.stopUploadFinalizeWorker().then(() => {
+      stopResolved = true;
+    });
+
+    await sleep(100);
+    assert.equal(stopResolved, false);
+
+    releaseFinalize?.();
+    await stopPromise;
+    assert.equal(stopResolved, true);
+    assert.equal(queueModule.finalizeQueueTestHooks.getActiveFinalizeProcessCount(), 0);
+  } finally {
+    await cleanupUpload(uploadId);
+  }
+});
+
+test("enqueueUploadFinalize enforces queue backpressure atomically under concurrency", async () => {
+  const firstUploadId = await seedUpload();
+  const secondUploadId = await seedUpload();
+  try {
+    queueModule.finalizeQueueTestHooks.setQueueMaxDepth(1);
+    queueModule.finalizeQueueTestHooks.setAutoDrain(false);
+
+    const [first, second] = await Promise.all([
+      queueModule.enqueueUploadFinalize({ uploadId: firstUploadId, log }),
+      queueModule.enqueueUploadFinalize({ uploadId: secondUploadId, log }),
+    ]);
+
+    const results = [first, second];
+    const enqueuedCount = results.filter((result) => result.enqueued).length;
+    const rejectedCount = results.filter((result) => result.rejectedByBackpressure).length;
+    const stats = await queueModule.getUploadFinalizeQueueStats();
+
+    assert.equal(enqueuedCount, 1);
+    assert.equal(rejectedCount, 1);
+    assert.equal(stats.depth, 1);
+    assert.equal(stats.pendingUnique, 1);
+  } finally {
+    await cleanupUpload(firstUploadId);
+    await cleanupUpload(secondUploadId);
+  }
+});
 test("health route reports stalled finalize backlog as degraded", async () => {
   const uploadId = await seedUpload();
   const app = await createRouteApp();
