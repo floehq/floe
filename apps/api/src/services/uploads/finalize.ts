@@ -23,6 +23,7 @@ import {
   shouldPersistFinalizeFailure,
   type FinalizeFailureCode,
 } from "./finalize.shared.js";
+import { emitInfrastructureEvent } from "../events/infrastructure.events.js";
 
 const finalFilePath = (uploadId: string) =>
   path.join(UploadConfig.tmpDir, `${uploadId}.bin`);
@@ -379,6 +380,22 @@ export async function finalizeUpload(
       },
       "Upload finalize completed"
     );
+    emitInfrastructureEvent(context.log ?? console, {
+      event: "finalize_succeeded",
+      uploadId,
+      fileId,
+      blobId,
+      outcome: "success",
+      bytes: session.sizeBytes,
+      durationMs: finalizeTotalMs,
+      metadata: {
+        owner: session.owner ?? null,
+        attempt: context.attempt ?? 1,
+        queueWaitMs: context.queueWaitMs ?? 0,
+        walrusEndEpoch: walrusEndEpoch ?? null,
+        stageDurationsMs,
+      },
+    });
 
     return {
       fileId,
@@ -434,6 +451,21 @@ export async function finalizeUpload(
       },
       "Upload finalize failed"
     );
+    emitInfrastructureEvent(context.log ?? console, {
+      event: "finalize_failed",
+      uploadId,
+      outcome: "failure",
+      bytes: session.sizeBytes,
+      durationMs: Date.now() - startedAt,
+      metadata: {
+        owner: session.owner ?? null,
+        attempt: context.attempt ?? 1,
+        queueWaitMs: context.queueWaitMs ?? 0,
+        failedStage: wrapped.finalizeStage ?? currentStage ?? "unknown",
+        reasonCode: failure.reasonCode,
+        retryable: failure.retryable,
+      },
+    });
 
     throw err;
   } finally {

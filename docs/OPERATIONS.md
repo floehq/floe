@@ -156,6 +156,7 @@ Read behavior and observability:
 - `FLOE_LOG_WALRUS_METRICS` default `0`
 - `FLOE_CORS_ORIGINS`
 - `FLOE_ENABLE_METRICS` default `1`
+- `FLOE_EVENT_LOG_ENABLED` default `1`
 - `FLOE_METRICS_TOKEN`
 
 Auth mode defaults:
@@ -293,6 +294,39 @@ Floe exports:
 - stream TTFB
 - Walrus segment fetch totals and durations
 - stream read error counts
+
+## Infrastructure Event Output
+
+Floe can emit structured infrastructure lifecycle events into its normal application logs.
+
+Purpose:
+
+- provide a stable raw event stream for a higher-level service/SaaS layer
+- keep tenant analytics, billing, and product dashboards out of the Floe API runtime
+
+Control:
+
+- `FLOE_EVENT_LOG_ENABLED=1` enables log emission
+
+Current event names:
+
+- `upload_created`
+- `chunk_uploaded`
+- `finalize_requested`
+- `upload_canceled`
+- `finalize_succeeded`
+- `finalize_failed`
+- `stream_started`
+- `stream_completed`
+- `stream_failed`
+
+Each event is emitted as structured log metadata under `infraEvent` and is intended to include stable join identifiers such as:
+
+- `uploadId`
+- `fileId`
+- `blobId`
+- request `actor` details including `apiKeyId` and owner when available
+- `bytes`, `durationMs`, `statusCode`, and event-specific metadata
 
 ### `/metrics` Security
 

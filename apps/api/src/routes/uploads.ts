@@ -19,6 +19,10 @@ import {
   isUploadFinalizeQueued,
 } from "../services/uploads/finalize.queue.js";
 import { applyRateLimitHeaders } from "../services/auth/auth.headers.js";
+import {
+  emitInfrastructureEvent,
+  requestEventContext,
+} from "../services/events/infrastructure.events.js";
 
 import { chunkStore } from "../store/index.js";
 import type { RedisClient } from "../state/redis.types.js";
@@ -421,6 +425,22 @@ export default async function uploadRoutes(app: FastifyInstance) {
       sessionCreated = true;
 
       log.info({ uploadId, totalChunks }, "Upload session created");
+      const eventContext = requestEventContext(req);
+      emitInfrastructureEvent(log, {
+        event: "upload_created",
+        requestId: eventContext.requestId,
+        actor: eventContext.actor,
+        uploadId,
+        outcome: "success",
+        statusCode: 201,
+        bytes: fileSizeNum,
+        metadata: {
+          contentType,
+          chunkSize: session.chunkSize,
+          totalChunks: session.totalChunks,
+          epochs: session.resolvedEpochs,
+        },
+      });
 
       return reply.code(201).send({
         uploadId: session.uploadId,
@@ -583,6 +603,22 @@ export default async function uploadRoutes(app: FastifyInstance) {
         }
         return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
       }
+
+      const eventContext = requestEventContext(req);
+      emitInfrastructureEvent(log, {
+        event: "chunk_uploaded",
+        requestId: eventContext.requestId,
+        actor: eventContext.actor,
+        uploadId,
+        outcome: "success",
+        statusCode: 200,
+        bytes: expectedSize,
+        metadata: {
+          chunkIndex: idx,
+          reused: writeResult.alreadyExisted,
+          totalChunks: session.totalChunks,
+        },
+      });
 
       return {
         ok: true,
@@ -937,6 +973,21 @@ export default async function uploadRoutes(app: FastifyInstance) {
       );
     }
     reply.header("Retry-After", finalizePollRetryAfterSeconds());
+    const eventContext = requestEventContext(req);
+    emitInfrastructureEvent(log, {
+      event: "finalize_requested",
+      requestId: eventContext.requestId,
+      actor: eventContext.actor,
+      uploadId,
+      outcome: "success",
+      statusCode: 202,
+      metadata: {
+        enqueued: queued.enqueued,
+        inProgress: isUploadFinalizeQueued(uploadId),
+        receivedChunks,
+        totalChunks: session.totalChunks,
+      },
+    });
     return reply.code(202).send({
       uploadId,
       status: "finalizing",
@@ -1084,6 +1135,18 @@ export default async function uploadRoutes(app: FastifyInstance) {
       if (cleaned === REDIS_DEPENDENCY_UNAVAILABLE) return;
 
       log.info({ uploadId }, "Upload canceled");
+      const eventContext = requestEventContext(req);
+      emitInfrastructureEvent(log, {
+        event: "upload_canceled",
+        requestId: eventContext.requestId,
+        actor: eventContext.actor,
+        uploadId,
+        outcome: "success",
+        statusCode: 200,
+        metadata: {
+          status: "canceled",
+        },
+      });
       return reply.code(200).send({ ok: true, uploadId, status: "canceled" });
     }
 
@@ -1121,6 +1184,18 @@ export default async function uploadRoutes(app: FastifyInstance) {
     if (cleaned === REDIS_DEPENDENCY_UNAVAILABLE) return;
 
     log.info({ uploadId }, "Upload canceled");
+    const eventContext = requestEventContext(req);
+    emitInfrastructureEvent(log, {
+      event: "upload_canceled",
+      requestId: eventContext.requestId,
+      actor: eventContext.actor,
+      uploadId,
+      outcome: "success",
+      statusCode: 200,
+      metadata: {
+        status: "canceled",
+      },
+    });
     return reply.code(200).send({ ok: true, uploadId, status: "canceled" });
   });
 
