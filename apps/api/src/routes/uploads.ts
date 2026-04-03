@@ -211,6 +211,7 @@ function isRedisDependencyError(err: unknown): boolean {
   return (
     message.includes("redis") ||
     message.includes("not initialized") ||
+    message.includes("not a function") ||
     message.includes("econn") ||
     message.includes("socket") ||
     message.includes("connection")
@@ -246,6 +247,24 @@ async function guardRedisDependency<T>(
     }
     throw err;
   }
+}
+
+async function loadSessionAndMeta(
+  reply: any,
+  redis: RedisClient,
+  uploadId: string
+): Promise<
+  | {
+      session: Awaited<ReturnType<typeof getSession>>;
+      meta: Record<string, string>;
+    }
+  | typeof REDIS_DEPENDENCY_UNAVAILABLE
+> {
+  return await guardRedisDependency(reply, async () => {
+    const session = await getSession(uploadId);
+    const meta = await redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId));
+    return { session, meta };
+  });
 }
 
 export default async function uploadRoutes(app: FastifyInstance) {
@@ -486,14 +505,9 @@ export default async function uploadRoutes(app: FastifyInstance) {
     const redis = await requireRedis(reply);
     if (!redis) return;
 
-    const loaded = await guardRedisDependency(reply, () =>
-      Promise.all([
-        getSession(uploadId),
-        redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId)),
-      ] as const)
-    );
+    const loaded = await loadSessionAndMeta(reply, redis, uploadId);
     if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
-    const [session, meta] = loaded;
+    const { session, meta } = loaded;
     const expired = await guardRedisDependency(reply, () =>
       expireUploadIfNeeded({ uploadId, session, meta })
     );
@@ -639,7 +653,10 @@ export default async function uploadRoutes(app: FastifyInstance) {
 
     const redis = await requireRedis(reply);
     if (!redis) return;
-    const statusProbe = await redis.hget<string>(uploadKeys.meta(uploadId), "status");
+    const statusProbe = await guardRedisDependency(reply, () =>
+      redis.hget<string>(uploadKeys.meta(uploadId), "status")
+    );
+    if (statusProbe === REDIS_DEPENDENCY_UNAVAILABLE) return;
     const statusScope = statusProbe === "finalizing" ? "file_meta_read" : "upload_control";
     const statusLimit = await req.server.authProvider.checkRateLimit({
       req,
@@ -660,10 +677,9 @@ export default async function uploadRoutes(app: FastifyInstance) {
       });
     }
 
-    const [session, meta] = await Promise.all([
-      getSession(uploadId),
-      redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId)),
-    ]);
+    const loaded = await loadSessionAndMeta(reply, redis, uploadId);
+    if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
+    const { session, meta } = loaded;
     const expired = await expireUploadIfNeeded({ uploadId, session, meta });
     const currentMeta = expired
       ? await redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId))
@@ -782,10 +798,9 @@ export default async function uploadRoutes(app: FastifyInstance) {
     const redis = await requireRedis(reply);
     if (!redis) return;
     const metaKey = uploadKeys.meta(uploadId);
-    const [session, meta] = await Promise.all([
-      getSession(uploadId),
-      redis.hgetall<Record<string, string>>(metaKey),
-    ]);
+    const loaded = await loadSessionAndMeta(reply, redis, uploadId);
+    if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
+    const { session, meta } = loaded;
     const expired = await expireUploadIfNeeded({ uploadId, session, meta });
     const currentMeta = expired
       ? await redis.hgetall<Record<string, string>>(metaKey)
@@ -943,12 +958,17 @@ export default async function uploadRoutes(app: FastifyInstance) {
     const metaKey = uploadKeys.meta(uploadId);
     const lockKey = `${metaKey}:lock`;
 
-    const [session, meta, hasLock, isFinalizePending] = await Promise.all([
-      getSession(uploadId),
-      redis.hgetall<Record<string, string>>(metaKey),
-      redis.exists(lockKey),
-      redis.sismember(uploadKeys.finalizePending(), uploadId),
-    ]);
+    const loaded = await loadSessionAndMeta(reply, redis, uploadId);
+    if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
+    const { session, meta } = loaded;
+    const pendingState = await guardRedisDependency(reply, () =>
+      Promise.all([
+        redis.exists(lockKey),
+        redis.sismember(uploadKeys.finalizePending(), uploadId),
+      ] as const)
+    );
+    if (pendingState === REDIS_DEPENDENCY_UNAVAILABLE) return;
+    const [hasLock, isFinalizePending] = pendingState;
     const expired = await expireUploadIfNeeded({ uploadId, session, meta });
     const currentMeta = expired
       ? await redis.hgetall<Record<string, string>>(metaKey)
