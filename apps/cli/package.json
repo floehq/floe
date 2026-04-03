@@ -1,0 +1,24 @@
+{
+  "name": "@floehq/cli",
+  "version": "0.1.0",
+  "description": "Command-line interface for the Floe API",
+  "type": "module",
+  "bin": {
+    "floe": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@floehq/sdk": "^0.1.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

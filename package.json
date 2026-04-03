@@ -19,6 +19,7 @@
     "clean": "rm -rf node_modules && npm install"
   },
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0"
   }
