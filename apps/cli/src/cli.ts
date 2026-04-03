@@ -86,6 +86,20 @@ function formatBytes(bytes: number | null | undefined): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
 
+function formatPercent(part: number, total: number): string {
+  if (!Number.isFinite(part) || !Number.isFinite(total) || total <= 0) return "0%";
+  return `${Math.min(100, Math.max(0, (part / total) * 100)).toFixed(0)}%`;
+}
+
+function progressBar(current: number, total: number, width = 28): string {
+  if (!Number.isFinite(current) || !Number.isFinite(total) || total <= 0) {
+    return `[${"-".repeat(width)}]`;
+  }
+  const ratio = Math.min(1, Math.max(0, current / total));
+  const filled = Math.round(ratio * width);
+  return `[${"=".repeat(filled)}${"-".repeat(Math.max(0, width - filled))}]`;
+}
+
 function writeLines(lines: string[]) {
   process.stdout.write(`${lines.join("\n")}\n`);
 }
@@ -392,6 +406,23 @@ function printUploadResult(
   ]);
 }
 
+function printSimpleActionResult(
+  title: string,
+  value: Record<string, unknown>,
+  options: CliOptions
+) {
+  if (options.json) {
+    printResult(value, true);
+    return;
+  }
+
+  const lines = [headline(title)];
+  for (const [key, rawValue] of Object.entries(value)) {
+    lines.push(valueLine(key, rawValue));
+  }
+  writeLines(lines);
+}
+
 function printUploadStatusResult(value: Record<string, unknown>, options: CliOptions) {
   if (options.json) {
     printResult(value, true);
@@ -410,6 +441,22 @@ function printUploadStatusResult(value: Record<string, unknown>, options: CliOpt
   ]);
 }
 
+function printManifestResult(value: Record<string, unknown>, options: CliOptions) {
+  if (options.json) {
+    printResult(value, true);
+    return;
+  }
+
+  writeLines([
+    headline("File Manifest"),
+    valueLine("fileId", value.fileId),
+    valueLine("manifestVersion", value.manifestVersion),
+    valueLine("container", value.container),
+    valueLine("tracks", Array.isArray(value.tracks) ? value.tracks.length : value.tracks),
+    valueLine("segmentCount", Array.isArray(value.segments) ? value.segments.length : value.segments),
+  ]);
+}
+
 function printFileMetadataResult(value: Record<string, unknown>, options: CliOptions) {
   if (options.json) {
     printResult(value, true);
@@ -424,6 +471,19 @@ function printFileMetadataResult(value: Record<string, unknown>, options: CliOpt
     valueLine("size", formatBytes(typeof value.sizeBytes === "number" ? value.sizeBytes : null)),
     valueLine("owner", value.owner),
     valueLine("createdAt", value.createdAt),
+  ]);
+}
+
+function printStreamUrlResult(fileId: string, streamUrl: string, options: CliOptions) {
+  if (options.json) {
+    printResult({ fileId, streamUrl }, true);
+    return;
+  }
+
+  writeLines([
+    headline("Stream URL"),
+    valueLine("fileId", fileId),
+    valueLine("url", streamUrl),
   ]);
 }
 
@@ -556,6 +616,7 @@ async function runUpload(filePathRaw: string | undefined, options: CliOptions) {
   const contentType = inferContentType(filePath);
   const blob = await readFileAsBlob(filePath, contentType);
   const client = await buildClient(options);
+  let progressLineOpen = false;
 
   const result = await client.uploadBlob(blob, {
     filename: path.basename(filePath),
@@ -568,11 +629,21 @@ async function runUpload(filePathRaw: string | undefined, options: CliOptions) {
     ...(options.maxWaitMs ? { finalizeMaxWaitMs: options.maxWaitMs } : {}),
     onProgress(progress) {
       if (options.json) return;
-      process.stderr.write(
-        `uploaded ${progress.uploadedChunks}/${progress.totalChunks} chunks (${progress.uploadedBytes}/${progress.totalBytes} bytes)\n`
-      );
+      progressLineOpen = true;
+      const line = [
+        paint("upload", ANSI.bold, ANSI.cyan),
+        progressBar(progress.uploadedBytes, progress.totalBytes),
+        paint(formatPercent(progress.uploadedBytes, progress.totalBytes), ANSI.bold),
+        `${progress.uploadedChunks}/${progress.totalChunks} chunks`,
+        `${formatBytes(progress.uploadedBytes)} / ${formatBytes(progress.totalBytes)}`,
+      ].join("  ");
+      process.stderr.write(`\r\x1b[2K${line}`);
     },
   });
+
+  if (!options.json && progressLineOpen) {
+    process.stderr.write("\r\x1b[2K");
+  }
 
   printUploadResult(result, options);
 }
@@ -590,7 +661,7 @@ async function runUploadCancel(uploadIdRaw: string | undefined, options: CliOpti
   const uploadId = requireValue(uploadIdRaw, "uploadId");
   const client = await buildClient(options);
   const result = await client.cancelUpload(uploadId);
-  printResult(result, options.json);
+  printSimpleActionResult("Upload Canceled", result as Record<string, unknown>, options);
 }
 
 async function runUploadComplete(uploadIdRaw: string | undefined, options: CliOptions) {
@@ -626,13 +697,13 @@ async function runFileManifest(fileIdRaw: string | undefined, options: CliOption
   const fileId = requireValue(fileIdRaw, "fileId");
   const client = await buildClient(options);
   const result = await client.getFileManifest(fileId);
-  printResult(result, options.json);
+  printManifestResult(result as Record<string, unknown>, options);
 }
 
 async function runFileStreamUrl(fileIdRaw: string | undefined, options: CliOptions) {
   const fileId = requireValue(fileIdRaw, "fileId");
   const client = await buildClient(options);
-  printResult({ fileId, streamUrl: client.getFileStreamUrl(fileId) }, options.json);
+  printStreamUrlResult(fileId, client.getFileStreamUrl(fileId), options);
 }
 
 async function runOpsHealth(options: CliOptions) {
