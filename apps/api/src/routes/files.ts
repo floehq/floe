@@ -16,6 +16,10 @@ import {
   recordStreamReadError,
 } from "../services/metrics/runtime.metrics.js";
 import {
+  emitInfrastructureEvent,
+  requestEventContext,
+} from "../services/events/infrastructure.events.js";
+import {
   createCachedReadStream,
   ensureCachedStreamBlob,
   ensureCachedStreamRange,
@@ -893,6 +897,7 @@ export async function filesRoutes(app: FastifyInstance) {
       const blobId = normalized.blobId;
       const sizeBytes = normalized.sizeBytes;
       const mimeType = normalized.mimeType;
+      const eventContext = requestEventContext(req);
 
       reply.header("Accept-Ranges", "bytes");
       reply.header("ETag", blobId);
@@ -963,10 +968,63 @@ export async function filesRoutes(app: FastifyInstance) {
       if (cachedPath) {
         const stat = await fs.stat(cachedPath).catch(() => null);
         if (stat?.isFile() && stat.size >= end + 1) {
+          emitInfrastructureEvent(req.log, {
+            event: "stream_started",
+            requestId: eventContext.requestId,
+            actor: eventContext.actor,
+            fileId,
+            blobId,
+            outcome: "success",
+            statusCode: status,
+            bytes: span,
+            metadata: {
+              method: req.method,
+              cacheHit: true,
+              range: rangeHeader ?? null,
+              start,
+              end,
+            },
+          });
           const cachedStream = createCachedReadStream({
             filePath: cachedPath,
             start,
             end,
+          });
+          cachedStream.once("end", () => {
+            emitInfrastructureEvent(req.log, {
+              event: "stream_completed",
+              requestId: eventContext.requestId,
+              actor: eventContext.actor,
+              fileId,
+              blobId,
+              outcome: "success",
+              statusCode: status,
+              bytes: span,
+              metadata: {
+                range: rangeHeader ?? null,
+                start,
+                end,
+                cacheHit: true,
+              },
+            });
+          });
+          cachedStream.once("error", (err: any) => {
+            emitInfrastructureEvent(req.log, {
+              event: "stream_failed",
+              requestId: eventContext.requestId,
+              actor: eventContext.actor,
+              fileId,
+              blobId,
+              outcome: "failure",
+              statusCode: (err as any)?.statusCode,
+              metadata: {
+                range: rangeHeader ?? null,
+                start,
+                end,
+                cacheHit: true,
+                reason: classifyStreamErrorReason(String(err?.message ?? "")),
+              },
+            });
           });
           return reply.status(status).send(cachedStream);
         }
@@ -975,6 +1033,23 @@ export async function filesRoutes(app: FastifyInstance) {
       const streamStartMs = Date.now();
       let firstByteObserved = false;
       let totalStreamedBytes = 0;
+      emitInfrastructureEvent(req.log, {
+        event: "stream_started",
+        requestId: eventContext.requestId,
+        actor: eventContext.actor,
+        fileId,
+        blobId,
+        outcome: "success",
+        statusCode: status,
+        bytes: span,
+        metadata: {
+          method: req.method,
+          cacheHit: false,
+          range: rangeHeader ?? null,
+          start,
+          end,
+        },
+      });
       const stream = Readable.from(
         (async function* () {
           for await (const chunk of cachedSegmentByteStream({
@@ -1001,6 +1076,24 @@ export async function filesRoutes(app: FastifyInstance) {
           }
         })()
       );
+      stream.once("end", () => {
+        emitInfrastructureEvent(req.log, {
+          event: "stream_completed",
+          requestId: eventContext.requestId,
+          actor: eventContext.actor,
+          fileId,
+          blobId,
+          outcome: "success",
+          statusCode: status,
+          bytes: totalStreamedBytes,
+          durationMs: Date.now() - streamStartMs,
+          metadata: {
+            range: rangeHeader ?? null,
+            start,
+            end,
+          },
+        });
+      });
       stream.once("end", detachAbortHooks);
       stream.once("close", detachAbortHooks);
       stream.once("error", detachAbortHooks);
@@ -1023,6 +1116,24 @@ export async function filesRoutes(app: FastifyInstance) {
           "Stream failed"
         );
         recordStreamReadError(classifyStreamErrorReason(String(err?.message ?? "")));
+        emitInfrastructureEvent(req.log, {
+          event: "stream_failed",
+          requestId: eventContext.requestId,
+          actor: eventContext.actor,
+          fileId,
+          blobId,
+          outcome: "failure",
+          statusCode: (err as any)?.statusCode,
+          bytes: totalStreamedBytes,
+          durationMs: Date.now() - streamStartMs,
+          metadata: {
+            range: rangeHeader ?? null,
+            start,
+            end,
+            expectedBytes: span,
+            reason: classifyStreamErrorReason(String(err?.message ?? "")),
+          },
+        });
       });
 
       return reply.status(status).send(stream);

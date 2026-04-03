@@ -26,6 +26,7 @@ Included today:
 - public, hybrid, or private auth modes
 - env-backed API key verification
 - optional owner-based authorization enforcement
+- structured infrastructure lifecycle events for downstream service-layer analytics
 
 Current upload reliability behavior:
 
@@ -105,6 +106,20 @@ SUI_PACKAGE_ID=0x<your-package-id>
 ```
 
 Use `.env.example` as the full environment reference. The read path supports optional local Redis lease batching for metadata and stream rate limits so hot read traffic does not need a Redis round-trip on every request.
+
+Floe can also emit structured infrastructure lifecycle events into its application logs for downstream ingestion:
+
+- `upload_created`
+- `chunk_uploaded`
+- `finalize_requested`
+- `upload_canceled`
+- `finalize_succeeded`
+- `finalize_failed`
+- `stream_started`
+- `stream_completed`
+- `stream_failed`
+
+These are intentionally infrastructure events, not tenant analytics. The intended pattern is to ingest them into a higher-level service/SaaS layer.
 
 For production-style topology config, Floe can also load `config.yaml` before startup:
 
