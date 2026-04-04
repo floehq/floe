@@ -1,6 +1,6 @@
 {
   "name": "@floehq/cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Command-line interface for the Floe API",
   "type": "module",
   "bin": {

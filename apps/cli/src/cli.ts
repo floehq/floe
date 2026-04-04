@@ -12,6 +12,7 @@ type CliOptions = {
   authUser?: string;
   walletAddress?: string;
   json: boolean;
+  verbose: boolean;
   chunkSize?: number;
   epochs?: number;
   parallel?: number;
@@ -65,6 +66,16 @@ function valueLine(label: string, value: unknown): string {
   const rendered =
     value === null || value === undefined || value === "" ? paint("none", ANSI.gray) : String(value);
   return `  ${paint(label.padEnd(16), ANSI.dim)} ${rendered}`;
+}
+
+function infoLine(message: string) {
+  process.stderr.write(`${paint(">", ANSI.bold, ANSI.cyan)} ${message}\n`);
+}
+
+function verboseLine(options: CliOptions, label: string, value?: unknown) {
+  if (!options.verbose || options.json) return;
+  const suffix = value === undefined ? "" : ` ${String(value)}`;
+  process.stderr.write(`${paint("verbose", ANSI.dim, ANSI.gray)} ${label}${suffix}\n`);
 }
 
 function statusBadge(status: string | null | undefined): string {
@@ -183,6 +194,7 @@ function printHelp(topic?: string) {
     "  --owner-address <addr>  x-owner-address auth hint",
     "  --wallet-address <addr> x-wallet-address auth hint",
     "  --auth-user <id>        x-auth-user auth hint",
+    "  -v, --verbose           Show request-stage details",
     "  --json                  Print JSON only",
     "  --include-blob-id       Ask Floe to include blobId when supported",
     section("Upload Options"),
@@ -231,12 +243,13 @@ function parseArgs(argv: string[]): {
     authUser: process.env.FLOE_AUTH_USER,
     walletAddress: process.env.FLOE_WALLET_ADDRESS,
     json: false,
+    verbose: false,
     parallel: 3,
   };
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if (!arg.startsWith("--")) {
+    if (!arg.startsWith("-")) {
       tokens.push(arg);
       continue;
     }
@@ -289,6 +302,10 @@ function parseArgs(argv: string[]): {
         break;
       case "--json":
         options.json = true;
+        break;
+      case "--verbose":
+      case "-v":
+        options.verbose = true;
         break;
       default:
         break;
@@ -454,6 +471,7 @@ function printManifestResult(value: Record<string, unknown>, options: CliOptions
     valueLine("container", value.container),
     valueLine("tracks", Array.isArray(value.tracks) ? value.tracks.length : value.tracks),
     valueLine("segmentCount", Array.isArray(value.segments) ? value.segments.length : value.segments),
+    valueLine("blobId", value.blobId),
   ]);
 }
 
@@ -505,11 +523,13 @@ function printHealthResult(value: Record<string, unknown>, options: CliOptions) 
     valueLine("role", value.role),
     valueLine("ready", value.ready),
     valueLine("degraded", value.degraded),
+    valueLine("timestamp", value.timestamp),
     section("Dependencies"),
     valueLine("redis", redis?.status ?? redis?.ok),
     valueLine("postgres", postgres?.status ?? postgres?.ok),
     valueLine("queueDepth", finalizeQueue?.depth),
     valueLine("queueWorkers", finalizeQueue?.concurrency),
+    valueLine("oldestQueued", finalizeQueue?.oldestQueuedAgeMs),
   ]);
 }
 
@@ -543,6 +563,9 @@ function printConfigResult(
     valueLine("resumeDisabled", value.upload.noResume),
     valueLine("pollIntervalMs", value.upload.pollIntervalMs),
     valueLine("maxWaitMs", value.upload.maxWaitMs),
+    section("Output"),
+    valueLine("json", options.json),
+    valueLine("verbose", options.verbose),
   ]);
 }
 
@@ -599,6 +622,8 @@ async function fetchJson(
   headers.set("x-floe-sdk", "@floehq/cli");
 
   const response = await fetch(url, { headers });
+  verboseLine(options, "request", url);
+  verboseLine(options, "auth", headers.get("authorization") ? "bearer" : headers.get("x-api-key") ? "api-key" : "none");
   const text = await response.text();
   const data = text ? JSON.parse(text) : null;
   if (!response.ok) {
@@ -618,6 +643,15 @@ async function runUpload(filePathRaw: string | undefined, options: CliOptions) {
   const client = await buildClient(options);
   let progressLineOpen = false;
 
+  if (!options.json) {
+    infoLine(`preparing ${path.basename(filePath)}  ${formatBytes(stat.size)}  ${contentType}`);
+    infoLine(`target ${options.baseUrl}`);
+  }
+  verboseLine(options, "file", filePath);
+  verboseLine(options, "resume", options.noResume ? "disabled" : "enabled");
+  verboseLine(options, "parallel", options.parallel);
+  verboseLine(options, "chunkSize", options.chunkSize ?? "default");
+
   const result = await client.uploadBlob(blob, {
     filename: path.basename(filePath),
     contentType,
@@ -631,7 +665,7 @@ async function runUpload(filePathRaw: string | undefined, options: CliOptions) {
       if (options.json) return;
       progressLineOpen = true;
       const line = [
-        paint("upload", ANSI.bold, ANSI.cyan),
+        paint("uploading", ANSI.bold, ANSI.cyan),
         progressBar(progress.uploadedBytes, progress.totalBytes),
         paint(formatPercent(progress.uploadedBytes, progress.totalBytes), ANSI.bold),
         `${progress.uploadedChunks}/${progress.totalChunks} chunks`,
@@ -643,6 +677,7 @@ async function runUpload(filePathRaw: string | undefined, options: CliOptions) {
 
   if (!options.json && progressLineOpen) {
     process.stderr.write("\r\x1b[2K");
+    infoLine("finalizing upload and waiting for readiness");
   }
 
   printUploadResult(result, options);
@@ -650,6 +685,7 @@ async function runUpload(filePathRaw: string | undefined, options: CliOptions) {
 
 async function runUploadStatus(uploadIdRaw: string | undefined, options: CliOptions) {
   const uploadId = requireValue(uploadIdRaw, "uploadId");
+  if (!options.json) infoLine(`checking upload ${uploadId}`);
   const client = await buildClient(options);
   const result = await client.getUploadStatus(uploadId, {
     ...(options.includeBlobId ? { query: { includeBlobId: 1 } } : {}),
@@ -659,6 +695,7 @@ async function runUploadStatus(uploadIdRaw: string | undefined, options: CliOpti
 
 async function runUploadCancel(uploadIdRaw: string | undefined, options: CliOptions) {
   const uploadId = requireValue(uploadIdRaw, "uploadId");
+  if (!options.json) infoLine(`canceling upload ${uploadId}`);
   const client = await buildClient(options);
   const result = await client.cancelUpload(uploadId);
   printSimpleActionResult("Upload Canceled", result as Record<string, unknown>, options);
@@ -666,6 +703,7 @@ async function runUploadCancel(uploadIdRaw: string | undefined, options: CliOpti
 
 async function runUploadComplete(uploadIdRaw: string | undefined, options: CliOptions) {
   const uploadId = requireValue(uploadIdRaw, "uploadId");
+  if (!options.json) infoLine(`completing upload ${uploadId}`);
   const client = await buildClient(options);
   const result = await client.completeUpload(uploadId, {
     ...(options.includeBlobId ? { includeBlobId: true } : {}),
@@ -675,6 +713,9 @@ async function runUploadComplete(uploadIdRaw: string | undefined, options: CliOp
 
 async function runUploadWait(uploadIdRaw: string | undefined, options: CliOptions) {
   const uploadId = requireValue(uploadIdRaw, "uploadId");
+  if (!options.json) infoLine(`waiting for upload ${uploadId}`);
+  verboseLine(options, "pollIntervalMs", options.pollIntervalMs ?? "default");
+  verboseLine(options, "maxWaitMs", options.maxWaitMs ?? "default");
   const client = await buildClient(options);
   const result = await client.waitForUploadReady(uploadId, {
     ...(options.includeBlobId ? { includeBlobId: true } : {}),
@@ -686,6 +727,7 @@ async function runUploadWait(uploadIdRaw: string | undefined, options: CliOption
 
 async function runFileMetadata(fileIdRaw: string | undefined, options: CliOptions) {
   const fileId = requireValue(fileIdRaw, "fileId");
+  if (!options.json) infoLine(`fetching metadata for ${fileId}`);
   const client = await buildClient(options);
   const result = await client.getFileMetadata(fileId, {
     ...(options.includeBlobId ? { includeBlobId: true } : {}),
@@ -695,6 +737,7 @@ async function runFileMetadata(fileIdRaw: string | undefined, options: CliOption
 
 async function runFileManifest(fileIdRaw: string | undefined, options: CliOptions) {
   const fileId = requireValue(fileIdRaw, "fileId");
+  if (!options.json) infoLine(`fetching manifest for ${fileId}`);
   const client = await buildClient(options);
   const result = await client.getFileManifest(fileId);
   printManifestResult(result as Record<string, unknown>, options);
@@ -703,10 +746,12 @@ async function runFileManifest(fileIdRaw: string | undefined, options: CliOption
 async function runFileStreamUrl(fileIdRaw: string | undefined, options: CliOptions) {
   const fileId = requireValue(fileIdRaw, "fileId");
   const client = await buildClient(options);
+  if (!options.json) infoLine(`building stream URL for ${fileId}`);
   printStreamUrlResult(fileId, client.getFileStreamUrl(fileId), options);
 }
 
 async function runOpsHealth(options: CliOptions) {
+  if (!options.json) infoLine(`checking deployment health at ${rootApiUrl(options.baseUrl)}/health`);
   const result = await fetchJson(`${rootApiUrl(options.baseUrl)}/health`, options);
   printHealthResult(result as Record<string, unknown>, options);
 }
