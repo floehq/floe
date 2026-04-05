@@ -1,7 +1,16 @@
 {
   "name": "@floehq/cli",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "Command-line interface for the Floe API",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tejas0111/floe.git",
+    "directory": "apps/cli"
+  },
+  "homepage": "https://github.com/tejas0111/floe/tree/main/apps/cli",
+  "bugs": {
+    "url": "https://github.com/tejas0111/floe/issues"
+  },
   "type": "module",
   "bin": {
     "floe": "./dist/cli.js"

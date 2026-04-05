@@ -289,10 +289,19 @@ function inferContentType(filePath: string): string {
   return "application/octet-stream";
 }
 
-function parseIntFlag(value?: string): number | undefined {
+function parsePositiveIntegerFlag(name: string, value?: string): number {
+  if (!value?.trim()) {
+    throw new Error(`${name} requires a value`);
+  }
+  if (!/^\d+$/.test(value.trim())) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+
   const n = Number(value);
-  if (!Number.isFinite(n) || n <= 0) return undefined;
-  return Math.floor(n);
+  if (!Number.isSafeInteger(n) || n <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+  return n;
 }
 
 function defaultOptions(): CliOptions {
@@ -382,19 +391,19 @@ function parseArgState(argv: string[]): ParsedArgState {
         overrides.authUser = readValue() || "";
         break;
       case "--chunk-size":
-        overrides.chunkSize = parseIntFlag(readValue());
+        overrides.chunkSize = parsePositiveIntegerFlag("--chunk-size", readValue());
         break;
       case "--epochs":
-        overrides.epochs = parseIntFlag(readValue());
+        overrides.epochs = parsePositiveIntegerFlag("--epochs", readValue());
         break;
       case "--parallel":
-        overrides.parallel = parseIntFlag(readValue());
+        overrides.parallel = parsePositiveIntegerFlag("--parallel", readValue());
         break;
       case "--poll-interval-ms":
-        overrides.pollIntervalMs = parseIntFlag(readValue());
+        overrides.pollIntervalMs = parsePositiveIntegerFlag("--poll-interval-ms", readValue());
         break;
       case "--max-wait-ms":
-        overrides.maxWaitMs = parseIntFlag(readValue());
+        overrides.maxWaitMs = parsePositiveIntegerFlag("--max-wait-ms", readValue());
         break;
       case "--include-blob-id":
         overrides.includeBlobId = true;
@@ -551,6 +560,7 @@ function printUploadResult(
     status?: string;
     chunkSize?: number;
     totalChunks?: number;
+    walrusEndEpoch?: number;
   },
   options: CliOptions
 ) {
@@ -559,7 +569,7 @@ function printUploadResult(
     return;
   }
 
-  writeLines([
+  const lines = [
     headline("Upload Complete"),
     valueLine("status", statusBadge(value.status)),
     valueLine("uploadId", value.uploadId),
@@ -567,7 +577,9 @@ function printUploadResult(
     valueLine("size", formatBytes(value.sizeBytes)),
     valueLine("chunkSize", formatBytes(value.chunkSize)),
     valueLine("chunks", value.totalChunks),
-  ]);
+  ];
+  pushOptionalLine(lines, "walrusEndEpoch", value.walrusEndEpoch);
+  writeLines(lines);
 }
 
 function printSimpleActionResult(
@@ -602,6 +614,7 @@ function printUploadStatusResult(value: Record<string, unknown>, options: CliOpt
     valueLine("total", formatBytes(typeof value.sizeBytes === "number" ? value.sizeBytes : null)),
     valueLine("chunks", value.totalChunks),
   ];
+  pushOptionalLine(lines, "walrusEndEpoch", value.walrusEndEpoch);
   if (options.includeBlobId) {
     pushOptionalLine(lines, "blobId", value.blobId);
   }
@@ -622,6 +635,7 @@ function printManifestResult(value: Record<string, unknown>, options: CliOptions
     valueLine("tracks", Array.isArray(value.tracks) ? value.tracks.length : value.tracks),
     valueLine("segmentCount", Array.isArray(value.segments) ? value.segments.length : value.segments),
   ];
+  pushOptionalLine(lines, "walrusEndEpoch", value.walrusEndEpoch);
   if (options.includeBlobId) {
     pushOptionalLine(lines, "blobId", value.blobId);
   }
@@ -642,6 +656,7 @@ function printFileMetadataResult(value: Record<string, unknown>, options: CliOpt
     valueLine("owner", value.owner),
     valueLine("createdAt", value.createdAt),
   ];
+  pushOptionalLine(lines, "walrusEndEpoch", value.walrusEndEpoch);
   if (options.includeBlobId) {
     pushOptionalLine(lines, "blobId", value.blobId);
   }
