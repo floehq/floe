@@ -48,6 +48,11 @@ function shouldExposeBlobId(query: any): boolean {
   return raw === "1" || raw === "true" || raw === true;
 }
 
+function shouldExposeWalrusDebug(query: any): boolean {
+  const raw = query?.debug ?? query?.includeDebug ?? query?.includeWalrusDebug;
+  return raw === "1" || raw === "true" || raw === true;
+}
+
 const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
 function parseOptionalSuiAddressEnv(name: string): string | undefined {
   const raw = process.env[name]?.trim();
@@ -668,6 +673,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
   app.get("/v1/uploads/:uploadId/status", async (req, reply) => {
     const { uploadId } = req.params as { uploadId: string };
     const exposeBlobId = shouldExposeBlobId((req as any).query);
+    const exposeWalrusDebug = shouldExposeWalrusDebug((req as any).query);
 
     if (!isUuid(uploadId)) {
       return sendApiError(reply, 400, "INVALID_UPLOAD_ID", "uploadId must be a UUID");
@@ -768,6 +774,14 @@ export default async function uploadRoutes(app: FastifyInstance) {
         ...(currentMeta?.fileId ? { fileId: currentMeta.fileId } : {}),
         ...(exposeBlobId && currentMeta?.blobId ? { blobId: currentMeta.blobId } : {}),
         ...(currentMeta?.walrusEndEpoch ? { walrusEndEpoch: Number(currentMeta.walrusEndEpoch) } : {}),
+        ...(exposeWalrusDebug && (currentMeta?.walrusSource || currentMeta?.walrusObjectId)
+          ? {
+              walrusDebug: {
+                ...(currentMeta?.walrusSource ? { source: currentMeta.walrusSource } : {}),
+                ...(currentMeta?.walrusObjectId ? { objectId: currentMeta.walrusObjectId } : {}),
+              },
+            }
+          : {}),
         ...(currentMeta?.error ? { error: currentMeta.error } : {}),
         ...buildFinalizeDiagnostics(currentMeta),
       };
@@ -801,6 +815,14 @@ export default async function uploadRoutes(app: FastifyInstance) {
       ...(currentMeta?.fileId ? { fileId: currentMeta.fileId } : {}),
       ...(exposeBlobId && currentMeta?.blobId ? { blobId: currentMeta.blobId } : {}),
       ...(currentMeta?.walrusEndEpoch ? { walrusEndEpoch: Number(currentMeta.walrusEndEpoch) } : {}),
+      ...(exposeWalrusDebug && (currentMeta?.walrusSource || currentMeta?.walrusObjectId)
+        ? {
+            walrusDebug: {
+              ...(currentMeta?.walrusSource ? { source: currentMeta.walrusSource } : {}),
+              ...(currentMeta?.walrusObjectId ? { objectId: currentMeta.walrusObjectId } : {}),
+            },
+          }
+        : {}),
       ...(currentMeta?.error ? { error: currentMeta.error } : {}),
       ...buildFinalizeDiagnostics(currentMeta),
     };
@@ -810,6 +832,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
     const log = req.log;
     const { uploadId } = req.params as { uploadId: string };
     const exposeBlobId = shouldExposeBlobId((req as any).query);
+    const exposeWalrusDebug = shouldExposeWalrusDebug((req as any).query);
     const completeLimit = await req.server.authProvider.checkRateLimit({
       req,
       scope: "upload_control",
@@ -905,6 +928,14 @@ export default async function uploadRoutes(app: FastifyInstance) {
           sizeBytes: Number(meta.sizeBytes ?? 0),
           status: "ready",
           ...(meta?.walrusEndEpoch ? { walrusEndEpoch: Number(meta.walrusEndEpoch) } : {}),
+          ...(exposeWalrusDebug && (meta?.walrusSource || meta?.walrusObjectId)
+            ? {
+                walrusDebug: {
+                  ...(meta?.walrusSource ? { source: meta.walrusSource } : {}),
+                  ...(meta?.walrusObjectId ? { objectId: meta.walrusObjectId } : {}),
+                },
+              }
+            : {}),
         });
       }
 
@@ -919,6 +950,14 @@ export default async function uploadRoutes(app: FastifyInstance) {
           sizeBytes: Number(meta.sizeBytes ?? session.sizeBytes),
           status: "ready",
           ...(meta?.walrusEndEpoch ? { walrusEndEpoch: Number(meta.walrusEndEpoch) } : {}),
+          ...(exposeWalrusDebug && (meta?.walrusSource || meta?.walrusObjectId)
+            ? {
+                walrusDebug: {
+                  ...(meta?.walrusSource ? { source: meta.walrusSource } : {}),
+                  ...(meta?.walrusObjectId ? { objectId: meta.walrusObjectId } : {}),
+                },
+              }
+            : {}),
         });
       }
 

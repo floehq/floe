@@ -201,7 +201,7 @@ export function observeFinalizeQueueWait(durationMs: number) {
 export function observeWalrusPublish(params: {
   durationMs: number;
   outcome: "success" | "failure";
-  mode: "sdk" | "cli";
+  mode: "publisher" | "cli";
   source?: "newly_created" | "already_certified" | "unknown";
 }) {
   incrementCounter("floe_walrus_publish_total", 1, {

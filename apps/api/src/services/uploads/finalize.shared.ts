@@ -5,6 +5,7 @@ export type FinalizeFailureCode =
   | "incomplete_chunks"
   | "missing_chunks"
   | "walrus_upload_failed"
+  | "walrus_retention_too_low"
   | "walrus_unavailable"
   | "walrus_unknown"
   | "sui_file_create_failed"
@@ -96,6 +97,9 @@ export function normalizeFinalizeFailure(err: unknown): {
   }
   if (message.includes("WALRUS_UPLOAD_FAILED")) {
     return { reasonCode: "walrus_upload_failed", retryable: true };
+  }
+  if (message.includes("WALRUS_RETENTION_TOO_LOW")) {
+    return { reasonCode: "walrus_retention_too_low", retryable: false };
   }
   if (message.includes("WALRUS_UNKNOWN")) {
     return { reasonCode: "walrus_unknown", retryable: true };

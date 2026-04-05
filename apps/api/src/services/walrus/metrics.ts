@@ -1,6 +1,6 @@
 import type { Readable } from "stream";
 import { walrusQueue } from "./limiter.js";
-import { uploadToWalrusOnce } from "./upload.js";
+import { uploadToWalrusOnce, resolveWalrusStoreMode } from "./upload.js";
 import { WalrusUploadLimits } from "../../config/walrus.config.js";
 import {
   recordWalrusUploadMetric,
@@ -10,6 +10,7 @@ import { observeWalrusPublish } from "../metrics/runtime.metrics.js";
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 type WalrusUploadResult = Awaited<ReturnType<typeof uploadToWalrusOnce>>;
+const WALRUS_STORE_MODE = resolveWalrusStoreMode();
 
 function extractWalrusHttpStatus(err: unknown): number | undefined {
   const msg = String((err as any)?.message ?? "");
@@ -29,6 +30,7 @@ export async function uploadToWalrusWithMetrics(params: {
   objectId?: string;
   cost?: number;
   endEpoch?: number;
+  source: "newly_created" | "already_certified" | "unknown";
 }> {
   const start = Date.now();
   let lastError: any;
@@ -57,7 +59,7 @@ export async function uploadToWalrusWithMetrics(params: {
           observeWalrusPublish({
             durationMs: Date.now() - start,
             outcome: "success",
-            mode: (process.env.FLOE_WALRUS_STORE_MODE === "cli" ? "cli" : "sdk"),
+            mode: WALRUS_STORE_MODE,
             source: res.source,
           });
 
@@ -91,7 +93,7 @@ export async function uploadToWalrusWithMetrics(params: {
     observeWalrusPublish({
       durationMs: Date.now() - start,
       outcome: "failure",
-      mode: (process.env.FLOE_WALRUS_STORE_MODE === "cli" ? "cli" : "sdk"),
+      mode: WALRUS_STORE_MODE,
       source: "unknown",
     });
 

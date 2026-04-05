@@ -111,6 +111,7 @@ export async function finalizeUpload(
   sizeBytes: number;
   status: "ready";
   walrusEndEpoch?: number;
+  walrusSource?: "newly_created" | "already_certified" | "unknown";
   finalize: {
     totalMs: number;
     stageDurationsMs: FinalizeStageDurations;
@@ -230,9 +231,20 @@ export async function finalizeUpload(
     });
 
     let blobId: string | null = meta?.blobId ?? null;
+    let walrusObjectId: string | undefined = meta?.walrusObjectId ?? undefined;
     let fileId: string | null = meta?.fileId ?? null;
     let walrusEndEpoch: number | undefined =
       meta?.walrusEndEpoch !== undefined ? Number(meta.walrusEndEpoch) : undefined;
+    let walrusSource:
+      | "newly_created"
+      | "already_certified"
+      | "unknown"
+      | undefined =
+      meta?.walrusSource === "newly_created" ||
+      meta?.walrusSource === "already_certified" ||
+      meta?.walrusSource === "unknown"
+        ? meta.walrusSource
+        : undefined;
 
     if (!blobId) {
       assertFinalizeLockHealthy();
@@ -251,16 +263,29 @@ export async function finalizeUpload(
       );
 
       blobId = result.blobId;
+      walrusObjectId = result.objectId;
       walrusEndEpoch = result.endEpoch;
+      walrusSource = result.source;
 
       if (!blobId) {
         throw new Error("WALRUS_UPLOAD_FAILED");
       }
 
+      if (
+        walrusSource === "already_certified" &&
+        (walrusEndEpoch === undefined || !Number.isFinite(walrusEndEpoch))
+      ) {
+        throw new Error(
+          `WALRUS_RETENTION_TOO_LOW:unknown:${session.resolvedEpochs}:already_certified`
+        );
+      }
+
       await redis.hset(metaKey, {
         blobId,
         walrusUploadedAt: String(Date.now()),
+        ...(walrusObjectId ? { walrusObjectId } : {}),
         ...(walrusEndEpoch !== undefined ? { walrusEndEpoch: String(walrusEndEpoch) } : {}),
+        ...(walrusSource ? { walrusSource } : {}),
       });
     }
 
@@ -316,7 +341,9 @@ export async function finalizeUpload(
           finalizeVerifyMs: String(stageDurationsMs.verify_chunks),
           finalizeWalrusMs: String(stageDurationsMs.walrus_publish),
           finalizeSuiMs: String(stageDurationsMs.sui_finalize),
+          ...(walrusObjectId ? { walrusObjectId } : {}),
           ...(walrusEndEpoch !== undefined ? { walrusEndEpoch: String(walrusEndEpoch) } : {}),
+          ...(walrusSource ? { walrusSource } : {}),
         })
         .del(uploadKeys.session(uploadId))
         .del(uploadKeys.chunks(uploadId))
@@ -393,6 +420,7 @@ export async function finalizeUpload(
         attempt: context.attempt ?? 1,
         queueWaitMs: context.queueWaitMs ?? 0,
         walrusEndEpoch: walrusEndEpoch ?? null,
+        walrusSource: walrusSource ?? null,
         stageDurationsMs,
       },
     });
@@ -403,6 +431,7 @@ export async function finalizeUpload(
       sizeBytes: session.sizeBytes,
       status: "ready",
       ...(walrusEndEpoch !== undefined ? { walrusEndEpoch } : {}),
+      ...(walrusSource ? { walrusSource } : {}),
       finalize: {
         totalMs: finalizeTotalMs,
         stageDurationsMs,
