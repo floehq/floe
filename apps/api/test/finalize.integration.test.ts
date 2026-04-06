@@ -711,7 +711,7 @@ test("health route exposes node role capabilities", async () => {
   });
   assert.equal(body.walrus.readers.count >= 1, true);
   assert.equal(typeof body.walrus.readers.primary, "string");
-  assert.equal(body.walrus.writers.mode, "sdk");
+  assert.equal(body.walrus.writers.mode, "publisher");
   assert.equal(body.walrus.writers.count >= 1, true);
   assert.equal(typeof body.walrus.writers.primary, "string");
 });
