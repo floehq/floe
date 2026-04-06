@@ -54,6 +54,17 @@ export type CreateUploadResponse = {
   expiresAt: number;
 };
 
+export type UploadStatus =
+  | "pending"
+  | "uploading"
+  | "finalizing"
+  | "completed"
+  | "failed"
+  | "expired"
+  | "canceled";
+
+export type CancelUploadStatus = "canceled" | "failed" | "expired";
+
 export type FinalizeDiagnostics = {
   pollAfterMs?: number;
   finalizeAttemptState?: "running" | "retryable_failure" | "terminal_failure" | "completed";
@@ -72,7 +83,7 @@ export type UploadStatusResponse = {
   receivedChunks: number[];
   receivedChunkCount: number;
   expiresAt: number | null;
-  status: string;
+  status: UploadStatus;
   fileId?: string;
   blobId?: string;
   walrusEndEpoch?: number;
@@ -142,6 +153,24 @@ export type UploadProgress = {
   totalBytes: number;
 };
 
+export type UploadStage =
+  | "resuming"
+  | "creating_upload"
+  | "uploading_chunks"
+  | "finalizing"
+  | "polling_finalize"
+  | "completed";
+
+export type UploadStageEvent = {
+  stage: UploadStage;
+  uploadId?: string;
+  resumed?: boolean;
+  uploadIdFromStore?: boolean;
+  fileId?: string;
+  pollAfterMs?: number;
+  attempt?: number;
+};
+
 export type UploadBlobOptions = {
   filename: string;
   contentType?: string;
@@ -155,6 +184,11 @@ export type UploadBlobOptions = {
   finalizePollIntervalMs?: number;
   signal?: AbortSignal;
   onProgress?: (progress: UploadProgress) => void;
+  onStageChange?: (event: UploadStageEvent) => void;
+};
+
+export type UploadFileOptions = Omit<UploadBlobOptions, "filename"> & {
+  filename?: string;
 };
 
 export type UploadBlobResult = {
@@ -173,6 +207,81 @@ export type WaitForUploadReadyOptions = {
   maxWaitMs?: number;
   pollIntervalMs?: number;
   signal?: AbortSignal;
+  onStageChange?: (event: UploadStageEvent) => void;
+};
+
+export type FloeNodeRole = "read" | "write" | "full";
+
+export type FloeDependencyState = "healthy" | "degraded" | "unavailable" | "disabled";
+
+export type FloeHealthStatus = "UP" | "DEGRADED" | "DOWN";
+
+export type FloeHealthRedisCheck = {
+  ok: boolean;
+  latencyMs: number | null;
+  status: FloeDependencyState;
+  timestamp: string;
+};
+
+export type FloeHealthPostgresCheck = {
+  configured: boolean;
+  enabled: boolean;
+  required: boolean;
+  ok: boolean | null;
+  latencyMs: number | null;
+  status: FloeDependencyState;
+};
+
+export type FloeHealthFinalizeQueueCheck = {
+  depth: number | null;
+  pendingUnique: number | null;
+  activeLocal: number | null;
+  concurrency: number | null;
+  oldestQueuedAt: number | null;
+  oldestQueuedAgeMs: number | null;
+};
+
+export type FloeWalrusReaders = {
+  primary: string | null;
+  fallbacks: string[];
+  count: number;
+};
+
+export type FloeWalrusWriters = Record<string, unknown> & {
+  mode: "publisher" | "cli";
+  primary?: string | null;
+  fallbacks?: string[];
+  count?: number;
+  cliBin?: string | null;
+  cliConfig?: string | null;
+  cliWallet?: string | null;
+  uploadRelay?: string | null;
+};
+
+export type FloeHealthResponse = {
+  httpStatus: 200 | 503;
+  role: FloeNodeRole;
+  capabilities: {
+    uploads: boolean;
+    files: boolean;
+    ops: boolean;
+    finalizeWorker: boolean;
+  };
+  walrus: {
+    readers: FloeWalrusReaders;
+    writers: FloeWalrusWriters;
+  };
+  status: FloeHealthStatus;
+  service: string;
+  ready: boolean;
+  degraded: boolean;
+  timestamp: string;
+  checks: {
+    redis: FloeHealthRedisCheck;
+    postgres: FloeHealthPostgresCheck;
+    finalizeQueue: FloeHealthFinalizeQueueCheck;
+    finalizeQueueWarning: string | null;
+  };
 };
 
 export type RequestOptions = {
@@ -189,4 +298,33 @@ export type JsonRequestOptions = RequestOptions & {
 export type FileStreamOptions = RequestOptions & {
   rangeStart?: number;
   rangeEnd?: number;
+};
+
+export type FileMetadataSource = "memory" | "postgres" | "sui" | "unknown";
+
+export type FilePostgresState = "disabled" | "healthy" | "degraded" | "unknown";
+
+export type FileStreamResponseInfo = {
+  status: 200 | 206;
+  contentType?: string;
+  contentLength?: number;
+  contentRange?: string;
+  etag?: string;
+  acceptRanges?: string;
+  metadataSource?: FileMetadataSource;
+  postgresState?: FilePostgresState;
+};
+
+export type FileStreamHeadResult = FileStreamResponseInfo & {
+  response: Response;
+};
+
+export type DownloadFileToPathOptions = FileStreamOptions & {
+  createDirectories?: boolean;
+  overwrite?: boolean;
+};
+
+export type DownloadFileToPathResult = FileStreamResponseInfo & {
+  path: string;
+  bytesWritten: number;
 };

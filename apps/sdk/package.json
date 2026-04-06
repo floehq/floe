@@ -1,7 +1,16 @@
 {
   "name": "@floehq/sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript SDK for the Floe upload and file API",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tejas0111/floe.git",
+    "directory": "apps/sdk"
+  },
+  "homepage": "https://github.com/tejas0111/floe/tree/main/apps/sdk",
+  "bugs": {
+    "url": "https://github.com/tejas0111/floe/issues"
+  },
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",
@@ -20,7 +29,8 @@
   },
   "scripts": {
     "build": "tsc",
-    "smoke": "npm run build && node ./examples/smoke.mjs"
+    "smoke": "npm run build && node ./examples/smoke.mjs",
+    "test": "npm run build && node --test ./test/*.test.mjs"
   },
   "publishConfig": {
     "access": "public"

@@ -2,18 +2,25 @@ import { headersFromAuth, resolveHeaderProvider } from "./auth.js";
 import { FloeApiError, FloeError } from "./errors.js";
 import { createBrowserLocalStorageResumeStore } from "./resume.js";
 import type {
+  CancelUploadStatus,
   CompleteUploadReadyResponse,
   CompleteUploadResponse,
   CreateUploadInput,
   CreateUploadResponse,
+  DownloadFileToPathOptions,
+  DownloadFileToPathResult,
+  FileStreamHeadResult,
+  FileStreamResponseInfo,
   FileManifestResponse,
   FileMetadataResponse,
   FileStreamOptions,
   FloeClientConfig,
+  FloeHealthResponse,
   JsonRequestOptions,
   RequestOptions,
   UploadBlobOptions,
   UploadBlobResult,
+  UploadFileOptions,
   UploadStatusResponse,
   WaitForUploadReadyOptions,
 } from "./types.js";
@@ -32,6 +39,10 @@ import {
   toApiError,
   withDefaultRetry,
 } from "./utils.js";
+
+type ResponseRequestOptions = JsonRequestOptions & {
+  acceptedStatuses?: number[];
+};
 
 export class FloeClient {
   private static readonly DEFAULT_FINALIZE_MAX_WAIT_MS = 60 * 60_000;
@@ -130,8 +141,20 @@ export class FloeClient {
   async cancelUpload(
     uploadId: string,
     options: RequestOptions = {}
-  ): Promise<{ ok: true; uploadId: string; status: string }> {
+  ): Promise<{ ok: true; uploadId: string; status: CancelUploadStatus }> {
     return this.requestJson("DELETE", `/uploads/${encodeURIComponent(uploadId)}`, options);
+  }
+
+  async getHealth(options: RequestOptions = {}): Promise<FloeHealthResponse> {
+    const response = await this.requestResponse("GET", this.rootPath("/health"), {
+      ...options,
+      acceptedStatuses: [503],
+    });
+    const payload = (await response.json()) as Omit<FloeHealthResponse, "httpStatus">;
+    return {
+      ...payload,
+      httpStatus: response.status as 200 | 503,
+    };
   }
 
   async getFileMetadata(
@@ -169,6 +192,25 @@ export class FloeClient {
     });
   }
 
+  async headFileStream(
+    fileId: string,
+    options: FileStreamOptions = {}
+  ): Promise<FileStreamHeadResult> {
+    const rangeHeader = this.buildRangeHeader(options.rangeStart, options.rangeEnd);
+    const response = await this.requestResponse("HEAD", `/files/${encodeURIComponent(fileId)}/stream`, {
+      ...options,
+      headers: {
+        ...(options.headers ?? {}),
+        ...(rangeHeader ? { range: rangeHeader } : {}),
+      },
+    });
+
+    return {
+      ...this.extractFileStreamResponseInfo(response),
+      response,
+    };
+  }
+
   async downloadFile(fileId: string, options: FileStreamOptions = {}): Promise<Uint8Array> {
     const res = await this.streamFile(fileId, options);
     const ab = await res.arrayBuffer();
@@ -178,6 +220,68 @@ export class FloeClient {
   async downloadFileAsBlob(fileId: string, options: FileStreamOptions = {}): Promise<Blob> {
     const res = await this.streamFile(fileId, options);
     return await res.blob();
+  }
+
+  async downloadFileToPath(
+    fileId: string,
+    filePath: string,
+    options: DownloadFileToPathOptions = {}
+  ): Promise<DownloadFileToPathResult> {
+    const dynamicImport = new Function("s", "return import(s)") as <T>(specifier: string) => Promise<T>;
+    const fs = await dynamicImport<{
+      createWriteStream(
+        path: string,
+        options?: { flags?: "w" | "wx" }
+      ): {
+        on(event: "close", listener: () => void): unknown;
+        on(event: "error", listener: (err: unknown) => void): unknown;
+      };
+      promises: {
+        mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
+        stat(path: string): Promise<{ size: number }>;
+      };
+    }>("node:fs");
+    const pathModule = await dynamicImport<{
+      dirname(path: string): string;
+      resolve(...parts: string[]): string;
+    }>("node:path");
+    const stream = await dynamicImport<{
+      Readable: {
+        fromWeb(
+          stream: ReadableStream<Uint8Array>
+        ): {
+          on(event: "close", listener: () => void): unknown;
+          on(event: "error", listener: (err: unknown) => void): unknown;
+        };
+      };
+    }>("node:stream");
+    const streamPromises = await dynamicImport<{
+      pipeline(source: unknown, destination: unknown): Promise<void>;
+    }>("node:stream/promises");
+
+    const resolvedPath = pathModule.resolve(filePath);
+    if (options.createDirectories ?? true) {
+      await fs.promises.mkdir(pathModule.dirname(resolvedPath), { recursive: true });
+    }
+
+    const response = await this.streamFile(fileId, options);
+    if (!response.body) {
+      throw new FloeError("Download response did not include a body");
+    }
+
+    const destination = fs.createWriteStream(resolvedPath, {
+      flags: options.overwrite === false ? "wx" : "w",
+    });
+
+    await streamPromises.pipeline(stream.Readable.fromWeb(response.body), destination);
+
+    const info = this.extractFileStreamResponseInfo(response);
+    const stat = await fs.promises.stat(resolvedPath);
+    return {
+      ...info,
+      path: resolvedPath,
+      bytesWritten: stat.size,
+    };
   }
 
   async uploadBlob(blob: Blob, options: UploadBlobOptions): Promise<UploadBlobResult> {
@@ -202,10 +306,17 @@ export class FloeClient {
       if (stored && stored.trim()) {
         uploadId = stored.trim();
         uploadIdFromStore = true;
+        options.onStageChange?.({
+          stage: "resuming",
+          uploadId,
+          resumed: true,
+          uploadIdFromStore: true,
+        });
       }
     }
 
     if (!uploadId) {
+      options.onStageChange?.({ stage: "creating_upload" });
       create = await this.createUpload(
         {
           filename: options.filename,
@@ -220,6 +331,13 @@ export class FloeClient {
       if (this.resumeStore) {
         await this.resumeStore.set(resumeKey, uploadId);
       }
+    } else {
+      options.onStageChange?.({
+        stage: "resuming",
+        uploadId,
+        resumed: true,
+        uploadIdFromStore,
+      });
     }
 
     let status: UploadStatusResponse;
@@ -252,6 +370,7 @@ export class FloeClient {
       if (this.resumeStore) {
         await this.resumeStore.set(resumeKey, uploadId);
       }
+      options.onStageChange?.({ stage: "creating_upload", uploadId });
     }
 
     const chunkSize = create?.chunkSize ?? status.chunkSize;
@@ -279,6 +398,7 @@ export class FloeClient {
       uploadedBytes,
       totalBytes: blob.size,
     });
+    options.onStageChange?.({ stage: "uploading_chunks", uploadId });
 
     let cursor = 0;
     const worker = async () => {
@@ -319,6 +439,7 @@ export class FloeClient {
       includeBlobId: options.includeBlobId,
       signal: options.signal,
     });
+    options.onStageChange?.({ stage: "finalizing", uploadId });
 
     const complete =
       firstComplete.status === "ready" && "fileId" in firstComplete
@@ -332,11 +453,18 @@ export class FloeClient {
               options.finalizePollIntervalMs ??
               FloeClient.DEFAULT_FINALIZE_POLL_INTERVAL_MS,
             fallbackSizeBytes: blob.size,
+            onStageChange: options.onStageChange,
           });
 
     if (this.resumeStore) {
       await this.resumeStore.remove(resumeKey);
     }
+
+    options.onStageChange?.({
+      stage: "completed",
+      uploadId,
+      fileId: complete.fileId,
+    });
 
     return {
       uploadId,
@@ -363,6 +491,46 @@ export class FloeClient {
     return this.uploadBlob(blob, options);
   }
 
+  async uploadFile(filePath: string, options: UploadFileOptions = {}): Promise<UploadBlobResult> {
+    const dynamicImport = new Function("s", "return import(s)") as <T>(specifier: string) => Promise<T>;
+    const fs = await dynamicImport<{
+      readFile(path: string): Promise<Uint8Array>;
+      stat(path: string): Promise<{ isFile(): boolean }>;
+      openAsBlob?: (path: string, options?: { type?: string }) => Promise<Blob>;
+    }>("node:fs/promises");
+    const pathModule = await dynamicImport<{
+      basename(path: string): string;
+      extname(path: string): string;
+      resolve(...parts: string[]): string;
+    }>("node:path");
+
+    const resolvedPath = pathModule.resolve(filePath);
+    const stat = await fs.stat(resolvedPath);
+    if (!stat.isFile()) {
+      throw new FloeError(`Not a file: ${resolvedPath}`);
+    }
+
+    const contentType = options.contentType ?? inferMimeTypeFromPath(resolvedPath);
+    const filename = options.filename?.trim() || pathModule.basename(resolvedPath);
+    const blob =
+      typeof fs.openAsBlob === "function"
+        ? await fs.openAsBlob(resolvedPath, { type: contentType })
+        : await (async () => {
+            const bytes = new Uint8Array(await fs.readFile(resolvedPath));
+            const buffer = bytes.buffer.slice(
+              bytes.byteOffset,
+              bytes.byteOffset + bytes.byteLength
+            );
+            return new Blob([buffer], { type: contentType });
+          })();
+
+    return this.uploadBlob(blob, {
+      ...options,
+      filename,
+      contentType,
+    });
+  }
+
   async waitForUploadReady(
     uploadId: string,
     options: WaitForUploadReadyOptions = {}
@@ -373,6 +541,7 @@ export class FloeClient {
       maxWaitMs: options.maxWaitMs ?? FloeClient.DEFAULT_FINALIZE_MAX_WAIT_MS,
       pollIntervalMs:
         options.pollIntervalMs ?? FloeClient.DEFAULT_FINALIZE_POLL_INTERVAL_MS,
+      onStageChange: options.onStageChange,
     });
   }
 
@@ -423,6 +592,12 @@ export class FloeClient {
           typeof status.pollAfterMs === "number" && status.pollAfterMs > 0
             ? Number(status.pollAfterMs)
             : waitMs;
+        options.onStageChange?.({
+          stage: "polling_finalize",
+          uploadId,
+          pollAfterMs,
+          attempt: Math.max(1, Math.floor((Date.now() - startedAt) / Math.max(1, waitMs))),
+        });
         waitMs = Math.max(
           options.pollIntervalMs ?? FloeClient.DEFAULT_FINALIZE_POLL_INTERVAL_MS,
           pollAfterMs
@@ -488,9 +663,10 @@ export class FloeClient {
   private async requestResponse(
     method: string,
     path: string,
-    options: JsonRequestOptions = {}
+    options: ResponseRequestOptions = {}
   ): Promise<Response> {
-    const url = `${joinUrl(this.baseUrl, path)}${buildQuery(options.query)}`;
+    const base = /^https?:\/\//.test(path) ? path : joinUrl(this.baseUrl, path);
+    const url = `${base}${buildQuery(options.query)}`;
     let attempt = 0;
     let lastErr: unknown;
 
@@ -527,7 +703,9 @@ export class FloeClient {
           signal: controller.signal,
         });
 
-        if (response.ok) return response;
+        if (response.ok || options.acceptedStatuses?.includes(response.status)) {
+          return response;
+        }
 
         const bodyJson = await parseErrorBodySafe(response);
         const apiError = toApiError(response, bodyJson);
@@ -573,6 +751,12 @@ export class FloeClient {
     }
 
     throw new FloeError("Request failed after retries", lastErr);
+  }
+
+  private rootPath(path: string): string {
+    const rootUrl = new URL(this.baseUrl);
+    rootUrl.pathname = rootUrl.pathname.replace(/\/v1\/?$/, "/");
+    return new URL(path.replace(/^\/+/, ""), rootUrl).toString();
   }
 
   private buildRangeHeader(
@@ -626,4 +810,42 @@ export class FloeClient {
 
     return undefined;
   }
+
+  private extractFileStreamResponseInfo(response: Response): FileStreamResponseInfo {
+    return {
+      status: response.status as 200 | 206,
+      contentType: response.headers.get("content-type") ?? undefined,
+      contentLength: this.parseOptionalIntegerHeader(response.headers, "content-length"),
+      contentRange: response.headers.get("content-range") ?? undefined,
+      etag: response.headers.get("etag") ?? undefined,
+      acceptRanges: response.headers.get("accept-ranges") ?? undefined,
+      metadataSource:
+        (response.headers.get("x-floe-metadata-source") as
+          | FileStreamResponseInfo["metadataSource"]
+          | null) ?? undefined,
+      postgresState:
+        (response.headers.get("x-floe-postgres-state") as
+          | FileStreamResponseInfo["postgresState"]
+          | null) ?? undefined,
+    };
+  }
+
+  private parseOptionalIntegerHeader(headers: Headers, name: string): number | undefined {
+    const raw = headers.get(name);
+    if (!raw) return undefined;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < 0) return undefined;
+    return Math.floor(value);
+  }
+}
+
+function inferMimeTypeFromPath(filePath: string): string {
+  const ext = filePath.slice(filePath.lastIndexOf(".")).toLowerCase();
+  if (ext === ".mp4") return "video/mp4";
+  if (ext === ".webm") return "video/webm";
+  if (ext === ".mov") return "video/quicktime";
+  if (ext === ".json") return "application/json";
+  if (ext === ".txt") return "text/plain";
+  if (ext === ".mkv") return "video/x-matroska";
+  return "application/octet-stream";
 }

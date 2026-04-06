@@ -30,8 +30,11 @@ type ResolvedCommand =
   | { kind: "upload.cancel"; uploadId?: string }
   | { kind: "upload.complete"; uploadId?: string }
   | { kind: "upload.wait"; uploadId?: string }
+  | { kind: "file.head"; fileId?: string }
   | { kind: "file.metadata"; fileId?: string }
   | { kind: "file.manifest"; fileId?: string }
+  | { kind: "file.download"; fileId?: string; outputPath?: string }
+  | { kind: "file.stream"; fileId?: string }
   | { kind: "file.stream-url"; fileId?: string }
   | { kind: "ops.health" }
   | { kind: "config.show" }
@@ -201,10 +204,13 @@ function printHelp(topic?: string) {
   if (normalized === "file") {
     writeLines([
       headline("Floe CLI  File"),
-      "Inspect file metadata, fetch manifests, and derive stream URLs.",
+      "Inspect file metadata, derive stream URLs, and move file bytes out of Floe.",
       section("Usage"),
+      "  floe file head <fileId> [options]",
       "  floe file metadata <fileId> [options]",
       "  floe file manifest <fileId> [options]",
+      "  floe file download <fileId> <path> [options]",
+      "  floe file stream <fileId> [options]",
       "  floe file stream-url <fileId> [options]",
     ]);
     return;
@@ -237,8 +243,11 @@ function printHelp(topic?: string) {
     "  floe upload cancel <uploadId>",
     "  floe upload complete <uploadId>",
     "  floe upload wait <uploadId>",
+    "  floe file head <fileId>",
     "  floe file metadata <fileId>",
     "  floe file manifest <fileId>",
+    "  floe file download <fileId> <path>",
+    "  floe file stream <fileId>",
     "  floe file stream-url <fileId>",
     "  floe ops health",
     "  floe config show",
@@ -248,8 +257,11 @@ function printHelp(topic?: string) {
     section("Shortcuts"),
     "  floe status <uploadId>",
     "  floe cancel <uploadId>",
+    "  floe head <fileId>",
     "  floe metadata <fileId>",
     "  floe manifest <fileId>",
+    "  floe download <fileId> <path>",
+    "  floe stream <fileId>",
     "  floe stream-url <fileId>",
     section("Global Options"),
     "  --base-url <url>        Floe API base URL",
@@ -271,7 +283,10 @@ function printHelp(topic?: string) {
     section("Examples"),
     "  floe upload ./movie.mp4 --base-url http://127.0.0.1:3001/v1",
     "  floe upload wait 123e4567-e89b-12d3-a456-426614174000",
+    "  floe file head 0xabc...",
     "  floe file metadata 0xabc...",
+    "  floe file download 0xabc... ./video.mp4",
+    "  floe file stream 0xabc... > ./video.mp4",
     "  floe ops health",
     "  floe config show",
     "  floe config set base-url https://api.floehq.com/v1",
@@ -454,11 +469,20 @@ function resolveCommand(tokens: string[]): ResolvedCommand {
       break;
     case "file":
       switch (second) {
+        case "head":
+          command = { kind: "file.head", fileId: tokens[2] };
+          break;
         case "metadata":
           command = { kind: "file.metadata", fileId: tokens[2] };
           break;
         case "manifest":
           command = { kind: "file.manifest", fileId: tokens[2] };
+          break;
+        case "download":
+          command = { kind: "file.download", fileId: tokens[2], outputPath: tokens[3] };
+          break;
+        case "stream":
+          command = { kind: "file.stream", fileId: tokens[2] };
           break;
         case "stream-url":
           command = { kind: "file.stream-url", fileId: tokens[2] };
@@ -501,11 +525,20 @@ function resolveCommand(tokens: string[]): ResolvedCommand {
     case "cancel":
       command = { kind: "upload.cancel", uploadId: tokens[1] };
       break;
+    case "head":
+      command = { kind: "file.head", fileId: tokens[1] };
+      break;
     case "metadata":
       command = { kind: "file.metadata", fileId: tokens[1] };
       break;
     case "manifest":
       command = { kind: "file.manifest", fileId: tokens[1] };
+      break;
+    case "download":
+      command = { kind: "file.download", fileId: tokens[1], outputPath: tokens[2] };
+      break;
+    case "stream":
+      command = { kind: "file.stream", fileId: tokens[1] };
       break;
     case "stream-url":
       command = { kind: "file.stream-url", fileId: tokens[1] };
@@ -676,6 +709,47 @@ function printStreamUrlResult(fileId: string, streamUrl: string, options: CliOpt
   ]);
 }
 
+function printFileHeadResult(value: Record<string, unknown>, options: CliOptions) {
+  if (options.json) {
+    printResult(value, true);
+    return;
+  }
+
+  writeLines([
+    headline("File Stream Head"),
+    valueLine("status", value.status),
+    valueLine("contentType", value.contentType),
+    valueLine(
+      "contentLength",
+      typeof value.contentLength === "number" ? formatBytes(value.contentLength) : value.contentLength
+    ),
+    valueLine("contentRange", value.contentRange),
+    valueLine("etag", value.etag),
+    valueLine("acceptRanges", value.acceptRanges),
+    valueLine("metadataSource", value.metadataSource),
+    valueLine("postgresState", value.postgresState),
+  ]);
+}
+
+function printDownloadResult(value: Record<string, unknown>, options: CliOptions) {
+  if (options.json) {
+    printResult(value, true);
+    return;
+  }
+
+  writeLines([
+    headline("File Downloaded"),
+    valueLine("path", value.path),
+    valueLine(
+      "bytesWritten",
+      typeof value.bytesWritten === "number" ? formatBytes(value.bytesWritten) : value.bytesWritten
+    ),
+    valueLine("status", value.status),
+    valueLine("contentType", value.contentType),
+    valueLine("etag", value.etag),
+  ]);
+}
+
 function printHealthResult(value: Record<string, unknown>, options: CliOptions) {
   if (options.json) {
     printResult(value, true);
@@ -810,33 +884,6 @@ function requireValue(value: string | undefined, label: string): string {
   return value;
 }
 
-function rootApiUrl(baseUrl: string): string {
-  return baseUrl.replace(/\/v1\/?$/, "");
-}
-
-async function fetchJson(
-  url: string,
-  options: CliOptions
-): Promise<unknown> {
-  const headers = new Headers();
-  if (options.apiKey) headers.set("x-api-key", options.apiKey);
-  if (options.bearerToken) headers.set("authorization", `Bearer ${options.bearerToken}`);
-  if (options.authUser) headers.set("x-auth-user", options.authUser);
-  if (options.ownerAddress) headers.set("x-owner-address", options.ownerAddress);
-  if (options.walletAddress) headers.set("x-wallet-address", options.walletAddress);
-  headers.set("x-floe-sdk", "@floehq/cli");
-
-  const response = await fetch(url, { headers });
-  verboseLine(options, "request", url);
-  verboseLine(options, "auth", headers.get("authorization") ? "bearer" : headers.get("x-api-key") ? "api-key" : "none");
-  const text = await response.text();
-  const data = text ? JSON.parse(text) : null;
-  if (!response.ok) {
-    throw new Error(`Request failed (${response.status}): ${text}`);
-  }
-  return data;
-}
-
 async function runUpload(filePathRaw: string | undefined, options: CliOptions) {
   const rawFile = requireValue(filePathRaw, "file path");
   const filePath = path.resolve(rawFile);
@@ -940,12 +987,66 @@ async function runFileMetadata(fileIdRaw: string | undefined, options: CliOption
   printFileMetadataResult(result as Record<string, unknown>, options);
 }
 
+async function runFileHead(fileIdRaw: string | undefined, options: CliOptions) {
+  const fileId = requireValue(fileIdRaw, "fileId");
+  if (!options.json) infoLine(`fetching stream headers for ${fileId}`);
+  const client = await buildClient(options);
+  const result = await client.headFileStream(fileId);
+  const { response: _response, ...summary } = result;
+  printFileHeadResult(summary as Record<string, unknown>, options);
+}
+
 async function runFileManifest(fileIdRaw: string | undefined, options: CliOptions) {
   const fileId = requireValue(fileIdRaw, "fileId");
   if (!options.json) infoLine(`fetching manifest for ${fileId}`);
   const client = await buildClient(options);
   const result = await client.getFileManifest(fileId);
   printManifestResult(result as Record<string, unknown>, options);
+}
+
+async function runFileDownload(
+  fileIdRaw: string | undefined,
+  outputPathRaw: string | undefined,
+  options: CliOptions
+) {
+  const fileId = requireValue(fileIdRaw, "fileId");
+  const outputPath = requireValue(outputPathRaw, "output path");
+  if (!options.json) infoLine(`downloading ${fileId} to ${outputPath}`);
+  const client = await buildClient(options);
+  const result = await client.downloadFileToPath(fileId, outputPath);
+  printDownloadResult(result as Record<string, unknown>, options);
+}
+
+async function runFileStream(fileIdRaw: string | undefined, options: CliOptions) {
+  const fileId = requireValue(fileIdRaw, "fileId");
+  if (options.json) {
+    throw new Error("--json is not supported with `floe file stream`; this command writes raw bytes to stdout");
+  }
+  if (process.stdout.isTTY) {
+    throw new Error("Refusing to write binary data to an interactive terminal; redirect stdout to a file or pipe");
+  }
+
+  const dynamicImport = new Function("s", "return import(s)") as <T>(specifier: string) => Promise<T>;
+  const stream = await dynamicImport<{
+    Readable: {
+      fromWeb(
+        stream: ReadableStream<Uint8Array>
+      ): {
+        pipe(destination: NodeJS.WritableStream): NodeJS.WritableStream;
+      };
+    };
+  }>("node:stream");
+  const streamPromises = await dynamicImport<{
+    pipeline(source: unknown, destination: unknown): Promise<void>;
+  }>("node:stream/promises");
+
+  const client = await buildClient(options);
+  const response = await client.streamFile(fileId);
+  if (!response.body) {
+    throw new Error("stream response did not include a body");
+  }
+
+  await streamPromises.pipeline(stream.Readable.fromWeb(response.body), process.stdout);
 }
 
 async function runFileStreamUrl(fileIdRaw: string | undefined, options: CliOptions) {
@@ -956,8 +1057,9 @@ async function runFileStreamUrl(fileIdRaw: string | undefined, options: CliOptio
 }
 
 async function runOpsHealth(options: CliOptions) {
-  if (!options.json) infoLine(`checking deployment health at ${rootApiUrl(options.baseUrl)}/health`);
-  const result = await fetchJson(`${rootApiUrl(options.baseUrl)}/health`, options);
+  const client = await buildClient(options);
+  if (!options.json) infoLine(`checking deployment health`);
+  const result = await client.getHealth();
   printHealthResult(result as Record<string, unknown>, options);
 }
 
@@ -1009,11 +1111,20 @@ async function main() {
     case "upload.wait":
       await runUploadWait(command.uploadId, options);
       return;
+    case "file.head":
+      await runFileHead(command.fileId, options);
+      return;
     case "file.metadata":
       await runFileMetadata(command.fileId, options);
       return;
     case "file.manifest":
       await runFileManifest(command.fileId, options);
+      return;
+    case "file.download":
+      await runFileDownload(command.fileId, command.outputPath, options);
+      return;
+    case "file.stream":
+      await runFileStream(command.fileId, options);
       return;
     case "file.stream-url":
       await runFileStreamUrl(command.fileId, options);
