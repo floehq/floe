@@ -124,6 +124,70 @@ async function loadConfigFile(configPath: string): Promise<RuntimeFileConfig> {
   return normalizeRuntimeConfig(parsed);
 }
 
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function findNearestEnvFile(startDir: string): Promise<string | null> {
+  let current = path.resolve(startDir);
+
+  while (true) {
+    const candidate = path.join(current, ".env");
+    if (await pathExists(candidate)) return candidate;
+
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+function parseEnvFile(text: string): Record<string, string> {
+  const entries: Record<string, string> = {};
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+
+    const separator = line.indexOf("=");
+    if (separator <= 0) continue;
+
+    const key = line.slice(0, separator).trim();
+    let value = line.slice(separator + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+
+    entries[key] = value;
+  }
+
+  return entries;
+}
+
+async function loadDefaultEnvFile() {
+  const explicitEnvFile = process.env.FLOE_ENV_FILE?.trim();
+  const envPath = explicitEnvFile
+    ? path.resolve(explicitEnvFile)
+    : await findNearestEnvFile(process.cwd());
+
+  if (!envPath) return;
+
+  const text = await fs.readFile(envPath, "utf8");
+  const parsed = parseEnvFile(text);
+  for (const [key, value] of Object.entries(parsed)) {
+    if (process.env[key] === undefined || process.env[key] === "") {
+      process.env[key] = value;
+    }
+  }
+}
+
 function setEnvDefault(name: string, value: string | undefined) {
   if (!value) return;
   if (process.env[name] === undefined || process.env[name] === "") {
@@ -164,6 +228,8 @@ export function applyRuntimeConfig(config: RuntimeFileConfig, argvRole?: NodeRol
 }
 
 export async function bootstrapRuntimeConfig() {
+  await loadDefaultEnvFile();
+
   const { configPath: argConfigPath, role } = parseRuntimeArgs(process.argv.slice(2));
   const explicitConfigPath = argConfigPath ?? process.env.FLOE_CONFIG;
   if (explicitConfigPath) {
