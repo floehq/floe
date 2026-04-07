@@ -21,6 +21,10 @@ export type RetryConfig = {
   retryOnStatuses?: number[];
 };
 
+export type FloeCompatibilityTarget = "sdk" | "cli";
+
+export type FloeCompatibilityCheckMode = "off" | "warn";
+
 export type ResumeStore = {
   get(key: string): string | null | undefined | Promise<string | null | undefined>;
   set(key: string, uploadId: string): void | Promise<void>;
@@ -36,6 +40,7 @@ export type FloeClientConfig = {
   headers?: HeaderProvider;
   userAgent?: string;
   resumeStore?: ResumeStore;
+  compatibilityCheck?: FloeCompatibilityCheckMode;
 };
 
 export type CreateUploadInput = {
@@ -258,14 +263,36 @@ export type FloeWalrusWriters = Record<string, unknown> & {
   uploadRelay?: string | null;
 };
 
+export type FloeCompatibilityRanges = {
+  sdk: string;
+  cli: string;
+};
+
+export type FloeVersionResponse = {
+  service: string;
+  apiVersion: string;
+  serverVersion: string;
+  compatibility: FloeCompatibilityRanges;
+};
+
+export type FloeCompatibilityFailureReason =
+  | "outside_supported_range"
+  | "invalid_current_version"
+  | "invalid_supported_range";
+
+export type FloeCompatibilityCheckResult = FloeVersionResponse & {
+  target: FloeCompatibilityTarget;
+  currentVersion: string;
+  supportedRange: string;
+  compatible: boolean;
+  reason?: FloeCompatibilityFailureReason;
+};
+
 export type FloeHealthResponse = {
   httpStatus: 200 | 503;
   apiVersion: string;
   serverVersion: string;
-  compatibility: {
-    sdk: string;
-    cli: string;
-  };
+  compatibility: FloeCompatibilityRanges;
   role: FloeNodeRole;
   capabilities: {
     uploads: boolean;

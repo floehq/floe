@@ -14,8 +14,11 @@ import type {
   FileManifestResponse,
   FileMetadataResponse,
   FileStreamOptions,
+  FloeCompatibilityCheckResult,
+  FloeCompatibilityTarget,
   FloeClientConfig,
   FloeHealthResponse,
+  FloeVersionResponse,
   JsonRequestOptions,
   RequestOptions,
   UploadBlobOptions,
@@ -44,7 +47,7 @@ type ResponseRequestOptions = JsonRequestOptions & {
   acceptedStatuses?: number[];
 };
 
-export const SDK_VERSION = "0.2.2";
+export const SDK_VERSION = "0.2.3";
 
 export class FloeClient {
   static readonly VERSION = SDK_VERSION;
@@ -59,6 +62,9 @@ export class FloeClient {
   private readonly dynamicHeaders?: FloeClientConfig["headers"];
   private readonly userAgent?: string;
   private readonly resumeStore?: FloeClientConfig["resumeStore"];
+  private readonly compatibilityCheckMode: FloeClientConfig["compatibilityCheck"];
+  private compatibilityWarningAttempted = false;
+  private compatibilityWarningInFlight = false;
 
   constructor(config: FloeClientConfig = {}) {
     this.baseUrl = normalizeBaseUrl(config.baseUrl);
@@ -75,6 +81,7 @@ export class FloeClient {
     this.dynamicHeaders = config.headers;
     this.userAgent = config.userAgent ?? "@floehq/sdk";
     this.resumeStore = config.resumeStore ?? this.resolveDefaultResumeStore();
+    this.compatibilityCheckMode = config.compatibilityCheck ?? "off";
   }
 
   async createUpload(
@@ -157,6 +164,45 @@ export class FloeClient {
     return {
       ...payload,
       httpStatus: response.status as 200 | 503,
+    };
+  }
+
+  async getVersion(options: RequestOptions = {}): Promise<FloeVersionResponse> {
+    return this.requestJson<FloeVersionResponse>("GET", this.rootPath("/version"), options);
+  }
+
+  async checkCompatibility(
+    options: RequestOptions & {
+      client?: FloeCompatibilityTarget;
+      currentVersion?: string;
+      versionInfo?: FloeVersionResponse;
+    } = {}
+  ): Promise<FloeCompatibilityCheckResult> {
+    const target = options.client ?? "sdk";
+    const currentVersion = (options.currentVersion ?? SDK_VERSION).trim();
+    const versionInfo = options.versionInfo ?? (await this.getVersion(options));
+    const supportedRange = versionInfo.compatibility[target];
+    const current = parseSemver(currentVersion);
+
+    if (!current) {
+      return {
+        ...versionInfo,
+        target,
+        currentVersion,
+        supportedRange,
+        compatible: false,
+        reason: "invalid_current_version",
+      };
+    }
+
+    const evaluation = satisfiesSemverRange(current, supportedRange);
+    return {
+      ...versionInfo,
+      target,
+      currentVersion,
+      supportedRange,
+      compatible: evaluation.ok,
+      ...(evaluation.reason ? { reason: evaluation.reason } : {}),
     };
   }
 
@@ -676,6 +722,8 @@ export class FloeClient {
     path: string,
     options: ResponseRequestOptions = {}
   ): Promise<Response> {
+    await this.maybeWarnAboutCompatibility(path, options.signal);
+
     const base = /^https?:\/\//.test(path) ? path : joinUrl(this.baseUrl, path);
     const url = `${base}${buildQuery(options.query)}`;
     let attempt = 0;
@@ -848,6 +896,98 @@ export class FloeClient {
     if (!Number.isFinite(value) || value < 0) return undefined;
     return Math.floor(value);
   }
+
+  private async maybeWarnAboutCompatibility(path: string, signal?: AbortSignal) {
+    if (this.compatibilityCheckMode !== "warn") return;
+    if (this.compatibilityWarningAttempted || this.compatibilityWarningInFlight) return;
+    if (!this.shouldAutoCheckCompatibility(path)) return;
+
+    this.compatibilityWarningInFlight = true;
+    try {
+      const result = await this.checkCompatibility({ signal });
+      this.compatibilityWarningAttempted = true;
+      if (!result.compatible) {
+        console.warn(
+          `[Floe SDK] ${result.target} ${result.currentVersion} is not within ${result.service} ${result.serverVersion} supported range ${result.supportedRange}`
+        );
+      }
+    } catch {
+      this.compatibilityWarningAttempted = true;
+    } finally {
+      this.compatibilityWarningInFlight = false;
+    }
+  }
+
+  private shouldAutoCheckCompatibility(path: string): boolean {
+    const href = /^https?:\/\//.test(path) ? path : joinUrl(this.baseUrl, path);
+    return ![
+      this.rootPath("/version"),
+      this.rootPath("/health"),
+      this.rootPath("/livez"),
+    ].includes(href);
+  }
+}
+
+type ParsedSemver = {
+  major: number;
+  minor: number;
+  patch: number;
+};
+
+type SemverRangeEvaluation = {
+  ok: boolean;
+  reason?: FloeCompatibilityCheckResult["reason"];
+};
+
+function parseSemver(value: string): ParsedSemver | null {
+  const match = value.trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?$/);
+  if (!match) return null;
+
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+  };
+}
+
+function compareSemver(a: ParsedSemver, b: ParsedSemver): number {
+  if (a.major !== b.major) return a.major - b.major;
+  if (a.minor !== b.minor) return a.minor - b.minor;
+  return a.patch - b.patch;
+}
+
+function satisfiesSemverRange(version: ParsedSemver, range: string): SemverRangeEvaluation {
+  const clauses = range.trim().split(/\s+/).filter(Boolean);
+  if (clauses.length === 0) {
+    return { ok: false, reason: "invalid_supported_range" };
+  }
+
+  for (const clause of clauses) {
+    const match = clause.match(/^(>=|<=|>|<|=)?(.+)$/);
+    if (!match) {
+      return { ok: false, reason: "invalid_supported_range" };
+    }
+
+    const operator = match[1] ?? "=";
+    const parsed = parseSemver(match[2]);
+    if (!parsed) {
+      return { ok: false, reason: "invalid_supported_range" };
+    }
+
+    const comparison = compareSemver(version, parsed);
+    const satisfied =
+      (operator === ">" && comparison > 0) ||
+      (operator === ">=" && comparison >= 0) ||
+      (operator === "<" && comparison < 0) ||
+      (operator === "<=" && comparison <= 0) ||
+      (operator === "=" && comparison === 0);
+
+    if (!satisfied) {
+      return { ok: false, reason: "outside_supported_range" };
+    }
+  }
+
+  return { ok: true };
 }
 
 function inferMimeTypeFromPath(filePath: string): string {

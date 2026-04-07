@@ -20,6 +20,7 @@ type CliOptions = {
   parallel?: number;
   includeBlobId?: boolean;
   noResume?: boolean;
+  noCompatCheck?: boolean;
   pollIntervalMs?: number;
   maxWaitMs?: number;
 };
@@ -40,6 +41,7 @@ type ResolvedCommand =
   | { kind: "file.stream"; fileId?: string }
   | { kind: "file.stream-url"; fileId?: string }
   | { kind: "ops.health" }
+  | { kind: "ops.version" }
   | { kind: "config.show" }
   | { kind: "config.path" }
   | { kind: "config.set"; key?: string; value?: string }
@@ -83,7 +85,7 @@ const ANSI = {
 };
 
 const COLOR_ENABLED = Boolean(process.stdout.isTTY && !process.env.NO_COLOR);
-const CLI_VERSION = "0.2.3";
+const CLI_VERSION = "0.2.4";
 
 function paint(text: string, ...codes: string[]): string {
   if (!COLOR_ENABLED || codes.length === 0) return text;
@@ -128,6 +130,12 @@ function statusBadge(status: string | null | undefined): string {
     return paint(normalized.toUpperCase(), ANSI.bold, ANSI.yellow);
   }
   return paint(normalized.toUpperCase(), ANSI.bold, ANSI.red);
+}
+
+function compatibilityBadge(compatible: boolean | null | undefined): string {
+  if (compatible === true) return paint("YES", ANSI.bold, ANSI.green);
+  if (compatible === false) return paint("NO", ANSI.bold, ANSI.red);
+  return paint("UNKNOWN", ANSI.bold, ANSI.gray);
 }
 
 function formatBytes(bytes: number | null | undefined): string {
@@ -231,6 +239,7 @@ function printHelp(topic?: string) {
       "Check whether the Floe deployment is alive and ready to serve traffic.",
       section("Usage"),
       "  floe ops health [options]",
+      "  floe ops version [options]",
     ]);
     return;
   }
@@ -274,6 +283,7 @@ function printHelp(topic?: string) {
     "  floe file stream <fileId>",
     "  floe file stream-url <fileId>",
     "  floe ops health",
+    "  floe ops version",
     "  floe doctor",
     "  floe config show",
     "  floe config path",
@@ -299,6 +309,7 @@ function printHelp(topic?: string) {
     "  --auth-user <id>        x-auth-user auth hint",
     "  -v, --verbose           Show request-stage details",
     "  --json                  Print JSON only",
+    "  --no-compat-check       Skip CLI/server compatibility guard",
     "  --include-blob-id       Ask Floe to include blobId when supported",
     section("Upload Options"),
     "  --chunk-size <bytes>    Upload chunk size in bytes",
@@ -315,6 +326,7 @@ function printHelp(topic?: string) {
     "  floe file download 0xabc... ./video.mp4",
     "  floe file stream 0xabc... > ./video.mp4",
     "  floe ops health",
+    "  floe ops version",
     "  floe doctor",
     "  floe config show",
     "  floe config set base-url https://api.floehq.com/v1",
@@ -458,6 +470,9 @@ function parseArgState(argv: string[]): ParsedArgState {
       case "--no-resume":
         overrides.noResume = true;
         break;
+      case "--no-compat-check":
+        overrides.noCompatCheck = true;
+        break;
       case "--json":
         overrides.json = true;
         break;
@@ -465,10 +480,10 @@ function parseArgState(argv: string[]): ParsedArgState {
       case "-v":
         overrides.verbose = true;
         break;
-    case "--version":
-    case "-V":
-      tokens.push("version");
-      break;
+      case "--version":
+      case "-V":
+        tokens.push("version");
+        break;
       default:
         break;
     }
@@ -531,7 +546,13 @@ function resolveCommand(tokens: string[]): ResolvedCommand {
       }
       break;
     case "ops":
-      command = second === "health" ? { kind: "ops.health" } : { kind: "help", topic: "ops" };
+      if (second === "health") {
+        command = { kind: "ops.health" };
+      } else if (second === "version") {
+        command = { kind: "ops.version" };
+      } else {
+        command = { kind: "help", topic: "ops" };
+      }
       break;
     case "config":
       switch (second) {
@@ -829,6 +850,41 @@ function printHealthResult(value: Record<string, unknown>, options: CliOptions) 
   ]);
 }
 
+function printOpsVersionResult(
+  value: {
+    service: string;
+    apiVersion: string;
+    serverVersion: string;
+    compatibility: {
+      sdk: string;
+      cli: string;
+    };
+    cliVersion: string;
+    cliCompatible: boolean;
+    compatibilityReason?: string;
+  },
+  options: CliOptions
+) {
+  if (options.json) {
+    printResult(value, true);
+    return;
+  }
+
+  const lines = [
+    headline("Server Version"),
+    valueLine("service", value.service),
+    valueLine("apiVersion", value.apiVersion),
+    valueLine("serverVersion", value.serverVersion),
+    section("Compatibility"),
+    valueLine("sdkRange", value.compatibility.sdk),
+    valueLine("cliRange", value.compatibility.cli),
+    valueLine("cliVersion", value.cliVersion),
+    valueLine("cliCompatible", compatibilityBadge(value.cliCompatible)),
+  ];
+  pushOptionalLine(lines, "reason", value.compatibilityReason);
+  writeLines(lines);
+}
+
 function printConfigResult(
   value: {
     baseUrl: string;
@@ -879,6 +935,15 @@ function printDoctorResult(
     configPath: string;
     configPresent: boolean;
     walrusPath: string | null;
+    serverReachable: boolean;
+    service?: string | null;
+    apiVersion?: string | null;
+    serverVersion?: string | null;
+    supportedSdkRange?: string | null;
+    supportedCliRange?: string | null;
+    cliCompatible?: boolean | null;
+    compatibilityReason?: string | null;
+    versionCheckError?: string | null;
   },
   options: CliOptions
 ) {
@@ -901,6 +966,16 @@ function printDoctorResult(
     valueLine("baseUrl", value.baseUrl),
     valueLine("configPath", value.configPath),
     valueLine("configPresent", value.configPresent),
+    section("Server"),
+    valueLine("reachable", value.serverReachable),
+    valueLine("service", value.service),
+    valueLine("apiVersion", value.apiVersion),
+    valueLine("serverVersion", value.serverVersion),
+    valueLine("sdkRange", value.supportedSdkRange),
+    valueLine("cliRange", value.supportedCliRange),
+    valueLine("cliCompatible", compatibilityBadge(value.cliCompatible)),
+    valueLine("reason", value.compatibilityReason),
+    valueLine("error", value.versionCheckError),
   ]);
 }
 
@@ -963,8 +1038,31 @@ async function buildClient(options: CliOptions): Promise<FloeClient> {
       ...(options.walletAddress ? { walletAddress: options.walletAddress } : {}),
     },
     resumeStore,
-    userAgent: "@floehq/cli",
+    userAgent: `@floehq/cli/${CLI_VERSION}`,
   });
+}
+
+async function buildApiClient(
+  options: CliOptions,
+  opts: { skipCompatCheck?: boolean } = {}
+): Promise<FloeClient> {
+  const client = await buildClient(options);
+  if (opts.skipCompatCheck || options.noCompatCheck) {
+    return client;
+  }
+
+  const result = await client.checkCompatibility({
+    client: "cli",
+    currentVersion: CLI_VERSION,
+  });
+
+  if (!result.compatible) {
+    throw new Error(
+      `CLI ${CLI_VERSION} is incompatible with ${result.service} ${result.serverVersion}; server supports ${result.supportedRange} for cli. Use --no-compat-check to bypass.`
+    );
+  }
+
+  return client;
 }
 
 function requireValue(value: string | undefined, label: string): string {
@@ -980,7 +1078,7 @@ async function runUpload(filePathRaw: string | undefined, options: CliOptions) {
 
   const contentType = inferContentType(filePath);
   const blob = await readFileAsBlob(filePath, contentType);
-  const client = await buildClient(options);
+  const client = await buildApiClient(options);
   let progressLineOpen = false;
 
   if (!options.json) {
@@ -1026,7 +1124,7 @@ async function runUpload(filePathRaw: string | undefined, options: CliOptions) {
 async function runUploadStatus(uploadIdRaw: string | undefined, options: CliOptions) {
   const uploadId = requireValue(uploadIdRaw, "uploadId");
   if (!options.json) infoLine(`checking upload ${uploadId}`);
-  const client = await buildClient(options);
+  const client = await buildApiClient(options);
   const result = await client.getUploadStatus(uploadId, {
     ...(options.includeBlobId ? { query: { includeBlobId: 1 } } : {}),
   });
@@ -1036,7 +1134,7 @@ async function runUploadStatus(uploadIdRaw: string | undefined, options: CliOpti
 async function runUploadCancel(uploadIdRaw: string | undefined, options: CliOptions) {
   const uploadId = requireValue(uploadIdRaw, "uploadId");
   if (!options.json) infoLine(`canceling upload ${uploadId}`);
-  const client = await buildClient(options);
+  const client = await buildApiClient(options);
   const result = await client.cancelUpload(uploadId);
   printSimpleActionResult("Upload Canceled", result as Record<string, unknown>, options);
 }
@@ -1044,7 +1142,7 @@ async function runUploadCancel(uploadIdRaw: string | undefined, options: CliOpti
 async function runUploadComplete(uploadIdRaw: string | undefined, options: CliOptions) {
   const uploadId = requireValue(uploadIdRaw, "uploadId");
   if (!options.json) infoLine(`completing upload ${uploadId}`);
-  const client = await buildClient(options);
+  const client = await buildApiClient(options);
   const result = await client.completeUpload(uploadId, {
     ...(options.includeBlobId ? { includeBlobId: true } : {}),
   });
@@ -1056,7 +1154,7 @@ async function runUploadWait(uploadIdRaw: string | undefined, options: CliOption
   if (!options.json) infoLine(`waiting for upload ${uploadId}`);
   verboseLine(options, "pollIntervalMs", options.pollIntervalMs ?? "default");
   verboseLine(options, "maxWaitMs", options.maxWaitMs ?? "default");
-  const client = await buildClient(options);
+  const client = await buildApiClient(options);
   const result = await client.waitForUploadReady(uploadId, {
     ...(options.includeBlobId ? { includeBlobId: true } : {}),
     ...(options.pollIntervalMs ? { pollIntervalMs: options.pollIntervalMs } : {}),
@@ -1068,7 +1166,7 @@ async function runUploadWait(uploadIdRaw: string | undefined, options: CliOption
 async function runFileMetadata(fileIdRaw: string | undefined, options: CliOptions) {
   const fileId = requireValue(fileIdRaw, "fileId");
   if (!options.json) infoLine(`fetching metadata for ${fileId}`);
-  const client = await buildClient(options);
+  const client = await buildApiClient(options);
   const result = await client.getFileMetadata(fileId, {
     ...(options.includeBlobId ? { includeBlobId: true } : {}),
   });
@@ -1078,7 +1176,7 @@ async function runFileMetadata(fileIdRaw: string | undefined, options: CliOption
 async function runFileHead(fileIdRaw: string | undefined, options: CliOptions) {
   const fileId = requireValue(fileIdRaw, "fileId");
   if (!options.json) infoLine(`fetching stream headers for ${fileId}`);
-  const client = await buildClient(options);
+  const client = await buildApiClient(options);
   const result = await client.headFileStream(fileId);
   const { response: _response, ...summary } = result;
   printFileHeadResult({ fileId, ...summary } as Record<string, unknown>, options);
@@ -1087,7 +1185,7 @@ async function runFileHead(fileIdRaw: string | undefined, options: CliOptions) {
 async function runFileManifest(fileIdRaw: string | undefined, options: CliOptions) {
   const fileId = requireValue(fileIdRaw, "fileId");
   if (!options.json) infoLine(`fetching manifest for ${fileId}`);
-  const client = await buildClient(options);
+  const client = await buildApiClient(options);
   const result = await client.getFileManifest(fileId);
   printManifestResult(result as Record<string, unknown>, options);
 }
@@ -1100,7 +1198,7 @@ async function runFileDownload(
   const fileId = requireValue(fileIdRaw, "fileId");
   const outputPath = requireValue(outputPathRaw, "output path");
   if (!options.json) infoLine(`downloading ${fileId} to ${outputPath}`);
-  const client = await buildClient(options);
+  const client = await buildApiClient(options);
   const result = await client.downloadFileToPath(fileId, outputPath);
   printDownloadResult(result as Record<string, unknown>, options);
 }
@@ -1128,7 +1226,7 @@ async function runFileStream(fileIdRaw: string | undefined, options: CliOptions)
     pipeline(source: unknown, destination: unknown): Promise<void>;
   }>("node:stream/promises");
 
-  const client = await buildClient(options);
+  const client = await buildApiClient(options);
   const response = await client.streamFile(fileId);
   if (!response.body) {
     throw new Error("stream response did not include a body");
@@ -1139,16 +1237,37 @@ async function runFileStream(fileIdRaw: string | undefined, options: CliOptions)
 
 async function runFileStreamUrl(fileIdRaw: string | undefined, options: CliOptions) {
   const fileId = requireValue(fileIdRaw, "fileId");
-  const client = await buildClient(options);
+  const client = await buildApiClient(options);
   if (!options.json) infoLine(`building stream URL for ${fileId}`);
   printStreamUrlResult(fileId, client.getFileStreamUrl(fileId), options);
 }
 
 async function runOpsHealth(options: CliOptions) {
-  const client = await buildClient(options);
+  const client = await buildApiClient(options);
   if (!options.json) infoLine(`checking deployment health`);
   const result = await client.getHealth();
   printHealthResult(result as Record<string, unknown>, options);
+}
+
+async function runOpsVersion(options: CliOptions) {
+  const client = await buildClient(options);
+  if (!options.json) infoLine(`checking deployment version contract`);
+  const version = await client.getVersion();
+  const compatibility = await client.checkCompatibility({
+    client: "cli",
+    currentVersion: CLI_VERSION,
+    versionInfo: version,
+  });
+
+  printOpsVersionResult(
+    {
+      ...version,
+      cliVersion: CLI_VERSION,
+      cliCompatible: compatibility.compatible,
+      ...(compatibility.reason ? { compatibilityReason: compatibility.reason } : {}),
+    },
+    options
+  );
 }
 
 async function runDoctor(options: CliOptions) {
@@ -1167,6 +1286,37 @@ async function runDoctor(options: CliOptions) {
   const walrusPath =
     walrusLookup.status === 0 ? walrusLookup.stdout.trim() || null : null;
 
+  let serverReachable = false;
+  let service: string | null = null;
+  let apiVersion: string | null = null;
+  let serverVersion: string | null = null;
+  let supportedSdkRange: string | null = null;
+  let supportedCliRange: string | null = null;
+  let cliCompatible: boolean | null = null;
+  let compatibilityReason: string | null = null;
+  let versionCheckError: string | null = null;
+
+  try {
+    const client = await buildClient(options);
+    const version = await client.getVersion();
+    const compatibility = await client.checkCompatibility({
+      client: "cli",
+      currentVersion: CLI_VERSION,
+      versionInfo: version,
+    });
+
+    serverReachable = true;
+    service = version.service;
+    apiVersion = version.apiVersion;
+    serverVersion = version.serverVersion;
+    supportedSdkRange = version.compatibility.sdk;
+    supportedCliRange = version.compatibility.cli;
+    cliCompatible = compatibility.compatible;
+    compatibilityReason = compatibility.reason ?? null;
+  } catch (error) {
+    versionCheckError = String(error instanceof Error ? error.message : error);
+  }
+
   printDoctorResult(
     {
       cliVersion: CLI_VERSION,
@@ -1179,6 +1329,15 @@ async function runDoctor(options: CliOptions) {
       configPath,
       configPresent,
       walrusPath,
+      serverReachable,
+      service,
+      apiVersion,
+      serverVersion,
+      supportedSdkRange,
+      supportedCliRange,
+      cliCompatible,
+      compatibilityReason,
+      versionCheckError,
     },
     options
   );
@@ -1266,6 +1425,9 @@ async function main() {
       return;
     case "ops.health":
       await runOpsHealth(options);
+      return;
+    case "ops.version":
+      await runOpsVersion(options);
       return;
     case "config.show":
       await runConfigShow(options);

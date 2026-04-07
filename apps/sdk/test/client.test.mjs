@@ -204,7 +204,7 @@ test("getHealth returns a typed payload for degraded or down responses", async (
       return Response.json(
         {
           apiVersion: "v1",
-          serverVersion: "1.0.0",
+          serverVersion: "0.1.0",
           compatibility: {
             sdk: ">=0.2.0 <0.3.0",
             cli: ">=0.2.0 <0.3.0",
@@ -270,16 +270,111 @@ test("getHealth returns a typed payload for degraded or down responses", async (
   assert.equal(seenUrl, "http://example.test/nested/health");
   assert.equal(health.httpStatus, 503);
   assert.equal(health.apiVersion, "v1");
-  assert.equal(health.serverVersion, "1.0.0");
+  assert.equal(health.serverVersion, "0.1.0");
   assert.equal(health.compatibility.sdk, ">=0.2.0 <0.3.0");
   assert.equal(health.status, "DOWN");
   assert.equal(health.ready, false);
   assert.equal(health.walrus.writers.mode, "publisher");
 });
 
+test("getVersion and checkCompatibility expose typed server compatibility", async () => {
+  const client = new FloeClient({
+    baseUrl: "http://example.test/v1",
+    fetch: async (url) => {
+      const href = typeof url === "string" ? url : url.toString();
+      const parsed = new URL(href);
+
+      if (parsed.pathname === "/version") {
+        return Response.json({
+          service: "floe-api-v1",
+          apiVersion: "v1",
+          serverVersion: "0.1.0",
+          compatibility: {
+            sdk: ">=0.2.0 <0.3.0",
+            cli: ">=0.2.0 <0.3.0",
+          },
+        });
+      }
+
+      throw new Error(`Unexpected request: ${href}`);
+    },
+  });
+
+  const version = await client.getVersion();
+  const sdkCompatibility = await client.checkCompatibility({ versionInfo: version });
+  const cliCompatibility = await client.checkCompatibility({
+    client: "cli",
+    currentVersion: "0.1.0",
+    versionInfo: version,
+  });
+
+  assert.equal(version.service, "floe-api-v1");
+  assert.equal(version.serverVersion, "0.1.0");
+  assert.equal(sdkCompatibility.compatible, true);
+  assert.equal(sdkCompatibility.supportedRange, ">=0.2.0 <0.3.0");
+  assert.equal(cliCompatibility.compatible, false);
+  assert.equal(cliCompatibility.reason, "outside_supported_range");
+});
+
 test("SDK exports a stable diagnostic version constant", () => {
-  assert.equal(SDK_VERSION, "0.2.2");
+  assert.equal(SDK_VERSION, "0.2.3");
   assert.equal(FloeClient.VERSION, SDK_VERSION);
+});
+
+test("compatibilityCheck warn mode logs one warning for incompatible servers", async () => {
+  let versionCalls = 0;
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (message) => {
+    warnings.push(String(message));
+  };
+
+  try {
+    const client = new FloeClient({
+      baseUrl: "http://example.test/v1",
+      compatibilityCheck: "warn",
+      fetch: async (url, init) => {
+        const href = typeof url === "string" ? url : url.toString();
+        const parsed = new URL(href);
+
+        if (parsed.pathname === "/version") {
+          versionCalls += 1;
+          return Response.json({
+            service: "floe-api-v1",
+            apiVersion: "v1",
+            serverVersion: "0.1.0",
+            compatibility: {
+              sdk: ">=0.3.0 <0.4.0",
+              cli: ">=0.3.0 <0.4.0",
+            },
+          });
+        }
+
+        if (parsed.pathname === "/v1/files/file_1/metadata" && init?.method === "GET") {
+          return Response.json({
+            fileId: "file_1",
+            manifestVersion: 1,
+            container: null,
+            sizeBytes: 1,
+            mimeType: "text/plain",
+            owner: null,
+            createdAt: Date.now(),
+          });
+        }
+
+        throw new Error(`Unexpected request: ${init?.method} ${href}`);
+      },
+    });
+
+    await client.getFileMetadata("file_1");
+    await client.getFileMetadata("file_1");
+
+    assert.equal(versionCalls, 1);
+    assert.equal(warnings.length, 1);
+    assert.match(warnings[0], /not within floe-api-v1 0.1.0 supported range/);
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 test("headFileStream and downloadFileToPath expose stream metadata and write bytes", async () => {

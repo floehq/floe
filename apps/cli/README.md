@@ -26,6 +26,8 @@ floe file metadata <fileId>
 floe file manifest <fileId>
 floe file stream-url <fileId>
 floe ops health
+floe ops version
+floe doctor
 floe config show
 floe config path
 floe config set base-url https://api.floehq.com/v1
@@ -40,6 +42,23 @@ floe cancel <uploadId>
 floe metadata <fileId>
 floe manifest <fileId>
 floe stream-url <fileId>
+```
+
+## Compatibility
+
+The CLI checks the server-reported compatibility contract before normal API commands.
+
+Useful commands:
+
+```bash
+floe ops version
+floe doctor
+```
+
+Bypass the guard only when you are debugging an older deployment:
+
+```bash
+floe ops health --no-compat-check
 ```
 
 ## Config

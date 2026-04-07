@@ -6,6 +6,7 @@ It provides:
 
 - typed upload and file API methods
 - typed deployment health checks
+- typed server version and compatibility checks
 - retry-aware request handling
 - resumable upload helpers
 - browser and Node-compatible uploads
@@ -96,7 +97,24 @@ const floe = new FloeClient({
 });
 
 const health = await floe.getHealth();
-console.log(health.httpStatus, health.status, health.ready);
+console.log(health.httpStatus, health.apiVersion, health.serverVersion, health.status, health.ready);
+```
+
+## Version And Compatibility
+
+```ts
+import { FloeClient } from "@floehq/sdk";
+
+const floe = new FloeClient({
+  baseUrl: "http://127.0.0.1:3001/v1",
+  compatibilityCheck: "warn",
+});
+
+const version = await floe.getVersion();
+console.log(version.apiVersion, version.serverVersion, version.compatibility.cli);
+
+const compatibility = await floe.checkCompatibility();
+console.log(compatibility.compatible, compatibility.supportedRange, compatibility.reason ?? "");
 ```
 
 ## Design Notes
