@@ -1,5 +1,5 @@
 export const FLOE_API_VERSION = "v1";
-export const FLOE_SERVER_VERSION = "0.1.0";
+export const FLOE_SERVER_VERSION = "0.1.1";
 export const FLOE_SERVICE_NAME = `floe-api-${FLOE_API_VERSION}`;
 
 export const FLOE_CLIENT_COMPATIBILITY = {
