@@ -44,7 +44,10 @@ type ResponseRequestOptions = JsonRequestOptions & {
   acceptedStatuses?: number[];
 };
 
+export const SDK_VERSION = "0.2.2";
+
 export class FloeClient {
+  static readonly VERSION = SDK_VERSION;
   private static readonly DEFAULT_FINALIZE_MAX_WAIT_MS = 60 * 60_000;
   private static readonly DEFAULT_FINALIZE_POLL_INTERVAL_MS = 5_000;
 
@@ -269,11 +272,19 @@ export class FloeClient {
       throw new FloeError("Download response did not include a body");
     }
 
-    const destination = fs.createWriteStream(resolvedPath, {
-      flags: options.overwrite === false ? "wx" : "w",
-    });
+    try {
+      const destination = fs.createWriteStream(resolvedPath, {
+        flags: options.overwrite === false ? "wx" : "w",
+      });
 
-    await streamPromises.pipeline(stream.Readable.fromWeb(response.body), destination);
+      await streamPromises.pipeline(stream.Readable.fromWeb(response.body), destination);
+    } catch (error) {
+      const code = (error as { code?: string } | undefined)?.code;
+      if (code === "EEXIST" && options.overwrite === false) {
+        throw new FloeError(`Refusing to overwrite existing file: ${resolvedPath}`, error);
+      }
+      throw error;
+    }
 
     const info = this.extractFileStreamResponseInfo(response);
     const stat = await fs.promises.stat(resolvedPath);

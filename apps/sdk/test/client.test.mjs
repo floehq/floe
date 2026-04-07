@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { FloeApiError, FloeClient } from "../dist/index.js";
+import { FloeApiError, FloeClient, SDK_VERSION } from "../dist/index.js";
 
 test("client sends normalized auth headers and surfaces request ids", async () => {
   let seenHeaders;
@@ -268,6 +268,11 @@ test("getHealth returns a typed payload for degraded or down responses", async (
   assert.equal(health.walrus.writers.mode, "publisher");
 });
 
+test("SDK exports a stable diagnostic version constant", () => {
+  assert.equal(SDK_VERSION, "0.2.2");
+  assert.equal(FloeClient.VERSION, SDK_VERSION);
+});
+
 test("headFileStream and downloadFileToPath expose stream metadata and write bytes", async () => {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "floe-sdk-download-"));
   const outPath = path.join(tmpDir, "nested", "video.bin");
@@ -331,4 +336,40 @@ test("headFileStream and downloadFileToPath expose stream metadata and write byt
   assert.equal(download.contentType, "video/mp4");
   assert.equal(written, "hello world");
   assert.deepEqual(ranges, [`bytes=0-${bytes.byteLength - 1}`, null]);
+});
+
+test("downloadFileToPath refuses to overwrite an existing file when overwrite is false", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "floe-sdk-download-overwrite-"));
+  const outPath = path.join(tmpDir, "video.bin");
+  await fs.writeFile(outPath, "existing");
+
+  const client = new FloeClient({
+    baseUrl: "http://example.test/v1",
+    fetch: async (url, init) => {
+      const href = typeof url === "string" ? url : url.toString();
+      const parsed = new URL(href);
+
+      if (parsed.pathname === "/v1/files/file_1/stream" && init?.method === "GET") {
+        return new Response(new TextEncoder().encode("hello"), {
+          status: 200,
+          headers: {
+            "content-type": "application/octet-stream",
+            "content-length": "5",
+          },
+        });
+      }
+
+      throw new Error(`Unexpected request: ${init?.method} ${href}`);
+    },
+  });
+
+  await assert.rejects(
+    () => client.downloadFileToPath("file_1", outPath, { overwrite: false }),
+    (error) => {
+      assert.match(String(error instanceof Error ? error.message : error), /Refusing to overwrite existing file/);
+      return true;
+    }
+  );
+
+  assert.equal(await fs.readFile(outPath, "utf8"), "existing");
 });

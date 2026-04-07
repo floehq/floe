@@ -67,18 +67,24 @@ console.log(result.fileId, result.blobId);
 ## Stream Introspection And Node Downloads
 
 ```ts
-import { FloeClient } from "@floehq/sdk";
+import { FloeClient, SDK_VERSION } from "@floehq/sdk";
 
 const floe = new FloeClient({
   baseUrl: "http://127.0.0.1:3001/v1",
 });
 
-const head = await floe.headFileStream("0xfileid", { rangeStart: 0, rangeEnd: 1023 });
-console.log(head.status, head.contentRange, head.etag);
+console.log("sdk", SDK_VERSION, FloeClient.VERSION);
 
-const saved = await floe.downloadFileToPath("0xfileid", "./downloads/video.mp4");
+const head = await floe.headFileStream("0xfileid", { rangeStart: 0, rangeEnd: 1023 });
+console.log(head.status, head.contentLength, head.contentRange, head.acceptRanges, head.etag);
+
+const saved = await floe.downloadFileToPath("0xfileid", "./downloads/video.mp4", {
+  overwrite: false,
+});
 console.log(saved.path, saved.bytesWritten);
 ```
+
+When `overwrite` is `false`, `downloadFileToPath()` throws a `FloeError` instead of silently replacing an existing file.
 
 ## Health Checks
 

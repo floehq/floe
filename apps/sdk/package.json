@@ -1,6 +1,6 @@
 {
   "name": "@floehq/sdk",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "TypeScript SDK for the Floe upload and file API",
   "repository": {
     "type": "git",

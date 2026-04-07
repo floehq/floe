@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { FloeApiError, FloeClient, createNodeFileResumeStore } from "@floehq/sdk";
+import { spawnSync } from "node:child_process";
+import { FloeApiError, FloeClient, SDK_VERSION, createNodeFileResumeStore } from "@floehq/sdk";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -24,6 +25,8 @@ type CliOptions = {
 };
 
 type ResolvedCommand =
+  | { kind: "version" }
+  | { kind: "doctor" }
   | { kind: "help"; topic?: string }
   | { kind: "upload.upload"; filePath?: string }
   | { kind: "upload.status"; uploadId?: string }
@@ -80,6 +83,7 @@ const ANSI = {
 };
 
 const COLOR_ENABLED = Boolean(process.stdout.isTTY && !process.env.NO_COLOR);
+const CLI_VERSION = "0.2.3";
 
 function paint(text: string, ...codes: string[]): string {
   if (!COLOR_ENABLED || codes.length === 0) return text;
@@ -132,6 +136,11 @@ function formatBytes(bytes: number | null | undefined): string {
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
+}
+
+function formatByteDetail(bytes: number | null | undefined): string {
+  if (typeof bytes !== "number" || !Number.isFinite(bytes)) return "unknown";
+  return `${formatBytes(bytes)} (${bytes} bytes)`;
 }
 
 function formatPercent(part: number, total: number): string {
@@ -226,16 +235,31 @@ function printHelp(topic?: string) {
     return;
   }
 
+  if (normalized === "doctor") {
+    writeLines([
+      headline("Floe CLI  Doctor"),
+      "Inspect the local CLI runtime, config, and common path issues.",
+      section("Usage"),
+      "  floe doctor [options]",
+      section("Examples"),
+      "  floe doctor",
+      "  floe doctor --json",
+    ]);
+    return;
+  }
+
   writeLines([
     headline("Floe CLI"),
     "Developer tooling for uploads, file inspection, and operator checks.",
     section("Usage"),
     "  floe <group> <command> [args] [options]",
-    section("Groups"),
+    section("Groups And Top-Level"),
     "  upload     upload files, resume flows, and finalize sessions",
     "  file       inspect metadata, manifests, and stream URLs",
     "  ops        health and deployment checks",
+    "  doctor     local runtime and install checks",
     "  config     show the effective local CLI configuration",
+    "  version    show the CLI version",
     "  help       show top-level or group help",
     section("Primary Commands"),
     "  floe upload <file>",
@@ -250,10 +274,12 @@ function printHelp(topic?: string) {
     "  floe file stream <fileId>",
     "  floe file stream-url <fileId>",
     "  floe ops health",
+    "  floe doctor",
     "  floe config show",
     "  floe config path",
     "  floe config set <key> <value>",
     "  floe config unset <key>",
+    "  floe version",
     section("Shortcuts"),
     "  floe status <uploadId>",
     "  floe cancel <uploadId>",
@@ -263,6 +289,7 @@ function printHelp(topic?: string) {
     "  floe download <fileId> <path>",
     "  floe stream <fileId>",
     "  floe stream-url <fileId>",
+    "  floe -V",
     section("Global Options"),
     "  --base-url <url>        Floe API base URL",
     "  --api-key <key>         x-api-key auth",
@@ -288,6 +315,7 @@ function printHelp(topic?: string) {
     "  floe file download 0xabc... ./video.mp4",
     "  floe file stream 0xabc... > ./video.mp4",
     "  floe ops health",
+    "  floe doctor",
     "  floe config show",
     "  floe config set base-url https://api.floehq.com/v1",
   ]);
@@ -328,8 +356,12 @@ function defaultOptions(): CliOptions {
   };
 }
 
+function resolveHomeDir(): string {
+  return process.env.HOME?.trim() || os.homedir();
+}
+
 function getConfigPath(): string {
-  const root = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+  const root = process.env.XDG_CONFIG_HOME || path.join(resolveHomeDir(), ".config");
   return path.join(root, "floe", "config.json");
 }
 
@@ -433,6 +465,10 @@ function parseArgState(argv: string[]): ParsedArgState {
       case "-v":
         overrides.verbose = true;
         break;
+    case "--version":
+    case "-V":
+      tokens.push("version");
+      break;
       default:
         break;
     }
@@ -519,6 +555,9 @@ function resolveCommand(tokens: string[]): ResolvedCommand {
           break;
       }
       break;
+    case "doctor":
+      command = { kind: "doctor" };
+      break;
     case "status":
       command = { kind: "upload.status", uploadId: tokens[1] };
       break;
@@ -545,6 +584,9 @@ function resolveCommand(tokens: string[]): ResolvedCommand {
       break;
     case "help":
       command = { kind: "help", topic: tokens[1] };
+      break;
+    case "version":
+      command = { kind: "version" };
       break;
     default:
       command = { kind: "help" };
@@ -715,20 +757,24 @@ function printFileHeadResult(value: Record<string, unknown>, options: CliOptions
     return;
   }
 
-  writeLines([
+  const lines = [
     headline("File Stream Head"),
-    valueLine("status", value.status),
+    valueLine("fileId", value.fileId),
+    valueLine("httpStatus", value.status),
     valueLine("contentType", value.contentType),
     valueLine(
       "contentLength",
-      typeof value.contentLength === "number" ? formatBytes(value.contentLength) : value.contentLength
+      typeof value.contentLength === "number"
+        ? formatByteDetail(value.contentLength)
+        : value.contentLength
     ),
     valueLine("contentRange", value.contentRange),
-    valueLine("etag", value.etag),
     valueLine("acceptRanges", value.acceptRanges),
-    valueLine("metadataSource", value.metadataSource),
-    valueLine("postgresState", value.postgresState),
-  ]);
+    valueLine("etag", value.etag),
+  ];
+  pushOptionalLine(lines, "metadataSource", value.metadataSource);
+  pushOptionalLine(lines, "postgresState", value.postgresState);
+  writeLines(lines);
 }
 
 function printDownloadResult(value: Record<string, unknown>, options: CliOptions) {
@@ -742,7 +788,7 @@ function printDownloadResult(value: Record<string, unknown>, options: CliOptions
     valueLine("path", value.path),
     valueLine(
       "bytesWritten",
-      typeof value.bytesWritten === "number" ? formatBytes(value.bytesWritten) : value.bytesWritten
+      typeof value.bytesWritten === "number" ? formatByteDetail(value.bytesWritten) : value.bytesWritten
     ),
     valueLine("status", value.status),
     valueLine("contentType", value.contentType),
@@ -813,6 +859,43 @@ function printConfigResult(
     section("Output"),
     valueLine("json", options.json),
     valueLine("verbose", options.verbose),
+  ]);
+}
+
+function printDoctorResult(
+  value: {
+    cliVersion: string;
+    sdkVersion: string;
+    nodeVersion: string;
+    binPath: string | null;
+    localBinPath: string;
+    localBinOnPath: boolean;
+    baseUrl: string;
+    configPath: string;
+    configPresent: boolean;
+    walrusPath: string | null;
+  },
+  options: CliOptions
+) {
+  if (options.json) {
+    printResult(value, true);
+    return;
+  }
+
+  writeLines([
+    headline("CLI Doctor"),
+    valueLine("cliVersion", value.cliVersion),
+    valueLine("sdkVersion", value.sdkVersion),
+    valueLine("nodeVersion", value.nodeVersion),
+    section("Runtime"),
+    valueLine("binPath", value.binPath),
+    valueLine("localBinPath", value.localBinPath),
+    valueLine("localBinOnPath", value.localBinOnPath),
+    valueLine("walrusBin", value.walrusPath),
+    section("Config"),
+    valueLine("baseUrl", value.baseUrl),
+    valueLine("configPath", value.configPath),
+    valueLine("configPresent", value.configPresent),
   ]);
 }
 
@@ -993,7 +1076,7 @@ async function runFileHead(fileIdRaw: string | undefined, options: CliOptions) {
   const client = await buildClient(options);
   const result = await client.headFileStream(fileId);
   const { response: _response, ...summary } = result;
-  printFileHeadResult(summary as Record<string, unknown>, options);
+  printFileHeadResult({ fileId, ...summary } as Record<string, unknown>, options);
 }
 
 async function runFileManifest(fileIdRaw: string | undefined, options: CliOptions) {
@@ -1063,6 +1146,39 @@ async function runOpsHealth(options: CliOptions) {
   printHealthResult(result as Record<string, unknown>, options);
 }
 
+async function runDoctor(options: CliOptions) {
+  const configPath = getConfigPath();
+  let configPresent = false;
+  try {
+    await fs.access(configPath);
+    configPresent = true;
+  } catch {
+    configPresent = false;
+  }
+
+  const localBinPath = path.join(resolveHomeDir(), ".local", "bin");
+  const pathEntries = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  const walrusLookup = spawnSync("which", ["walrus"], { encoding: "utf8" });
+  const walrusPath =
+    walrusLookup.status === 0 ? walrusLookup.stdout.trim() || null : null;
+
+  printDoctorResult(
+    {
+      cliVersion: CLI_VERSION,
+      sdkVersion: SDK_VERSION,
+      nodeVersion: process.version,
+      binPath: process.argv[1] ? path.resolve(process.argv[1]) : null,
+      localBinPath,
+      localBinOnPath: pathEntries.includes(localBinPath),
+      baseUrl: options.baseUrl,
+      configPath,
+      configPresent,
+      walrusPath,
+    },
+    options
+  );
+}
+
 async function runConfigShow(options: CliOptions) {
   printConfigResult(
     {
@@ -1089,10 +1205,24 @@ async function runConfigShow(options: CliOptions) {
   );
 }
 
+function printVersion(options: CliOptions) {
+  if (options.json) {
+    printResult({ name: "@floehq/cli", version: CLI_VERSION, sdkVersion: SDK_VERSION }, true);
+    return;
+  }
+  process.stdout.write(`${CLI_VERSION}\n`);
+}
+
 async function main() {
   const { command, options } = await parseArgs(process.argv.slice(2));
 
   switch (command.kind) {
+    case "version":
+      printVersion(options);
+      return;
+    case "doctor":
+      await runDoctor(options);
+      return;
     case "help":
       printHelp(command.topic);
       return;

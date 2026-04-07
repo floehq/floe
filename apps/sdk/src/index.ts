@@ -1,4 +1,4 @@
-export { FloeClient } from "./client.js";
+export { FloeClient, SDK_VERSION } from "./client.js";
 export { FloeError, FloeApiError, isFloeApiError } from "./errors.js";
 export {
   createBrowserLocalStorageResumeStore,
