@@ -4,12 +4,12 @@
   "description": "Command-line interface for the Floe API",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tejas0111/floe.git",
+    "url": "git+https://github.com/floehq/floe.git",
     "directory": "apps/cli"
   },
-  "homepage": "https://github.com/tejas0111/floe/tree/main/apps/cli",
+  "homepage": "https://github.com/floehq/floe/tree/main/apps/cli",
   "bugs": {
-    "url": "https://github.com/tejas0111/floe/issues"
+    "url": "https://github.com/floehq/floe/issues"
   },
   "type": "module",
   "bin": {

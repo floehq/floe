@@ -4,12 +4,12 @@
   "description": "TypeScript SDK for the Floe upload and file API",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tejas0111/floe.git",
+    "url": "git+https://github.com/floehq/floe.git",
     "directory": "apps/sdk"
   },
-  "homepage": "https://github.com/tejas0111/floe/tree/main/apps/sdk",
+  "homepage": "https://github.com/floehq/floe/tree/main/apps/sdk",
   "bugs": {
-    "url": "https://github.com/tejas0111/floe/issues"
+    "url": "https://github.com/floehq/floe/issues"
   },
   "type": "module",
   "sideEffects": false,
