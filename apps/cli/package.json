@@ -1,6 +1,6 @@
 {
   "name": "@floehq/cli",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Command-line interface for the Floe API",
   "repository": {
     "type": "git",
@@ -25,7 +25,7 @@
     "build": "tsc"
   },
   "dependencies": {
-    "@floehq/sdk": "^0.2.0"
+    "@floehq/sdk": "^0.2.1"
   },
   "publishConfig": {
     "access": "public"
