@@ -18,6 +18,7 @@ import { buildOperatorUploadSummary } from "../services/ops/upload.summary.js";
 import { TopologyConfig } from "../config/topology.config.js";
 import { describeWalrusReaders } from "../config/walrus.config.js";
 import { describeWalrusWriters } from "../services/walrus/upload.js";
+import { buildVersionInfo } from "../version.js";
 
 function parseBoolEnv(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
@@ -119,6 +120,7 @@ function parseBoolQuery(raw: unknown): boolean {
 
 async function buildHealthSnapshot(req: any): Promise<HealthSnapshot> {
   const timestamp = new Date().toISOString();
+  const version = buildVersionInfo();
   let finalizeQueue:
     | {
         depth: number;
@@ -167,6 +169,7 @@ async function buildHealthSnapshot(req: any): Promise<HealthSnapshot> {
     statusCode,
     expiresAt: Date.now() + HEALTH_CACHE_TTL_MS,
     payload: {
+      ...version,
       role: TopologyConfig.role,
       capabilities: {
         uploads: TopologyConfig.routes.uploads,
@@ -179,7 +182,6 @@ async function buildHealthSnapshot(req: any): Promise<HealthSnapshot> {
         writers: describeWalrusWriters(),
       },
       status: serviceStatus,
-      service: "floe-api-v1",
       ready,
       degraded,
       timestamp,
@@ -229,11 +231,15 @@ export const healthRouteTestHooks = {
 export default async function healthRoute(app: FastifyInstance) {
   app.get("/livez", async (_req, reply) => {
     return reply.code(200).send({
+      ...buildVersionInfo(),
       status: "UP",
-      service: "floe-api-v1",
       role: TopologyConfig.role,
       timestamp: new Date().toISOString(),
     });
+  });
+
+  app.get("/version", async (_req, reply) => {
+    return reply.code(200).send(buildVersionInfo());
   });
 
   app.get("/metrics", async (req, reply) => {

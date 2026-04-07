@@ -268,10 +268,25 @@ Current phase-1 limits:
 
 ## Operational Endpoints
 
+### `GET /version`
+
+Returns the server-side compatibility contract:
+
+- `service`
+- `apiVersion`
+- `serverVersion`
+- `compatibility.sdk`
+- `compatibility.cli`
+
 ### `GET /health`
 
 Returns service readiness and dependency checks for:
 
+- `service`
+- `apiVersion`
+- `serverVersion`
+- `compatibility.sdk`
+- `compatibility.cli`
 - Redis
 - Postgres
 - finalize queue state, including oldest queued age and thresholded warning when finalize is stalled

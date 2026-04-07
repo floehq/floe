@@ -692,6 +692,12 @@ test("livez stays cheap and reports process liveness", async () => {
   assert.equal(res.statusCode, 200);
   assert.equal(body.status, "UP");
   assert.equal(body.service, "floe-api-v1");
+  assert.equal(body.apiVersion, "v1");
+  assert.equal(body.serverVersion, "0.1.0");
+  assert.deepEqual(body.compatibility, {
+    sdk: ">=0.2.0 <0.3.0",
+    cli: ">=0.2.0 <0.3.0",
+  });
   assert.equal(body.role, "full");
 });
 
@@ -702,6 +708,13 @@ test("health route exposes node role capabilities", async () => {
   const body = res.json();
 
   assert.equal(res.statusCode, 200);
+  assert.equal(body.service, "floe-api-v1");
+  assert.equal(body.apiVersion, "v1");
+  assert.equal(body.serverVersion, "0.1.0");
+  assert.deepEqual(body.compatibility, {
+    sdk: ">=0.2.0 <0.3.0",
+    cli: ">=0.2.0 <0.3.0",
+  });
   assert.equal(body.role, "full");
   assert.deepEqual(body.capabilities, {
     uploads: true,
@@ -714,6 +727,24 @@ test("health route exposes node role capabilities", async () => {
   assert.equal(body.walrus.writers.mode, "publisher");
   assert.equal(body.walrus.writers.count >= 1, true);
   assert.equal(typeof body.walrus.writers.primary, "string");
+});
+
+test("version route exposes API and client compatibility contract", async () => {
+  const app = await createRouteApp();
+
+  const res = await app.inject({ method: "GET", url: "/version", routePath: "/version" });
+  const body = res.json();
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(body, {
+    service: "floe-api-v1",
+    apiVersion: "v1",
+    serverVersion: "0.1.0",
+    compatibility: {
+      sdk: ">=0.2.0 <0.3.0",
+      cli: ">=0.2.0 <0.3.0",
+    },
+  });
 });
 
 test("health route caches dependency probes across back-to-back requests", async () => {

@@ -260,6 +260,12 @@ export type FloeWalrusWriters = Record<string, unknown> & {
 
 export type FloeHealthResponse = {
   httpStatus: 200 | 503;
+  apiVersion: string;
+  serverVersion: string;
+  compatibility: {
+    sdk: string;
+    cli: string;
+  };
   role: FloeNodeRole;
   capabilities: {
     uploads: boolean;

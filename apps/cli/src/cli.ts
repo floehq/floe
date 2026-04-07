@@ -811,6 +811,8 @@ function printHealthResult(value: Record<string, unknown>, options: CliOptions) 
     headline("Deployment Health"),
     valueLine("status", statusBadge(String(value.status ?? "unknown"))),
     valueLine("service", value.service),
+    valueLine("apiVersion", value.apiVersion),
+    valueLine("serverVersion", value.serverVersion),
     valueLine("role", value.role),
     valueLine("ready", value.ready),
     valueLine("degraded", value.degraded),
@@ -821,6 +823,9 @@ function printHealthResult(value: Record<string, unknown>, options: CliOptions) 
     valueLine("queueDepth", finalizeQueue?.depth),
     valueLine("queueWorkers", finalizeQueue?.concurrency),
     valueLine("oldestQueued", finalizeQueue?.oldestQueuedAgeMs),
+    section("Compatibility"),
+    valueLine("sdk", (value.compatibility as Record<string, unknown> | undefined)?.sdk),
+    valueLine("cli", (value.compatibility as Record<string, unknown> | undefined)?.cli),
   ]);
 }
 

@@ -203,6 +203,12 @@ test("getHealth returns a typed payload for degraded or down responses", async (
       seenUrl = typeof url === "string" ? url : url.toString();
       return Response.json(
         {
+          apiVersion: "v1",
+          serverVersion: "1.0.0",
+          compatibility: {
+            sdk: ">=0.2.0 <0.3.0",
+            cli: ">=0.2.0 <0.3.0",
+          },
           role: "full",
           capabilities: {
             uploads: true,
@@ -263,6 +269,9 @@ test("getHealth returns a typed payload for degraded or down responses", async (
 
   assert.equal(seenUrl, "http://example.test/nested/health");
   assert.equal(health.httpStatus, 503);
+  assert.equal(health.apiVersion, "v1");
+  assert.equal(health.serverVersion, "1.0.0");
+  assert.equal(health.compatibility.sdk, ">=0.2.0 <0.3.0");
   assert.equal(health.status, "DOWN");
   assert.equal(health.ready, false);
   assert.equal(health.walrus.writers.mode, "publisher");

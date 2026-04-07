@@ -16,6 +16,14 @@ It provides resumable chunk uploads, Walrus-backed finalization, Sui-linked file
 
 Floe is currently a phase-1 backend focused on the core upload-to-playback workflow.
 
+Compatibility contract today:
+
+- the server API contract is `v1`
+- the server reports its own build version through `/health`, `/livez`, and `/version`
+- current `v1` compatibility window is:
+  - SDK: `>=0.2.0 <0.3.0`
+  - CLI: `>=0.2.0 <0.3.0`
+
 Included today:
 
 - upload session creation and status tracking
@@ -78,7 +86,7 @@ Runtime components:
 ### Setup
 
 ```bash
-git clone https://github.com/tejas0111/floe.git
+git clone https://github.com/floehq/floe.git
 cd floe
 npm install
 cp .env.example .env
