@@ -1,47 +1,36 @@
 import type { FastifyRequest } from "fastify";
 
-import { AuthModeConfig, type RateLimitTier } from "../../config/auth.config.js";
-import { verifyRequestApiKey } from "./auth.api-key.js";
+import { AuthProviderConfig } from "../../config/auth.config.js";
+import { buildLocalAuthContext } from "./auth.api-key.js";
+import { buildPublicAuthContext, type RequestIdentity } from "./auth.context.js";
+import { buildExternalAuthContext } from "./auth.external.js";
+import { buildTokenAuthContext } from "./auth.token.js";
 
-export type AuthMethod = "public" | "api_key";
-
-export interface RequestIdentity {
-  authenticated: boolean;
-  method: AuthMethod;
-  subject: string;
-  owner?: string;
-  keyId?: string;
-  scopes: string[];
-  tier: RateLimitTier;
-}
-
-export function resolveRequestIdentity(req: FastifyRequest): RequestIdentity {
-  const apiKey = verifyRequestApiKey(req);
-  if (apiKey) {
-    return {
-      authenticated: true,
-      method: "api_key",
-      subject: `api_key:${apiKey.keyId}`,
-      owner: apiKey.owner,
-      keyId: apiKey.keyId,
-      scopes: apiKey.scopes,
-      tier: apiKey.tier,
-    };
+export async function resolveRequestIdentity(req: FastifyRequest): Promise<RequestIdentity> {
+  const cached = (req as FastifyRequest & { authContext?: RequestIdentity }).authContext;
+  if (cached) {
+    return cached;
   }
 
-  return {
-    authenticated: false,
-    method: "public",
-    subject: `public:${req.ip}`,
-    scopes: [],
-    tier: "public",
-  };
-}
-
-export function authRequiredForAction(action: "upload" | "file_read"): boolean {
-  if (AuthModeConfig.mode === "private") return true;
-  if (AuthModeConfig.mode === "hybrid") {
-    return action === "upload";
+  let resolved: RequestIdentity;
+  switch (AuthProviderConfig.kind) {
+    case "none":
+      resolved = buildPublicAuthContext(req);
+      break;
+    case "local":
+      resolved = buildLocalAuthContext(req) ?? buildPublicAuthContext(req);
+      break;
+    case "token":
+      resolved = buildTokenAuthContext(req) ?? buildPublicAuthContext(req);
+      break;
+    case "external":
+      resolved = (await buildExternalAuthContext(req)) ?? buildPublicAuthContext(req);
+      break;
+    default:
+      resolved = buildPublicAuthContext(req);
+      break;
   }
-  return false;
+
+  (req as FastifyRequest & { authContext?: RequestIdentity }).authContext = resolved;
+  return resolved;
 }

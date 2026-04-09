@@ -258,6 +258,87 @@ test("create rejects authenticated keys missing uploads:write scope", async () =
   assert.equal(body.error.message.includes("uploads:write"), true);
 });
 
+test("create replays the original response for the same idempotency key and payload", async () => {
+  const app = await createRouteApp();
+  const body = {
+    filename: "video.mp4",
+    contentType: "video/mp4",
+    sizeBytes: 8,
+    chunkSize: 4,
+    epochs: 2,
+  };
+
+  const first = await app.inject({
+    method: "POST",
+    url: "/v1/uploads/create",
+    routePath: "/v1/uploads/create",
+    headers: { "idempotency-key": "create-upload-1" },
+    body,
+  });
+  const second = await app.inject({
+    method: "POST",
+    url: "/v1/uploads/create",
+    routePath: "/v1/uploads/create",
+    headers: { "idempotency-key": "create-upload-1" },
+    body,
+  });
+
+  const firstBody = first.json();
+  const secondBody = second.json();
+  const redis = redisModule.getRedis();
+  const { uploadKeys } = keysModule;
+  const activeIds = await redis.smembers<string[]>(uploadKeys.activeIndex());
+
+  assert.equal(first.statusCode, 201);
+  assert.equal(second.statusCode, 201);
+  assert.equal(second.headers["idempotency-replayed"], "true");
+  assert.equal(secondBody.uploadId, firstBody.uploadId);
+  assert.equal(secondBody.chunkSize, firstBody.chunkSize);
+  assert.equal(secondBody.totalChunks, firstBody.totalChunks);
+  assert.equal(secondBody.epochs, firstBody.epochs);
+  assert.equal(activeIds.filter((id) => id === firstBody.uploadId).length, 1);
+  assert.equal(activeIds.length, 1);
+});
+
+test("create rejects reusing an idempotency key with a different payload", async () => {
+  const app = await createRouteApp();
+
+  const first = await app.inject({
+    method: "POST",
+    url: "/v1/uploads/create",
+    routePath: "/v1/uploads/create",
+    headers: { "idempotency-key": "create-upload-2" },
+    body: {
+      filename: "video.mp4",
+      contentType: "video/mp4",
+      sizeBytes: 8,
+      chunkSize: 4,
+    },
+  });
+  const second = await app.inject({
+    method: "POST",
+    url: "/v1/uploads/create",
+    routePath: "/v1/uploads/create",
+    headers: { "idempotency-key": "create-upload-2" },
+    body: {
+      filename: "video.mp4",
+      contentType: "video/mp4",
+      sizeBytes: 16,
+      chunkSize: 4,
+    },
+  });
+
+  const secondBody = second.json();
+  const redis = redisModule.getRedis();
+  const { uploadKeys } = keysModule;
+  const activeIds = await redis.smembers<string[]>(uploadKeys.activeIndex());
+
+  assert.equal(first.statusCode, 201);
+  assert.equal(second.statusCode, 409);
+  assert.equal(secondBody.error.code, "IDEMPOTENCY_KEY_REUSED");
+  assert.equal(activeIds.length, 1);
+});
+
 afterEach(async () => {
   const redis = redisModule.getRedis();
   const { uploadKeys } = keysModule;
@@ -447,6 +528,42 @@ test("status and complete reconcile chunk membership from chunk store", async ()
   }
 });
 
+test("complete replays the original response for the same idempotency key", async () => {
+  const uploadId = await seedUpload();
+  const app = await createRouteApp();
+  const idempotencyKey = "complete-upload-1";
+  try {
+    const redis = redisModule.getRedis();
+    const { uploadKeys } = keysModule;
+    await fs.mkdir(path.join(uploadTmpDir, uploadId), { recursive: true });
+    await fs.writeFile(path.join(uploadTmpDir, uploadId, "0"), Buffer.from("test"));
+    await fs.writeFile(path.join(uploadTmpDir, uploadId, "1"), Buffer.from("done"));
+    await redis.del(uploadKeys.chunks(uploadId));
+
+    const first = await app.inject({
+      method: "POST",
+      url: `/v1/uploads/${uploadId}/complete`,
+      routePath: "/v1/uploads/:uploadId/complete",
+      params: { uploadId },
+      headers: { "idempotency-key": idempotencyKey },
+    });
+    const second = await app.inject({
+      method: "POST",
+      url: `/v1/uploads/${uploadId}/complete`,
+      routePath: "/v1/uploads/:uploadId/complete",
+      params: { uploadId },
+      headers: { "idempotency-key": idempotencyKey },
+    });
+
+    assert.equal(first.statusCode, 202);
+    assert.equal(second.statusCode, 202);
+    assert.equal(second.headers["idempotency-replayed"], "true");
+    assert.deepEqual(second.json(), first.json());
+  } finally {
+    await cleanupUpload(uploadId);
+  }
+});
+
 test("status marks stale uploads as expired from expiresAt", async () => {
   const uploadId = await seedUpload();
   const app = await createRouteApp();
@@ -617,6 +734,35 @@ test("cancel returns expired when upload already timed out", async () => {
 
     assert.equal(res.statusCode, 200);
     assert.equal(body.status, "expired");
+  } finally {
+    await cleanupUpload(uploadId);
+  }
+});
+
+test("cancel replays the original response for the same idempotency key", async () => {
+  const uploadId = await seedUpload();
+  const app = await createRouteApp();
+  const idempotencyKey = "cancel-upload-1";
+  try {
+    const first = await app.inject({
+      method: "DELETE",
+      url: `/v1/uploads/${uploadId}`,
+      routePath: "/v1/uploads/:uploadId",
+      params: { uploadId },
+      headers: { "idempotency-key": idempotencyKey },
+    });
+    const second = await app.inject({
+      method: "DELETE",
+      url: `/v1/uploads/${uploadId}`,
+      routePath: "/v1/uploads/:uploadId",
+      params: { uploadId },
+      headers: { "idempotency-key": idempotencyKey },
+    });
+
+    assert.equal(first.statusCode, 200);
+    assert.equal(second.statusCode, 200);
+    assert.equal(second.headers["idempotency-replayed"], "true");
+    assert.deepEqual(second.json(), first.json());
   } finally {
     await cleanupUpload(uploadId);
   }

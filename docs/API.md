@@ -368,16 +368,27 @@ These limits are configured in `apps/api/src/config/auth.config.ts`.
 
 ## Auth Model
 
-Floe supports three deployment modes:
+Floe supports three access policies:
 
 - `public`
 - `hybrid`
 - `private`
 
-Current verified auth method:
+Current normalized config:
+
+- `FLOE_ACCESS_POLICY=public|hybrid|private`
+- `FLOE_AUTH_PROVIDER=none|local|external|token`
+
+Migration note:
+
+- `FLOE_AUTH_MODE` still maps to `FLOE_ACCESS_POLICY` for backward compatibility
+
+Presented credential formats:
 
 - `x-api-key: <secret>`
 - `Authorization: Bearer <secret>`
+
+If both are present, `Authorization` takes precedence.
 
 Mode behavior:
 
@@ -385,18 +396,70 @@ Mode behavior:
 - `hybrid`: upload actions require a verified API key; file reads can remain public
 - `private`: upload and file routes require a verified API key
 
-Verified API keys are configured through `FLOE_API_KEYS_JSON`. Each key can carry:
+Provider behavior:
+
+- `none`: unauthenticated public access only
+- `local`: self-hosted environment-backed API keys from `FLOE_API_KEYS_JSON`
+- `external`: remote credential verification via `FLOE_AUTH_EXTERNAL_VERIFY_URL`
+- `token`: signed delegated bearer/api-key tokens verified inside Floe core with `FLOE_AUTH_TOKEN_SECRET`
+
+External verifier contract:
+
+- Floe sends `POST` JSON to `FLOE_AUTH_EXTERNAL_VERIFY_URL`
+- request shape:
+  - for `x-api-key`: `{ "apiKey": "<presented key>" }`
+  - for `Authorization: Bearer <token>`: `{ "delegatedToken": "<presented token>" }`
+- verifier auth:
+  - Floe sends `x-floe-shared-secret: <FLOE_AUTH_EXTERNAL_SHARED_SECRET>` when configured
+  - Floe also supports `Authorization: Bearer <FLOE_AUTH_EXTERNAL_AUTH_TOKEN>` as a backward-compatible fallback
+- verifier auth failure:
+  - bad or missing verifier auth can return HTTP `401`
+- expected success response:
+  - `valid: true`
+  - `subjectType`
+  - `subjectId`
+  - optional `keyId`, `orgId`, `projectId`, `scopes`, `ownerAddress`, `walletAddress`, `tier`, `expiresAt`
+- invalid response:
+  - still returns HTTP `200`
+  - `valid: false`
+  - optional `reason`: `invalid`, `expired`, `revoked`, `malformed`, `timeout`, or `missing_claims`
+- protected routes fail closed if verification fails or returns an invalid/expired context
+
+Local API keys are configured through `FLOE_API_KEYS_JSON`. Each key can carry:
 
 - `id`
 - `owner`
 - `tier`
 - `scopes`
+- `secret` or `key`
 
 Current enforced scopes:
 
 - `uploads:write` for upload create, chunk, complete, and cancel
 - `uploads:read` for upload status
 - `files:read` for file metadata, manifest, and stream
+- `ops:read` for read-only operator endpoints such as `/ops/uploads/:uploadId`
+- `admin:uploads` for stronger upload admin controls when enabled
+
+Guaranteed normalized auth context fields:
+
+- `authenticated`
+- `provider`
+- `subjectType`
+- `subjectId`
+- `subject`
+- `scopes`
+- `tier`
+- `credentialType`
+
+Conditionally present normalized auth context fields:
+
+- `keyId`
+- `orgId`
+- `projectId`
+- `ownerAddress`
+- `walletAddress`
+- `expiresAt`
 - `*` grants full access
 
 ## Error Format

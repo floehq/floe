@@ -16,12 +16,36 @@ Current security-sensitive surfaces include:
 Floe currently supports:
 
 - request-tier aware rate limiting
-- deployment auth modes: `public`, `hybrid`, and `private`
-- env-backed API key verification for authenticated principals
+- deployment access policies: `public`, `hybrid`, and `private`
+- pluggable auth providers: `none`, `local`, `external`, and `token`
+- env-backed local API key verification for authenticated principals
 - optional owner propagation on uploads and file metadata
 - optional owner enforcement on upload and file access with `FLOE_ENFORCE_UPLOAD_OWNER=1`
 - token protection for `/metrics`
 - operational controls through environment-based deployment configuration
+
+Provider contracts:
+
+- `none`
+  - no credential verification
+  - only valid with `FLOE_ACCESS_POLICY=public`
+- `local`
+  - verifies `Authorization: Bearer <secret>` or `x-api-key: <secret>` against `FLOE_API_KEYS_JSON`
+- `external`
+  - posts `{ apiKey }` or `{ delegatedToken }` to `FLOE_AUTH_EXTERNAL_VERIFY_URL`
+  - prefers `x-floe-shared-secret: <FLOE_AUTH_EXTERNAL_SHARED_SECRET>` for SaaS verifier auth
+  - still supports `FLOE_AUTH_EXTERNAL_AUTH_TOKEN` as a backward-compatible fallback
+  - bounded by `FLOE_AUTH_EXTERNAL_TIMEOUT_MS`
+  - short positive cache via `FLOE_AUTH_EXTERNAL_CACHE_TTL_MS`
+  - verifier auth failures stay transport-level `401`
+  - accepted verifier calls return `200` with `valid: true|false`, normalized auth fields, and optional `reason`; protected routes fail closed when verification fails
+- `token`
+  - verifies HMAC-signed delegated tokens using `FLOE_AUTH_TOKEN_SECRET`
+  - rejects malformed, expired, or bad-signature tokens
+
+Credential precedence:
+
+- `Authorization` is evaluated before `x-api-key`
 
 ## Deployment Guidance
 
@@ -29,9 +53,10 @@ For production-oriented deployments, Floe should be run in `private` mode or beh
 
 Recommended deployment posture:
 
-- use `FLOE_AUTH_MODE=private` for restricted deployments
-- use verified API keys with owner binding for restricted uploads and reads
-- terminate authentication at a trusted edge or gateway when external identity systems are required
+- use `FLOE_ACCESS_POLICY=private` for restricted deployments
+- use `FLOE_AUTH_PROVIDER=local` for self-hosted environment-backed keys
+- use `FLOE_AUTH_PROVIDER=token` for delegated signed tokens issued by a control plane
+- use `FLOE_AUTH_PROVIDER=external` with a verifier endpoint that normalizes presented bearer tokens or API keys
 - keep metrics and operational endpoints private
 - apply standard network controls, secrets management, and logging hygiene
 - use environment-specific credentials and least-privilege access for infrastructure dependencies

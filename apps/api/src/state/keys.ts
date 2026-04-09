@@ -9,6 +9,13 @@ export const uploadKeys = {
 
   meta: (uploadId: string) => key(`upload:${uploadId}:meta`),
 
+  createIdempotency: (subject: string, idempotencyKey: string) =>
+    key(`upload:create:idempotency:${subject}:${idempotencyKey}`),
+  completeIdempotency: (subject: string, uploadId: string, idempotencyKey: string) =>
+    key(`upload:${uploadId}:complete:idempotency:${subject}:${idempotencyKey}`),
+  cancelIdempotency: (subject: string, uploadId: string, idempotencyKey: string) =>
+    key(`upload:${uploadId}:cancel:idempotency:${subject}:${idempotencyKey}`),
+
   // GC index (single source of truth)
   gcIndex: () => key("upload:gc:active"),
   activeIndex: () => key("upload:active"),

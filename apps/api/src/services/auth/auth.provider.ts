@@ -1,19 +1,24 @@
 import type { FastifyRequest } from "fastify";
 
-import { AuthModeConfig, AuthOwnerPolicyConfig } from "../../config/auth.config.js";
+import {
+  AuthAccessPolicyConfig,
+  AuthOwnerPolicyConfig,
+} from "../../config/auth.config.js";
 import type { RateLimitScope } from "../../config/auth.config.js";
 import {
   checkTieredRateLimit,
   type RateLimitDecision,
 } from "./auth.rate-limit.js";
 import {
-  authRequiredForAction,
   resolveRequestIdentity,
-  type RequestIdentity,
 } from "./auth.identity.js";
+import {
+  authRequiredForAction,
+  type RequestIdentity,
+} from "./auth.context.js";
 
 export interface AuthProvider {
-  resolveIdentity(req: FastifyRequest): RequestIdentity;
+  resolveIdentity(req: FastifyRequest): Promise<RequestIdentity>;
   authorizeUploadAccess(params: {
     req: FastifyRequest;
     action: "create" | "chunk" | "status" | "complete" | "cancel";
@@ -26,6 +31,10 @@ export interface AuthProvider {
     fileId: string;
     fileOwner?: string | null;
   }): Promise<{ allowed: boolean; code?: string; message?: string }>;
+  authorizeOpsAccess(params: {
+    req: FastifyRequest;
+    action: "upload_read" | "upload_admin";
+  }): Promise<{ allowed: boolean; code?: string; message?: string }>;
   checkRateLimit(params: {
     req: FastifyRequest;
     scope: RateLimitScope;
@@ -33,8 +42,10 @@ export interface AuthProvider {
 }
 
 class DefaultAuthProvider implements AuthProvider {
-  resolveIdentity(req: FastifyRequest): RequestIdentity {
-    return resolveRequestIdentity(req);
+  async resolveIdentity(req: FastifyRequest): Promise<RequestIdentity> {
+    const resolved = await resolveRequestIdentity(req);
+    (req as FastifyRequest & { authContext?: RequestIdentity }).authContext = resolved;
+    return resolved;
   }
 
   private hasScope(identity: RequestIdentity, requiredScope: string): boolean {
@@ -54,14 +65,33 @@ class DefaultAuthProvider implements AuthProvider {
     };
   }
 
-  private requireAuthentication(req: FastifyRequest, action: "upload" | "file_read"): { allowed: true; identity: RequestIdentity } | { allowed: false; code: string; message: string } {
-    const identity = this.resolveIdentity(req);
+  private requireAnyScope(
+    identity: RequestIdentity,
+    requiredScopes: string[]
+  ): { allowed: true } | { allowed: false; code: string; message: string } {
+    if (requiredScopes.some((scope) => this.hasScope(identity, scope))) {
+      return { allowed: true };
+    }
+    return {
+      allowed: false,
+      code: "INSUFFICIENT_SCOPE",
+      message: `Authenticated principal is missing required scope: ${requiredScopes[0]}`,
+    };
+  }
+
+  private async requireAuthentication(
+    req: FastifyRequest,
+    action: "upload" | "file_read"
+  ): Promise<
+    { allowed: true; identity: RequestIdentity } | { allowed: false; code: string; message: string }
+  > {
+    const identity = await this.resolveIdentity(req);
     if (authRequiredForAction(action) && !identity.authenticated) {
       return {
         allowed: false,
         code: "AUTH_REQUIRED",
         message:
-          AuthModeConfig.mode === "private"
+          AuthAccessPolicyConfig.policy === "private"
             ? "Authenticated access is required"
             : "Authenticated access is required for this action",
       };
@@ -75,7 +105,7 @@ class DefaultAuthProvider implements AuthProvider {
     uploadId?: string;
     uploadOwner?: string | null;
   }): Promise<{ allowed: boolean; code?: string; message?: string }> {
-    const base = this.requireAuthentication(params.req, "upload");
+    const base = await this.requireAuthentication(params.req, "upload");
     if (!base.allowed) return base;
     if (base.identity.authenticated) {
       const scope = params.action === "status" ? "uploads:read" : "uploads:write";
@@ -102,7 +132,7 @@ class DefaultAuthProvider implements AuthProvider {
     fileId: string;
     fileOwner?: string | null;
   }): Promise<{ allowed: boolean; code?: string; message?: string }> {
-    const base = this.requireAuthentication(params.req, "file_read");
+    const base = await this.requireAuthentication(params.req, "file_read");
     if (!base.allowed) return base;
     if (base.identity.authenticated) {
       const scopeCheck = this.requireScope(base.identity, "files:read");
@@ -122,11 +152,31 @@ class DefaultAuthProvider implements AuthProvider {
     return { allowed: true };
   }
 
+  async authorizeOpsAccess(params: {
+    req: FastifyRequest;
+    action: "upload_read" | "upload_admin";
+  }): Promise<{ allowed: boolean; code?: string; message?: string }> {
+    const identity = await this.resolveIdentity(params.req);
+    if (!identity.authenticated) {
+      return {
+        allowed: false,
+        code: "AUTH_REQUIRED",
+        message: "Authenticated operator access is required",
+      };
+    }
+
+    if (params.action === "upload_admin") {
+      return this.requireAnyScope(identity, ["admin:uploads"]);
+    }
+
+    return this.requireAnyScope(identity, ["ops:read", "admin:uploads"]);
+  }
+
   async checkRateLimit(params: {
     req: FastifyRequest;
     scope: RateLimitScope;
   }): Promise<RateLimitDecision> {
-    const identity = this.resolveIdentity(params.req);
+    const identity = await this.resolveIdentity(params.req);
     return checkTieredRateLimit({ scope: params.scope, identity });
   }
 }
