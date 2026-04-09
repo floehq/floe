@@ -1,37 +1,46 @@
 import type { FastifyRequest } from "fastify";
 
 import { AuthApiKeyConfig, type RateLimitTier } from "../../config/auth.config.js";
+import { extractPresentedCredential } from "./auth.credentials.js";
+import type { AuthContext } from "./auth.context.js";
 
 export interface VerifiedApiKeyPrincipal {
   keyId: string;
   owner?: string;
   scopes: string[];
   tier: RateLimitTier;
-}
-
-function parseBearerToken(raw: unknown): string | undefined {
-  if (typeof raw !== "string") return undefined;
-  const m = raw.match(/^Bearer\s+(.+)$/i);
-  const token = m?.[1]?.trim();
-  return token || undefined;
-}
-
-function extractPresentedApiKey(req: FastifyRequest): string | undefined {
-  const headers = req.headers as Record<string, unknown>;
-  const explicit = typeof headers["x-api-key"] === "string" ? headers["x-api-key"].trim() : "";
-  if (explicit) return explicit;
-  return parseBearerToken(headers.authorization);
+  credentialType: "api_key" | "bearer";
 }
 
 export function verifyRequestApiKey(req: FastifyRequest): VerifiedApiKeyPrincipal | null {
-  const presented = extractPresentedApiKey(req);
+  const presented = extractPresentedCredential(req);
   if (!presented) return null;
-  const match = AuthApiKeyConfig.keys.find((entry) => entry.secret === presented);
+  const match = AuthApiKeyConfig.keys.find((entry) => entry.secret === presented.value);
   if (!match) return null;
   return {
     keyId: match.id,
     owner: match.owner,
     scopes: match.scopes,
     tier: match.tier,
+    credentialType: presented.type,
+  };
+}
+
+export function buildLocalAuthContext(req: FastifyRequest): AuthContext | null {
+  const principal = verifyRequestApiKey(req);
+  if (!principal) return null;
+  return {
+    authenticated: true,
+    provider: "local",
+    method: "api_key",
+    subjectType: "api_key",
+    subjectId: principal.keyId,
+    subject: `api_key:${principal.keyId}`,
+    keyId: principal.keyId,
+    scopes: principal.scopes,
+    ownerAddress: principal.owner,
+    owner: principal.owner,
+    tier: principal.tier,
+    credentialType: principal.credentialType,
   };
 }

@@ -69,6 +69,8 @@ const LIMIT_ENV = {
 export type RateLimitScope = keyof typeof LIMIT_DEFAULTS;
 export type RateLimitTier = keyof (typeof LIMIT_DEFAULTS)["upload_control"];
 export type AuthMode = "public" | "hybrid" | "private";
+export type AccessPolicy = AuthMode;
+export type AuthProviderKind = "none" | "local" | "external" | "token";
 
 export interface StaticApiKeyConfig {
   id: string;
@@ -116,13 +118,48 @@ function assertTierOrder(limits: Record<RateLimitScope, Record<RateLimitTier, nu
   }
 }
 
-function parseAuthMode(): AuthMode {
-  const raw = process.env.FLOE_AUTH_MODE?.trim().toLowerCase();
+function parseAccessPolicy(): AccessPolicy {
+  const raw =
+    process.env.FLOE_ACCESS_POLICY?.trim().toLowerCase() ||
+    process.env.FLOE_AUTH_MODE?.trim().toLowerCase();
   if (!raw) return "hybrid";
   if (raw === "public" || raw === "hybrid" || raw === "private") {
     return raw;
   }
-  throw new Error("FLOE_AUTH_MODE must be one of: public, hybrid, private");
+  throw new Error(
+    "FLOE_ACCESS_POLICY/FLOE_AUTH_MODE must be one of: public, hybrid, private"
+  );
+}
+
+function parseAuthProviderKind(params: { accessPolicy: AccessPolicy; localKeyCount: number }): AuthProviderKind {
+  const raw = process.env.FLOE_AUTH_PROVIDER?.trim().toLowerCase();
+  if (!raw) {
+    if (params.localKeyCount > 0) return "local";
+    return params.accessPolicy === "public" ? "none" : "local";
+  }
+  if (raw === "none" || raw === "local" || raw === "external" || raw === "token") {
+    return raw;
+  }
+  throw new Error("FLOE_AUTH_PROVIDER must be one of: none, local, external, token");
+}
+
+function parseOptionalStringEnv(name: string): string | undefined {
+  const raw = process.env[name]?.trim();
+  return raw ? raw : undefined;
+}
+
+function parseOptionalTimestampMsEnv(name: string): number | undefined {
+  const raw = process.env[name]?.trim();
+  if (!raw) return undefined;
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`${name} must be a valid ISO-8601 timestamp`);
+  }
+  return parsed;
+}
+
+function parseTrustedExternalHeadersEnabled(): boolean {
+  return parseBoolEnv("FLOE_AUTH_EXTERNAL_TRUST_HEADERS", false);
 }
 
 function parseApiKeys(): StaticApiKeyConfig[] {
@@ -148,7 +185,13 @@ function parseApiKeys(): StaticApiKeyConfig[] {
 
     const candidate = entry as Record<string, unknown>;
     const id = typeof candidate.id === "string" ? candidate.id.trim() : "";
-    const secret = typeof candidate.secret === "string" ? candidate.secret.trim() : "";
+    const secretCandidate =
+      typeof candidate.secret === "string"
+        ? candidate.secret.trim()
+        : typeof candidate.key === "string"
+          ? candidate.key.trim()
+          : "";
+    const secret = secretCandidate;
     const tier = candidate.tier === "public" ? "public" : "authenticated";
     const scopes = Array.isArray(candidate.scopes)
       ? candidate.scopes
@@ -158,7 +201,9 @@ function parseApiKeys(): StaticApiKeyConfig[] {
     const owner = normalizeOptionalSuiAddress(candidate.owner);
 
     if (!id) throw new Error(`FLOE_API_KEYS_JSON[${index}].id is required`);
-    if (!secret) throw new Error(`FLOE_API_KEYS_JSON[${index}].secret is required`);
+    if (!secret) {
+      throw new Error(`FLOE_API_KEYS_JSON[${index}].secret or .key is required`);
+    }
     if (seenIds.has(id)) throw new Error(`Duplicate API key id: ${id}`);
     if (seenSecrets.has(secret)) {
       throw new Error(`Duplicate API key secret configured for id: ${id}`);
@@ -180,6 +225,16 @@ function parseApiKeys(): StaticApiKeyConfig[] {
 const builtLimits = buildLimits();
 assertTierOrder(builtLimits);
 const localLeaseSize = buildLocalLeaseSize();
+const parsedApiKeys = parseApiKeys();
+const parsedAccessPolicy = parseAccessPolicy();
+const parsedAuthProviderKind = parseAuthProviderKind({
+  accessPolicy: parsedAccessPolicy,
+  localKeyCount: parsedApiKeys.length,
+});
+
+if (parsedAuthProviderKind === "none" && parsedAccessPolicy !== "public") {
+  throw new Error("FLOE_AUTH_PROVIDER=none is only valid with FLOE_ACCESS_POLICY=public");
+}
 
 const maxFileSizeBytes = {
   public: parsePositiveIntEnv(
@@ -212,10 +267,40 @@ export const AuthOwnerPolicyConfig = {
   enforceUploadOwner: parseBoolEnv("FLOE_ENFORCE_UPLOAD_OWNER", false),
 } as const;
 
+export const AuthAccessPolicyConfig = {
+  policy: parsedAccessPolicy as AccessPolicy,
+};
+
 export const AuthModeConfig = {
-  mode: parseAuthMode(),
-} as const;
+  get mode(): AccessPolicy {
+    return AuthAccessPolicyConfig.policy;
+  },
+  set mode(value: AccessPolicy) {
+    AuthAccessPolicyConfig.policy = value;
+  },
+};
+
+export const AuthProviderConfig = {
+  kind: parsedAuthProviderKind as AuthProviderKind,
+};
 
 export const AuthApiKeyConfig = {
-  keys: parseApiKeys(),
-} as const;
+  keys: parsedApiKeys,
+};
+
+export const AuthTokenConfig = {
+  secret: parseOptionalStringEnv("FLOE_AUTH_TOKEN_SECRET"),
+  issuer: parseOptionalStringEnv("FLOE_AUTH_TOKEN_ISSUER"),
+  audience: parseOptionalStringEnv("FLOE_AUTH_TOKEN_AUDIENCE"),
+};
+
+export const AuthExternalConfig = {
+  trustHeaders: parseTrustedExternalHeadersEnabled(),
+  issuer: parseOptionalStringEnv("FLOE_AUTH_EXTERNAL_ISSUER"),
+  defaultExpiresAt: parseOptionalTimestampMsEnv("FLOE_AUTH_EXTERNAL_DEFAULT_EXPIRES_AT"),
+  verifyUrl: parseOptionalStringEnv("FLOE_AUTH_EXTERNAL_VERIFY_URL"),
+  sharedSecret: parseOptionalStringEnv("FLOE_AUTH_EXTERNAL_SHARED_SECRET"),
+  authToken: parseOptionalStringEnv("FLOE_AUTH_EXTERNAL_AUTH_TOKEN"),
+  timeoutMs: parsePositiveIntEnv("FLOE_AUTH_EXTERNAL_TIMEOUT_MS", 2000),
+  cacheTtlMs: parsePositiveIntEnv("FLOE_AUTH_EXTERNAL_CACHE_TTL_MS", 5000),
+};

@@ -109,6 +109,7 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
   app.decorate("authProvider", params?.authProvider ?? createDefaultAuthProvider());
   app.addHook("onRequest", async (req, reply) => {
     reply.header("x-request-id", req.id);
+    req.authContext = await req.server.authProvider.resolveIdentity(req);
   });
   app.addHook("onResponse", async (req, reply) => {
     const route = req.routeOptions?.url ?? req.url.split("?")[0];

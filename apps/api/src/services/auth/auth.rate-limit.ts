@@ -3,7 +3,7 @@ import {
   AuthRateLimitConfig,
   type RateLimitScope,
 } from "../../config/auth.config.js";
-import type { RequestIdentity } from "./auth.identity.js";
+import type { RequestIdentity } from "./auth.context.js";
 
 function windowBucket(nowMs: number, windowSeconds: number): number {
   return Math.floor(nowMs / (windowSeconds * 1000));
@@ -126,7 +126,7 @@ async function leaseRemoteAllowance(params: {
   nowMs: number;
 }): Promise<RateLimitDecision> {
   const leaseSize = Math.max(1, getLeaseSize(params.scope) ?? 1);
-  const key = `floe:v1:ratelimit:${params.scope}:${params.bucket}:${params.identity.subject}`;
+ const key = `floe:v1:ratelimit:${params.scope}:${params.bucket}:${params.identity.subject}`;
   const redis = getRedis();
   const script = `
     local key = KEYS[1]

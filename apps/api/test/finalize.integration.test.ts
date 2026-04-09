@@ -97,10 +97,10 @@ async function waitForRedis(port: number) {
   throw new Error(`redis-server did not start on port ${port}`);
 }
 
-async function createRouteApp() {
+async function createRouteApp(customAuthProvider?: any) {
   const handlers = new Map<string, (req: any, reply: any) => Promise<unknown> | unknown>();
   const authProvider = {
-    resolveIdentity() {
+    async resolveIdentity() {
       return {
         authenticated: false,
         subject: "integration-test",
@@ -112,6 +112,9 @@ async function createRouteApp() {
       return { allowed: true };
     },
     async authorizeFileAccess() {
+      return { allowed: true };
+    },
+    async authorizeOpsAccess() {
       return { allowed: true };
     },
     async checkRateLimit() {
@@ -128,6 +131,7 @@ async function createRouteApp() {
         },
       };
     },
+    ...customAuthProvider,
   };
   const app = {
     get(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
@@ -1043,7 +1047,18 @@ test("ops upload route flags stalled finalization with dependency-focused action
 
 test("ops upload route enforces auth and error handling", async () => {
   const uploadId = await seedUpload();
-  const app = await createRouteApp();
+  const app = await createRouteApp({
+    async authorizeOpsAccess(params: { req: { headers?: Record<string, string> } }) {
+      if (params.req.headers?.authorization === "Bearer ops-reader-token") {
+        return { allowed: true };
+      }
+      return {
+        allowed: false,
+        code: "AUTH_REQUIRED",
+        message: "Authenticated operator access is required",
+      };
+    },
+  });
   const originalRedis = redisModule.getRedis();
   try {
     const unauthorized = await app.inject({
@@ -1059,7 +1074,7 @@ test("ops upload route enforces auth and error handling", async () => {
       url: "/ops/uploads/not-a-uuid",
       routePath: "/ops/uploads/:uploadId",
       params: { uploadId: "not-a-uuid" },
-      headers: { "x-metrics-token": "ops-test-token" },
+      headers: { authorization: "Bearer ops-reader-token" },
     });
     assert.equal(invalidId.statusCode, 400);
 
@@ -1068,7 +1083,7 @@ test("ops upload route enforces auth and error handling", async () => {
       url: `/ops/uploads/${randomUUID()}`,
       routePath: "/ops/uploads/:uploadId",
       params: { uploadId: randomUUID() },
-      headers: { "x-metrics-token": "ops-test-token" },
+      headers: { authorization: "Bearer ops-reader-token" },
     });
     assert.equal(notFound.statusCode, 404);
 
@@ -1082,13 +1097,48 @@ test("ops upload route enforces auth and error handling", async () => {
       url: `/ops/uploads/${uploadId}`,
       routePath: "/ops/uploads/:uploadId",
       params: { uploadId },
-      headers: { "x-metrics-token": "ops-test-token" },
+      headers: { authorization: "Bearer ops-reader-token" },
     });
     const body = unavailable.json();
     assert.equal(unavailable.statusCode, 503);
     assert.equal(body.error.code, "DEPENDENCY_UNAVAILABLE");
   } finally {
     redisModule.setRedisForTests(originalRedis);
+    await cleanupUpload(uploadId);
+  }
+});
+
+test("ops upload route maps normalized auth failures to 401 and 403", async () => {
+  const uploadId = await seedUpload();
+  try {
+    const authRequiredApp = await createRouteApp({
+      async authorizeOpsAccess() {
+        return { allowed: false, code: "AUTH_REQUIRED", message: "Authenticated operator access is required" };
+      },
+    });
+    const authRequired = await authRequiredApp.inject({
+      method: "GET",
+      url: `/ops/uploads/${uploadId}`,
+      routePath: "/ops/uploads/:uploadId",
+      params: { uploadId },
+    });
+    assert.equal(authRequired.statusCode, 401);
+    assert.equal(authRequired.json().error.code, "AUTH_REQUIRED");
+
+    const scopeDeniedApp = await createRouteApp({
+      async authorizeOpsAccess() {
+        return { allowed: false, code: "INSUFFICIENT_SCOPE", message: "Missing ops:read" };
+      },
+    });
+    const scopeDenied = await scopeDeniedApp.inject({
+      method: "GET",
+      url: `/ops/uploads/${uploadId}`,
+      routePath: "/ops/uploads/:uploadId",
+      params: { uploadId },
+    });
+    assert.equal(scopeDenied.statusCode, 403);
+    assert.equal(scopeDenied.json().error.code, "INSUFFICIENT_SCOPE");
+  } finally {
     await cleanupUpload(uploadId);
   }
 });

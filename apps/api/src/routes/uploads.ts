@@ -78,6 +78,24 @@ const DEFAULT_OWNER_ADDRESS = parseOptionalSuiAddressEnv("FLOE_DEFAULT_OWNER_ADD
 const FINALIZE_POLL_AFTER_MS = parsePositiveIntEnv("FLOE_FINALIZE_STATUS_POLL_MS", 2000);
 const RETRYABLE_RETRY_AFTER_SECONDS = 5;
 const REDIS_DEPENDENCY_UNAVAILABLE = Symbol("REDIS_DEPENDENCY_UNAVAILABLE");
+const IDEMPOTENCY_LOCK_TTL_SECONDS = 30;
+const IDEMPOTENCY_KEY_MAX_BYTES = 256;
+
+type CreateUploadIdempotencyRecord = {
+  fingerprint: string;
+  uploadId: string;
+  chunkSize: number;
+  totalChunks: number;
+  epochs: number;
+  expiresAt: number;
+};
+
+type UploadActionIdempotencyRecord = {
+  fingerprint: string;
+  statusCode: number;
+  responseBody: Record<string, unknown>;
+  retryAfter?: string;
+};
 
 function authzStatusCode(code?: string): 401 | 403 {
   return code === "AUTH_REQUIRED" ? 401 : 403;
@@ -257,6 +275,189 @@ async function guardRedisDependency<T>(
   }
 }
 
+function getCreateIdempotencyKey(req: any): string | null {
+  const raw = req.headers["idempotency-key"];
+  if (typeof raw !== "string") return null;
+  const value = raw.trim();
+  if (!value) return null;
+  if (Buffer.byteLength(value, "utf8") > IDEMPOTENCY_KEY_MAX_BYTES) return null;
+  return value;
+}
+
+function getRequestIdempotencyKey(req: any): string | null {
+  const raw = req.headers["idempotency-key"];
+  if (typeof raw !== "string") return null;
+  const value = raw.trim();
+  if (!value) return null;
+  if (Buffer.byteLength(value, "utf8") > IDEMPOTENCY_KEY_MAX_BYTES) return null;
+  return value;
+}
+
+function buildCreateUploadFingerprint(input: {
+  subject: string;
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  chunkSize: number;
+  epochs: number;
+}): string {
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify(input))
+    .digest("hex");
+}
+
+async function readCreateIdempotencyRecord(
+  redis: RedisClient,
+  key: string
+): Promise<CreateUploadIdempotencyRecord | null> {
+  const data = await redis.hgetall<Record<string, string>>(key);
+  if (!data || Object.keys(data).length === 0) return null;
+
+  const chunkSize = Number(data.chunkSize);
+  const totalChunks = Number(data.totalChunks);
+  const epochs = Number(data.epochs);
+  const expiresAt = Number(data.expiresAt);
+  if (
+    typeof data.fingerprint !== "string" ||
+    typeof data.uploadId !== "string" ||
+    !Number.isFinite(chunkSize) ||
+    !Number.isFinite(totalChunks) ||
+    !Number.isFinite(epochs) ||
+    !Number.isFinite(expiresAt)
+  ) {
+    throw new Error("CORRUPT_CREATE_IDEMPOTENCY_RECORD");
+  }
+
+  return {
+    fingerprint: data.fingerprint,
+    uploadId: data.uploadId,
+    chunkSize,
+    totalChunks,
+    epochs,
+    expiresAt,
+  };
+}
+
+async function sendCreateIdempotencyReplay(params: {
+  reply: any;
+  redis: RedisClient;
+  key: string;
+  fingerprint: string;
+}): Promise<"replayed" | "conflict" | "missing"> {
+  const record = await readCreateIdempotencyRecord(params.redis, params.key);
+  if (!record) return "missing";
+  if (record.fingerprint !== params.fingerprint) {
+    sendApiError(
+      params.reply,
+      409,
+      "IDEMPOTENCY_KEY_REUSED",
+      "Idempotency key was already used with a different create payload"
+    );
+    return "conflict";
+  }
+
+  params.reply.header("Idempotency-Replayed", "true");
+  params.reply.code(201).send({
+    uploadId: record.uploadId,
+    chunkSize: record.chunkSize,
+    totalChunks: record.totalChunks,
+    epochs: record.epochs,
+    expiresAt: record.expiresAt,
+  });
+  return "replayed";
+}
+
+function buildUploadActionFingerprint(input: Record<string, unknown>): string {
+  return crypto.createHash("sha256").update(JSON.stringify(input)).digest("hex");
+}
+
+async function readUploadActionIdempotencyRecord(
+  redis: RedisClient,
+  key: string
+): Promise<UploadActionIdempotencyRecord | null> {
+  const data = await redis.hgetall<Record<string, string>>(key);
+  if (!data || Object.keys(data).length === 0) return null;
+  const statusCode = Number(data.statusCode);
+  if (
+    typeof data.fingerprint !== "string" ||
+    !Number.isInteger(statusCode) ||
+    statusCode < 200 ||
+    statusCode > 299 ||
+    typeof data.responseBody !== "string"
+  ) {
+    throw new Error("CORRUPT_UPLOAD_ACTION_IDEMPOTENCY_RECORD");
+  }
+
+  let responseBody: Record<string, unknown>;
+  try {
+    responseBody = JSON.parse(data.responseBody) as Record<string, unknown>;
+  } catch {
+    throw new Error("CORRUPT_UPLOAD_ACTION_IDEMPOTENCY_RECORD");
+  }
+
+  return {
+    fingerprint: data.fingerprint,
+    statusCode,
+    responseBody,
+    retryAfter: typeof data.retryAfter === "string" && data.retryAfter.length > 0 ? data.retryAfter : undefined,
+  };
+}
+
+async function sendUploadActionIdempotencyReplay(params: {
+  reply: any;
+  redis: RedisClient;
+  key: string;
+  fingerprint: string;
+  conflictMessage: string;
+}): Promise<"replayed" | "conflict" | "missing"> {
+  const record = await readUploadActionIdempotencyRecord(params.redis, params.key);
+  if (!record) return "missing";
+  if (record.fingerprint !== params.fingerprint) {
+    sendApiError(
+      params.reply,
+      409,
+      "IDEMPOTENCY_KEY_REUSED",
+      params.conflictMessage
+    );
+    return "conflict";
+  }
+  if (record.retryAfter) {
+    params.reply.header("Retry-After", record.retryAfter);
+  }
+  params.reply.header("Idempotency-Replayed", "true");
+  params.reply.code(record.statusCode).send(record.responseBody);
+  return "replayed";
+}
+
+async function persistUploadActionIdempotencyRecord(params: {
+  redis: RedisClient;
+  key: string | null;
+  fingerprint: string | null;
+  ttlMs?: number | null;
+  statusCode: number;
+  responseBody: Record<string, unknown>;
+  retryAfter?: string;
+  log: { warn: (...args: any[]) => void };
+  uploadId: string;
+}) {
+  if (!params.key || !params.fingerprint) return;
+  const ttlSeconds = Math.max(1, Math.ceil(Math.max(0, params.ttlMs ?? UploadConfig.sessionTtlMs) / 1000));
+  await params.redis
+    .multi()
+    .hset(params.key, {
+      fingerprint: params.fingerprint,
+      statusCode: String(params.statusCode),
+      responseBody: JSON.stringify(params.responseBody),
+      ...(params.retryAfter ? { retryAfter: params.retryAfter } : {}),
+    })
+    .expire(params.key, ttlSeconds)
+    .exec()
+    .catch((err) => {
+      params.log.warn({ err, uploadId: params.uploadId }, "Failed to persist upload action idempotency record");
+    });
+}
+
 export default async function uploadRoutes(app: FastifyInstance) {
   app.post("/v1/uploads/create", async (req, reply) => {
     const log = req.log;
@@ -398,9 +599,68 @@ export default async function uploadRoutes(app: FastifyInstance) {
       );
     }
 
-    const uploadId = crypto.randomUUID();
     const redis = await requireRedis(reply);
     if (!redis) return;
+    const idempotencyKey = getCreateIdempotencyKey(req);
+    const idempotencySubject = createLimit.identity.subject;
+    const idempotencyRedisKey = idempotencyKey
+      ? uploadKeys.createIdempotency(idempotencySubject, idempotencyKey)
+      : null;
+    const idempotencyFingerprint = idempotencyRedisKey
+      ? buildCreateUploadFingerprint({
+          subject: idempotencySubject,
+          filename,
+          contentType,
+          sizeBytes: fileSizeNum,
+          chunkSize: resolvedChunkSize,
+          epochs: resolvedEpochs,
+        })
+      : null;
+    const idempotencyLockKey = idempotencyRedisKey ? `${idempotencyRedisKey}:lock` : null;
+    let createIdempotencyLockClaimed = false;
+
+    if (idempotencyRedisKey && idempotencyFingerprint) {
+      const replay = await guardRedisDependency(reply, () =>
+        sendCreateIdempotencyReplay({
+          reply,
+          redis,
+          key: idempotencyRedisKey,
+          fingerprint: idempotencyFingerprint,
+        })
+      );
+      if (replay === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      if (replay === "replayed" || replay === "conflict") return;
+
+      const claimed = await guardRedisDependency(reply, () =>
+        redis.set(idempotencyLockKey!, idempotencyFingerprint, {
+          nx: true,
+          ex: IDEMPOTENCY_LOCK_TTL_SECONDS,
+        })
+      );
+      if (claimed === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      if (claimed !== "OK") {
+        const pendingReplay = await guardRedisDependency(reply, () =>
+          sendCreateIdempotencyReplay({
+            reply,
+            redis,
+            key: idempotencyRedisKey,
+            fingerprint: idempotencyFingerprint,
+          })
+        );
+        if (pendingReplay === REDIS_DEPENDENCY_UNAVAILABLE) return;
+        if (pendingReplay === "replayed" || pendingReplay === "conflict") return;
+        return sendApiError(
+          reply,
+          409,
+          "IDEMPOTENCY_REQUEST_IN_PROGRESS",
+          "A create request with this idempotency key is already in progress",
+          { retryable: true }
+        );
+      }
+      createIdempotencyLockClaimed = true;
+    }
+
+    const uploadId = crypto.randomUUID();
     const capacityReserved = await guardRedisDependency(reply, () =>
       tryReserveUploadCapacity({
         maxActiveUploads: UploadConfig.maxActiveUploads,
@@ -410,6 +670,9 @@ export default async function uploadRoutes(app: FastifyInstance) {
     if (capacityReserved === REDIS_DEPENDENCY_UNAVAILABLE) return;
 
     if (!capacityReserved) {
+      if (createIdempotencyLockClaimed && idempotencyLockKey) {
+        await redis.del(idempotencyLockKey).catch(() => {});
+      }
       return sendApiError(reply, 429, "UPLOAD_CAPACITY_REACHED", "Too many active uploads", {
         retryable: true,
       });
@@ -421,13 +684,37 @@ export default async function uploadRoutes(app: FastifyInstance) {
         uploadId,
         filename,
         contentType,
-        owner: createLimit.identity.owner ?? DEFAULT_OWNER_ADDRESS,
+        owner: createLimit.identity.authenticated
+          ? createLimit.identity.owner
+          : (createLimit.identity.owner ?? DEFAULT_OWNER_ADDRESS),
         sizeBytes: fileSizeNum,
         chunkSize: resolvedChunkSize,
         totalChunks,
         epochs: resolvedEpochs,
       });
       sessionCreated = true;
+
+      if (idempotencyRedisKey && idempotencyFingerprint) {
+        const idempotencyTtlSeconds = Math.max(
+          1,
+          Math.ceil(Math.max(0, session.expiresAt - Date.now()) / 1000)
+        );
+        await redis
+          .multi()
+          .hset(idempotencyRedisKey, {
+            fingerprint: idempotencyFingerprint,
+            uploadId: session.uploadId,
+            chunkSize: String(session.chunkSize),
+            totalChunks: String(session.totalChunks),
+            epochs: String(session.resolvedEpochs),
+            expiresAt: String(session.expiresAt),
+          })
+          .expire(idempotencyRedisKey, idempotencyTtlSeconds)
+          .exec()
+          .catch((err) => {
+            log.warn({ err, uploadId }, "Failed to persist create idempotency record");
+          });
+      }
 
       log.info({ uploadId, totalChunks }, "Upload session created");
       const eventContext = requestEventContext(req);
@@ -469,6 +756,9 @@ export default async function uploadRoutes(app: FastifyInstance) {
         }
       );
     } finally {
+      if (createIdempotencyLockClaimed && idempotencyLockKey) {
+        await redis.del(idempotencyLockKey).catch(() => {});
+      }
       if (!sessionCreated) {
         await redis
           .multi()
@@ -892,6 +1182,33 @@ export default async function uploadRoutes(app: FastifyInstance) {
       );
     }
 
+    const idempotencyKey = getRequestIdempotencyKey(req);
+    const idempotencyRedisKey = idempotencyKey
+      ? uploadKeys.completeIdempotency(completeLimit.identity.subject, uploadId, idempotencyKey)
+      : null;
+    const idempotencyFingerprint = idempotencyRedisKey
+      ? buildUploadActionFingerprint({
+          subject: completeLimit.identity.subject,
+          action: "complete",
+          uploadId,
+          includeBlobId: exposeBlobId,
+          includeWalrusDebug: exposeWalrusDebug,
+        })
+      : null;
+    if (idempotencyRedisKey && idempotencyFingerprint) {
+      const replay = await guardRedisDependency(reply, () =>
+        sendUploadActionIdempotencyReplay({
+          reply,
+          redis,
+          key: idempotencyRedisKey,
+          fingerprint: idempotencyFingerprint,
+          conflictMessage: "Idempotency key was already used with a different complete request",
+        })
+      );
+      if (replay === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      if (replay === "replayed" || replay === "conflict") return;
+    }
+
     const metaStatus = currentMeta?.status;
 
     if (metaStatus === "expired") {
@@ -899,16 +1216,28 @@ export default async function uploadRoutes(app: FastifyInstance) {
     }
 
     if (metaStatus === "finalizing") {
-      reply.header("Retry-After", finalizePollRetryAfterSeconds());
-      const inProgress = isUploadFinalizeQueued(uploadId);
-      return reply.code(202).send({
+      const retryAfter = finalizePollRetryAfterSeconds();
+      const responseBody = {
         uploadId,
         status: "finalizing",
         pollAfterMs: FINALIZE_POLL_AFTER_MS,
         enqueued: false,
-        ...(inProgress ? { inProgress: true } : {}),
+        ...(isUploadFinalizeQueued(uploadId) ? { inProgress: true } : {}),
         ...buildFinalizeDiagnostics(currentMeta),
+      };
+      reply.header("Retry-After", retryAfter);
+      await persistUploadActionIdempotencyRecord({
+        redis,
+        key: idempotencyRedisKey,
+        fingerprint: idempotencyFingerprint,
+        ttlMs: session?.expiresAt ? session.expiresAt - Date.now() : UploadConfig.sessionTtlMs,
+        statusCode: 202,
+        responseBody,
+        retryAfter,
+        log,
+        uploadId,
       });
+      return reply.code(202).send(responseBody);
     }
 
     if (!session) {
@@ -922,7 +1251,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           );
         }
 
-        return reply.code(200).send({
+        const responseBody = {
           fileId: meta.fileId,
           ...(exposeBlobId ? { blobId: meta.blobId } : {}),
           sizeBytes: Number(meta.sizeBytes ?? 0),
@@ -936,7 +1265,18 @@ export default async function uploadRoutes(app: FastifyInstance) {
                 },
               }
             : {}),
+        };
+        await persistUploadActionIdempotencyRecord({
+          redis,
+          key: idempotencyRedisKey,
+          fingerprint: idempotencyFingerprint,
+          ttlMs: UploadConfig.sessionTtlMs,
+          statusCode: 200,
+          responseBody,
+          log,
+          uploadId,
         });
+        return reply.code(200).send(responseBody);
       }
 
       return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
@@ -944,7 +1284,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
 
     if (session.status === "completed" || metaStatus === "completed") {
       if (meta?.fileId && meta?.blobId) {
-        return reply.code(200).send({
+        const responseBody = {
           fileId: meta.fileId,
           ...(exposeBlobId ? { blobId: meta.blobId } : {}),
           sizeBytes: Number(meta.sizeBytes ?? session.sizeBytes),
@@ -958,7 +1298,18 @@ export default async function uploadRoutes(app: FastifyInstance) {
                 },
               }
             : {}),
+        };
+        await persistUploadActionIdempotencyRecord({
+          redis,
+          key: idempotencyRedisKey,
+          fingerprint: idempotencyFingerprint,
+          ttlMs: UploadConfig.sessionTtlMs,
+          statusCode: 200,
+          responseBody,
+          log,
+          uploadId,
         });
+        return reply.code(200).send(responseBody);
       }
 
       return sendApiError(
@@ -1011,7 +1362,8 @@ export default async function uploadRoutes(app: FastifyInstance) {
         { retryable: true }
       );
     }
-    reply.header("Retry-After", finalizePollRetryAfterSeconds());
+    const retryAfter = finalizePollRetryAfterSeconds();
+    reply.header("Retry-After", retryAfter);
     const eventContext = requestEventContext(req);
     emitInfrastructureEvent(log, {
       event: "finalize_requested",
@@ -1027,14 +1379,26 @@ export default async function uploadRoutes(app: FastifyInstance) {
         totalChunks: session.totalChunks,
       },
     });
-    return reply.code(202).send({
+    const responseBody = {
       uploadId,
       status: "finalizing",
       pollAfterMs: FINALIZE_POLL_AFTER_MS,
       enqueued: queued.enqueued,
       ...(isUploadFinalizeQueued(uploadId) ? { inProgress: true } : {}),
       ...buildFinalizeDiagnostics(currentMeta),
+    };
+    await persistUploadActionIdempotencyRecord({
+      redis,
+      key: idempotencyRedisKey,
+      fingerprint: idempotencyFingerprint,
+      ttlMs: session.expiresAt - Date.now(),
+      statusCode: 202,
+      responseBody,
+      retryAfter,
+      log,
+      uploadId,
     });
+    return reply.code(202).send(responseBody);
   });
 
   app.delete("/v1/uploads/:uploadId", async (req, reply) => {
@@ -1103,6 +1467,31 @@ export default async function uploadRoutes(app: FastifyInstance) {
       );
     }
 
+    const idempotencyKey = getRequestIdempotencyKey(req);
+    const idempotencyRedisKey = idempotencyKey
+      ? uploadKeys.cancelIdempotency(cancelLimit.identity.subject, uploadId, idempotencyKey)
+      : null;
+    const idempotencyFingerprint = idempotencyRedisKey
+      ? buildUploadActionFingerprint({
+          subject: cancelLimit.identity.subject,
+          action: "cancel",
+          uploadId,
+        })
+      : null;
+    if (idempotencyRedisKey && idempotencyFingerprint) {
+      const replay = await guardRedisDependency(reply, () =>
+        sendUploadActionIdempotencyReplay({
+          reply,
+          redis,
+          key: idempotencyRedisKey,
+          fingerprint: idempotencyFingerprint,
+          conflictMessage: "Idempotency key was already used with a different cancel request",
+        })
+      );
+      if (replay === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      if (replay === "replayed" || replay === "conflict") return;
+    }
+
     if (hasLock || currentMeta?.status === "finalizing" || isFinalizePending === 1) {
       reply.header("Retry-After", finalizePollRetryAfterSeconds());
       return sendApiError(
@@ -1116,7 +1505,18 @@ export default async function uploadRoutes(app: FastifyInstance) {
     const status = currentMeta?.status;
 
     if (status === "expired") {
-      return reply.code(200).send({ ok: true, uploadId, status: "expired" });
+      const responseBody = { ok: true, uploadId, status: "expired" as const };
+      await persistUploadActionIdempotencyRecord({
+        redis,
+        key: idempotencyRedisKey,
+        fingerprint: idempotencyFingerprint,
+        ttlMs: UploadConfig.sessionTtlMs,
+        statusCode: 200,
+        responseBody,
+        log,
+        uploadId,
+      });
+      return reply.code(200).send(responseBody);
     }
 
     if (!session) {
@@ -1146,7 +1546,18 @@ export default async function uploadRoutes(app: FastifyInstance) {
             .srem(uploadKeys.activeIndex(), uploadId)
             .exec();
         }
-        return reply.code(200).send({ ok: true, uploadId, status });
+        const responseBody = { ok: true, uploadId, status };
+        await persistUploadActionIdempotencyRecord({
+          redis,
+          key: idempotencyRedisKey,
+          fingerprint: idempotencyFingerprint,
+          ttlMs: UploadConfig.sessionTtlMs,
+          statusCode: 200,
+          responseBody,
+          log,
+          uploadId,
+        });
+        return reply.code(200).send(responseBody);
       }
 
       const markedCanceled = await guardRedisDependency(reply, () =>
@@ -1186,7 +1597,18 @@ export default async function uploadRoutes(app: FastifyInstance) {
           status: "canceled",
         },
       });
-      return reply.code(200).send({ ok: true, uploadId, status: "canceled" });
+      const responseBody = { ok: true, uploadId, status: "canceled" as const };
+      await persistUploadActionIdempotencyRecord({
+        redis,
+        key: idempotencyRedisKey,
+        fingerprint: idempotencyFingerprint,
+        ttlMs: UploadConfig.sessionTtlMs,
+        statusCode: 200,
+        responseBody,
+        log,
+        uploadId,
+      });
+      return reply.code(200).send(responseBody);
     }
 
     if (status === "completed" || session.status === "completed") {
@@ -1235,7 +1657,18 @@ export default async function uploadRoutes(app: FastifyInstance) {
         status: "canceled",
       },
     });
-    return reply.code(200).send({ ok: true, uploadId, status: "canceled" });
+    const responseBody = { ok: true, uploadId, status: "canceled" as const };
+    await persistUploadActionIdempotencyRecord({
+      redis,
+      key: idempotencyRedisKey,
+      fingerprint: idempotencyFingerprint,
+      ttlMs: UploadConfig.sessionTtlMs,
+      statusCode: 200,
+      responseBody,
+      log,
+      uploadId,
+    });
+    return reply.code(200).send(responseBody);
   });
 
 }

@@ -1,6 +1,6 @@
 import type { FastifyBaseLogger, FastifyRequest } from "fastify";
 
-import type { RequestIdentity } from "../auth/auth.identity.js";
+import { buildPublicAuthContext, type RequestIdentity } from "../auth/auth.context.js";
 
 export type InfrastructureEventName =
   | "upload_created"
@@ -61,19 +61,7 @@ export function requestEventContext(req: FastifyRequest): {
   requestId: string;
   actor: InfrastructureEventActor;
 } {
-  const identity =
-    typeof req.server.authProvider?.resolveIdentity === "function"
-      ? req.server.authProvider.resolveIdentity(req)
-      : {
-          authenticated: false,
-          method: "public" as const,
-          subject:
-            typeof req.ip === "string" && req.ip.trim().length > 0
-              ? `public:${req.ip}`
-              : "public:unknown",
-          scopes: [],
-          tier: "public" as const,
-        };
+  const identity = req.authContext ?? buildPublicAuthContext(req);
   return {
     requestId: req.id,
     actor: requestEventActor(identity),

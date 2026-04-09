@@ -11,6 +11,8 @@ tmp/**
 
 # env
 .env
+.env.integration.local
+.codex
 
 # logs
 *.log

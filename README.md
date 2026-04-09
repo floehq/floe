@@ -218,6 +218,40 @@ FLOE_API_KEYS_JSON=[{"id":"local-dev","secret":"replace-with-long-random-secret"
 
 Send the key with either `x-api-key` or `Authorization: Bearer <key>`.
 
+### Local SaaS verifier integration
+
+For the managed-auth beta path, use `.env.integration.example` as the tracked template and `.env.integration.local` for the workstation-specific verifier wiring. The local integration config uses:
+
+- `FLOE_AUTH_MODE=private`
+- `FLOE_AUTH_PROVIDER=external`
+- `FLOE_AUTH_EXTERNAL_VERIFY_URL=http://127.0.0.1:4000/floe/auth/verify`
+- `FLOE_AUTH_EXTERNAL_SHARED_SECRET=<shared secret that matches Floe-private>`
+- `FLOE_AUTH_EXTERNAL_CACHE_TTL_MS=1` during local revoke/rotate smoke checks
+- `FLOE_REDIS_PROVIDER=native`
+- `FLOE_CHUNK_STORE_MODE=disk`
+- `FLOE_NODE_ROLE=full`
+
+Verifier behavior is intentionally split:
+
+- bad verifier auth returns transport-level `401`
+- accepted verifier calls return `200` with normalized `valid: true|false` JSON
+
+Start Floe core against that file with Node 20+:
+
+```bash
+source ~/.nvm/nvm.sh
+nvm use 20
+./node_modules/.bin/tsx --env-file=.env.integration.local apps/api/src/server.ts
+```
+
+For this local integration path, prefer the explicit command above. The workspace `apps/api` dev script passes `--env-file` through to Node and will fail under Node 18 with `bad option: --env-file=...`.
+
+The sibling `Floe-private` repo contains:
+
+- `scripts/smoke-managed-auth.sh` for verifier/auth contract checks
+- `scripts/smoke-managed-upload-read.sh` for the full protected upload, finalize, metadata, manifest, and stream flow
+- `scripts/verify-startup-bootstrap.sh` for the SaaS startup migrate/bootstrap path
+
 ## Documentation
 
 - `docs/API.md` - route behavior and response contract
