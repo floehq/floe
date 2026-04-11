@@ -1,85 +1,55 @@
 # Floe
 
-Floe is a developer-first video infrastructure backend for Walrus.
+Floe is a backend for uploading, finalizing, and reading large files with Walrus and Sui.
 
-It provides resumable chunk uploads, Walrus-backed finalization, Sui-linked file metadata, and range-based read endpoints for playback-friendly access.
+It supports resumable chunk uploads, asynchronous finalize flow, stable file metadata, and byte-range reads through a versioned API.
 
-## What Floe Does
+## Features
 
-- large-file upload sessions with resumable chunk transfer
-- per-chunk SHA-256 validation
-- asynchronous finalize flow with Walrus publish + Sui metadata creation
-- file read endpoints for metadata, manifest, and byte-range streaming
-- developer tooling through a CLI uploader and API surface
+- resumable upload sessions for large files
+- chunk uploads with SHA-256 validation
+- asynchronous finalize flow backed by Walrus
+- Sui-based file metadata with stable `fileId` lookup
+- metadata, manifest, and stream endpoints
+- CLI and SDK clients in this workspace
 
-## Current Scope
+## API Version
 
-Floe is currently a phase-1 backend focused on the core upload-to-playback workflow.
+The current server API contract is `v1`.
 
-Compatibility contract today:
+Compatibility window:
 
-- the server API contract is `v1`
-- the server reports its own build version through `/health`, `/livez`, and `/version`
-- current `v1` compatibility window is:
-  - SDK: `>=0.2.0 <0.3.0`
-  - CLI: `>=0.2.0 <0.3.0`
+- SDK: `>=0.2.0 <0.3.0`
+- CLI: `>=0.2.0 <0.3.0`
 
-Included today:
+## How It Works
 
-- upload session creation and status tracking
-- chunk upload, retry, resume, and cancel flows
-- Walrus-backed durable file finalization
-- Sui `fileId` creation for stable metadata lookup
-- byte-range streaming through `/v1/files/:fileId/stream`
-- public, hybrid, or private auth modes
-- env-backed API key verification
-- optional owner-based authorization enforcement
-- structured infrastructure lifecycle events for downstream service-layer analytics
+1. A client creates an upload session.
+2. The client uploads chunks in any order.
+3. Floe validates and stores uploaded chunks.
+4. The client requests finalize.
+5. Floe publishes the assembled file to Walrus.
+6. Floe records metadata on Sui and returns a `fileId`.
+7. Clients read the file through the file endpoints.
 
-Current upload reliability behavior:
+## Components
 
-- duplicate chunk retries are idempotent and may return `reused: true`
-- successful chunk uploads refresh upload activity and expiry state
-- upload status and complete reconcile chunk presence from staging when Redis chunk membership drifts
-- timed-out uploads transition to `expired` explicitly and return `UPLOAD_EXPIRED` on finalize attempts
-
-Not included yet:
-
-- auth management UI, key rotation workflows, or tenant auth control plane
-- transcoding or adaptive bitrate playback
-- analytics, billing, or subscription logic
-- complete private-content policy stack
-
-## Architecture
-
-High-level flow:
-
-1. client creates an upload session
-2. client uploads chunks in any order
-3. Floe validates chunk hashes and tracks received parts
-4. client requests finalize
-5. Floe publishes the assembled asset to Walrus
-6. Floe creates file metadata on Sui and returns a stable `fileId`
-7. clients read through `/v1/files/:fileId/metadata`, `/manifest`, or `/stream`
-
-Runtime components:
-
-- **API**: Fastify routes and orchestration
-- **Redis**: upload state, chunk index, locks, queue state, and rate-limit keys
-- **Postgres**: optional read-model/index cache for file lookups
-- **Chunk store**: `s3`/R2/MinIO-compatible staging by default, `disk` optional
-- **Walrus**: durable blob storage and read path
-- **Sui**: file metadata object and ownership anchor
+- **API**: Fastify server and route handlers
+- **Redis**: upload state, chunk indexes, locks, queue state, and rate limiting
+- **Postgres**: optional cache for file lookups
+- **Chunk store**: `s3`/R2/MinIO-compatible storage by default, `disk` optional
+- **Walrus**: blob storage for finalized files
+- **Sui**: file metadata and ownership anchor
 
 ## Local Development
 
 ### Requirements
 
 - Node.js `>=20`
-- Redis credentials
-- Walrus aggregator endpoint
-- Sui key + RPC access
-- Walrus upload path:
+- Redis access
+- Walrus aggregator access
+- Sui RPC access and a signing key
+- Walrus upload access through:
   - `sdk` mode with `FLOE_WALRUS_SDK_BASE_URL`, or
   - `cli` mode with a local `walrus` binary
 
@@ -89,12 +59,9 @@ Runtime components:
 git clone https://github.com/floehq/floe.git
 cd floe
 npm install
-cp .env.example .env
 ```
 
-Set required values in `.env`.
-
-Minimal working example:
+Minimal environment example:
 
 ```dotenv
 PORT=3001
@@ -113,33 +80,13 @@ SUI_PRIVATE_KEY=suiprivkey...
 SUI_PACKAGE_ID=0x<your-package-id>
 ```
 
-Use `.env.example` as the full environment reference. The read path supports optional local Redis lease batching for metadata and stream rate limits so hot read traffic does not need a Redis round-trip on every request.
-
-Floe can also emit structured infrastructure lifecycle events into its application logs for downstream ingestion:
-
-- `upload_created`
-- `chunk_uploaded`
-- `finalize_requested`
-- `upload_canceled`
-- `finalize_succeeded`
-- `finalize_failed`
-- `stream_started`
-- `stream_completed`
-- `stream_failed`
-
-These are intentionally infrastructure events, not tenant analytics. The intended pattern is to ingest them into a higher-level service/SaaS layer.
-
-For production-style topology config, Floe can also load `config.yaml` before startup:
+Floe can also load a topology config file:
 
 ```bash
 npm run dev -- --config ./config/floe.example.yaml --role read
 ```
 
-The config file sets structured values like node role and Walrus gateway lists. Regular env vars still win for secrets and per-deploy overrides.
-
-Auth defaults to `hybrid` mode. Upload actions require a verified API key in `hybrid` and `private` mode. File reads remain public in `hybrid` mode and require auth in `private` mode.
-
-For Redis, Floe now supports two runtime modes:
+Redis modes:
 
 - `FLOE_REDIS_PROVIDER=upstash` with `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`
 - `FLOE_REDIS_PROVIDER=native` with `REDIS_URL=redis://host:6379`
@@ -150,7 +97,7 @@ For Redis, Floe now supports two runtime modes:
 npm run dev
 ```
 
-Role-specific examples:
+Examples:
 
 ```bash
 npm run dev -- --role read
@@ -165,99 +112,54 @@ npm run build --workspace=apps/api
 npm run start
 ```
 
-## Deployment Baseline
+## Docker
 
-Floe now includes a container-first deployment baseline for phase-1 beta.
+```bash
+docker build -t floe-api:latest .
+```
 
-- build with `docker build -t floe-api:latest .`
-- run production from built JS instead of `tsx`
+For container deployments:
+
 - mount a persistent writable path at `UPLOAD_TMP_DIR`
-- use `/health` for container/platform health checks
-- if local MinIO runs on the host, use `host.docker.internal` instead of `127.0.0.1` from inside Docker
+- use `/health` for health checks
+- if local MinIO runs on the host, use `host.docker.internal` instead of `127.0.0.1`
 
-See `docs/DEPLOYMENT.md` for the deploy, restart, and recovery flow.
+## CLI
 
-### Stream Benchmark
+Floe includes a root launcher at `./floe.sh` that delegates to `scripts/floe.sh`.
+
+```bash
+./floe.sh "path/to/file.mp4" --parallel 3 --epochs 3
+npm run upload -- "path/to/file.mp4" --parallel 3 --epochs 3
+```
+
+Resume or override the API base:
+
+```bash
+./floe.sh "path/to/file.mp4" --resume <uploadId>
+./floe.sh "path/to/file.mp4" --api http://localhost:3001/v1/uploads
+```
+
+Prepare a non-faststart MP4 before upload:
+
+```bash
+./floe.sh "path/to/file.mp4" --faststart
+```
+
+## Benchmark
 
 ```bash
 npm run bench:stream -- --base http://localhost:3001 --file <fileId>
 ```
 
-This writes CSV output under `tmp/stream-load/<timestamp>/` with per-run TTFB, total duration, bytes, status, and request mode so you can compare branches or config changes.
-
-## Upload CLI
-
-Floe ships a root launcher at `./floe.sh` that delegates to `scripts/floe.sh`.
-
-Basic usage:
-
-```bash
-./floe.sh "path/to/video.mp4" --parallel 3 --epochs 3
-npm run upload -- "path/to/video.mp4" --parallel 3 --epochs 3
-```
-
-Resume an upload or override the API base:
-
-```bash
-./floe.sh "path/to/video.mp4" --resume <uploadId>
-./floe.sh "path/to/video.mp4" --api http://localhost:3001/v1/uploads
-```
-
-Prepare a non-faststart MP4 for better first-play behavior:
-
-```bash
-./floe.sh "path/to/video.mp4" --faststart
-```
-
-### Auth Example
-
-```dotenv
-FLOE_AUTH_MODE=hybrid
-FLOE_API_KEYS_JSON=[{"id":"local-dev","secret":"replace-with-long-random-secret","owner":"0xf35568c562fd25dccd58e4e9240d8a6f864de0a9854ddd1f7d8aa6ff5f9722a4","tier":"authenticated","scopes":["*"]}]
-```
-
-Send the key with either `x-api-key` or `Authorization: Bearer <key>`.
-
-### Local SaaS verifier integration
-
-For the managed-auth beta path, use `.env.integration.example` as the tracked template and `.env.integration.local` for the workstation-specific verifier wiring. The local integration config uses:
-
-- `FLOE_AUTH_MODE=private`
-- `FLOE_AUTH_PROVIDER=external`
-- `FLOE_AUTH_EXTERNAL_VERIFY_URL=http://127.0.0.1:4000/floe/auth/verify`
-- `FLOE_AUTH_EXTERNAL_SHARED_SECRET=<shared secret that matches Floe-private>`
-- `FLOE_AUTH_EXTERNAL_CACHE_TTL_MS=1` during local revoke/rotate smoke checks
-- `FLOE_REDIS_PROVIDER=native`
-- `FLOE_CHUNK_STORE_MODE=disk`
-- `FLOE_NODE_ROLE=full`
-
-Verifier behavior is intentionally split:
-
-- bad verifier auth returns transport-level `401`
-- accepted verifier calls return `200` with normalized `valid: true|false` JSON
-
-Start Floe core against that file with Node 20+:
-
-```bash
-source ~/.nvm/nvm.sh
-nvm use 20
-./node_modules/.bin/tsx --env-file=.env.integration.local apps/api/src/server.ts
-```
-
-For this local integration path, prefer the explicit command above. The workspace `apps/api` dev script passes `--env-file` through to Node and will fail under Node 18 with `bad option: --env-file=...`.
-
-The sibling `Floe-private` repo contains:
-
-- `scripts/smoke-managed-auth.sh` for verifier/auth contract checks
-- `scripts/smoke-managed-upload-read.sh` for the full protected upload, finalize, metadata, manifest, and stream flow
-- `scripts/verify-startup-bootstrap.sh` for the SaaS startup migrate/bootstrap path
+This writes CSV output under `tmp/stream-load/<timestamp>/`.
 
 ## Documentation
 
-- `docs/API.md` - route behavior and response contract
-- `docs/DEPLOYMENT.md` - deployment baseline, required services, and restart flow
-- `docs/OPERATIONS.md` - runtime model, env, metrics, and runbook notes
-- `docs/SECURITY.md` - current auth model and hardening path
+- `docs/API.md` - API routes and response contract
+- `docs/DEPLOYMENT.md` - deployment and restart flow
+- `docs/OPERATIONS.md` - runtime model, configuration, metrics, and runbook notes
+- `docs/SECURITY.md` - auth model and security notes
 
 ## License
 
