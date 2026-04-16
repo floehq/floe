@@ -47,7 +47,7 @@ type ResponseRequestOptions = JsonRequestOptions & {
   acceptedStatuses?: number[];
 };
 
-export const SDK_VERSION = "0.2.3";
+export const SDK_VERSION = "0.2.4";
 
 export class FloeClient {
   static readonly VERSION = SDK_VERSION;
@@ -122,14 +122,21 @@ export class FloeClient {
 
   async getUploadStatus(
     uploadId: string,
-    options: RequestOptions = {}
+    options: RequestOptions & { includeBlobId?: boolean; includeWalrusDebug?: boolean } = {}
   ): Promise<UploadStatusResponse> {
-    return this.requestJson("GET", `/uploads/${encodeURIComponent(uploadId)}/status`, options);
+    return this.requestJson("GET", `/uploads/${encodeURIComponent(uploadId)}/status`, {
+      ...options,
+      query: {
+        ...(options.query ?? {}),
+        ...(options.includeBlobId ? { includeBlobId: 1 } : {}),
+        ...(options.includeWalrusDebug ? { debug: 1 } : {}),
+      },
+    });
   }
 
   async completeUpload(
     uploadId: string,
-    opts: RequestOptions & { includeBlobId?: boolean } = {}
+    opts: RequestOptions & { includeBlobId?: boolean; includeWalrusDebug?: boolean } = {}
   ): Promise<CompleteUploadResponse> {
     const response = await this.requestJson<
       CompleteUploadResponse | { status: "ready"; fileId: string }
@@ -138,6 +145,7 @@ export class FloeClient {
       query: {
         ...(opts.query ?? {}),
         ...(opts.includeBlobId ? { includeBlobId: 1 } : {}),
+        ...(opts.includeWalrusDebug ? { debug: 1 } : {}),
       },
     });
 
@@ -382,7 +390,10 @@ export class FloeClient {
           chunkSize: options.chunkSize,
           epochs: options.epochs,
         },
-        { signal: options.signal }
+        {
+          signal: options.signal,
+          idempotencyKey: options.idempotencyKey,
+        }
       );
       uploadId = create.uploadId;
       if (this.resumeStore) {
@@ -420,7 +431,10 @@ export class FloeClient {
           chunkSize: options.chunkSize,
           epochs: options.epochs,
         },
-        { signal: options.signal }
+        {
+          signal: options.signal,
+          idempotencyKey: options.idempotencyKey,
+        }
       );
       uploadId = create.uploadId;
       status = await this.getUploadStatus(uploadId, { signal: options.signal });
@@ -494,6 +508,8 @@ export class FloeClient {
 
     const firstComplete = await this.completeUpload(uploadId, {
       includeBlobId: options.includeBlobId,
+      includeWalrusDebug: options.includeWalrusDebug,
+      idempotencyKey: options.idempotencyKey,
       signal: options.signal,
     });
     options.onStageChange?.({ stage: "finalizing", uploadId });
@@ -503,6 +519,7 @@ export class FloeClient {
         ? firstComplete
         : await this.waitForUploadReadyInternal(uploadId, {
             includeBlobId: options.includeBlobId,
+            includeWalrusDebug: options.includeWalrusDebug,
             signal: options.signal,
             maxWaitMs:
               options.finalizeMaxWaitMs ?? FloeClient.DEFAULT_FINALIZE_MAX_WAIT_MS,
@@ -529,6 +546,9 @@ export class FloeClient {
       sizeBytes: complete.sizeBytes,
       status: complete.status,
       ...(options.includeBlobId && complete.blobId ? { blobId: complete.blobId } : {}),
+      ...(options.includeWalrusDebug && complete.walrusDebug
+        ? { walrusDebug: complete.walrusDebug }
+        : {}),
       walrusEndEpoch: complete.walrusEndEpoch,
       chunkSize,
       totalChunks,
@@ -594,6 +614,7 @@ export class FloeClient {
   ): Promise<CompleteUploadReadyResponse> {
     return this.waitForUploadReadyInternal(uploadId, {
       includeBlobId: options.includeBlobId,
+      includeWalrusDebug: options.includeWalrusDebug,
       signal: options.signal,
       maxWaitMs: options.maxWaitMs ?? FloeClient.DEFAULT_FINALIZE_MAX_WAIT_MS,
       pollIntervalMs:
@@ -618,7 +639,8 @@ export class FloeClient {
       try {
         const status = await this.getUploadStatus(uploadId, {
           signal: options.signal,
-          query: options.includeBlobId ? { includeBlobId: 1 } : undefined,
+          includeBlobId: options.includeBlobId,
+          includeWalrusDebug: options.includeWalrusDebug,
         });
 
         if (status.status === "completed" && status.fileId) {
@@ -635,6 +657,9 @@ export class FloeClient {
             status: "ready",
             sizeBytes: sizeBytes ?? 0,
             ...(options.includeBlobId && status.blobId ? { blobId: status.blobId } : {}),
+            ...(options.includeWalrusDebug && status.walrusDebug
+              ? { walrusDebug: status.walrusDebug }
+              : {}),
             ...(status.walrusEndEpoch !== undefined
               ? { walrusEndEpoch: status.walrusEndEpoch }
               : {}),
@@ -742,6 +767,9 @@ export class FloeClient {
         applyHeaders(headers, this.authHeaders);
         applyHeaders(headers, await resolveHeaderProvider(this.dynamicHeaders));
         applyHeaders(headers, options.headers);
+        if (options.idempotencyKey && !headers.has("idempotency-key")) {
+          headers.set("idempotency-key", options.idempotencyKey);
+        }
 
         let body = options.body;
         if (options.json !== undefined) {

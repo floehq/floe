@@ -81,6 +81,11 @@ export type FinalizeDiagnostics = {
   finalizeWarningAt?: number;
 };
 
+export type WalrusDebugInfo = {
+  source?: string;
+  objectId?: string;
+};
+
 export type UploadStatusResponse = {
   uploadId: string;
   chunkSize: number | null;
@@ -92,6 +97,7 @@ export type UploadStatusResponse = {
   fileId?: string;
   blobId?: string;
   walrusEndEpoch?: number;
+  walrusDebug?: WalrusDebugInfo;
   error?: string;
 } & FinalizeDiagnostics;
 
@@ -101,6 +107,7 @@ export type CompleteUploadReadyResponse = {
   sizeBytes: number;
   status: "ready";
   walrusEndEpoch?: number;
+  walrusDebug?: WalrusDebugInfo;
 };
 
 export type CompleteUploadFinalizingResponse = {
@@ -185,6 +192,8 @@ export type UploadBlobOptions = {
   uploadId?: string;
   resumeKey?: string;
   includeBlobId?: boolean;
+  includeWalrusDebug?: boolean;
+  idempotencyKey?: string;
   finalizeMaxWaitMs?: number;
   finalizePollIntervalMs?: number;
   signal?: AbortSignal;
@@ -203,12 +212,14 @@ export type UploadBlobResult = {
   status: "ready";
   blobId?: string;
   walrusEndEpoch?: number;
+  walrusDebug?: WalrusDebugInfo;
   chunkSize: number;
   totalChunks: number;
 };
 
 export type WaitForUploadReadyOptions = {
   includeBlobId?: boolean;
+  includeWalrusDebug?: boolean;
   maxWaitMs?: number;
   pollIntervalMs?: number;
   signal?: AbortSignal;
@@ -321,6 +332,7 @@ export type RequestOptions = {
   signal?: AbortSignal;
   query?: Record<string, string | number | boolean | undefined>;
   headers?: HeaderRecord;
+  idempotencyKey?: string;
 };
 
 export type JsonRequestOptions = RequestOptions & {

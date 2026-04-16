@@ -34,6 +34,15 @@ floe config set base-url https://api.floehq.com/v1
 floe config unset api-key
 ```
 
+Useful flags for the newer upload contract:
+
+```bash
+floe upload ./video.mp4 --include-blob-id --include-walrus-debug --idempotency-key upload-video-1
+floe upload complete <uploadId> --idempotency-key complete-upload-1
+floe upload cancel <uploadId> --idempotency-key cancel-upload-1
+floe upload status <uploadId> --include-walrus-debug
+```
+
 Shortcuts are also supported for the most common lookups:
 
 ```bash
@@ -88,3 +97,9 @@ floe config set base-url https://api.floehq.com/v1
 floe config set api-key sk_live_xxx
 floe config unset api-key
 ```
+
+Auth notes:
+
+- `--api-key` sends `x-api-key`
+- `--bearer` sends `Authorization: Bearer <token>`
+- if both are set, Floe core evaluates `Authorization` first

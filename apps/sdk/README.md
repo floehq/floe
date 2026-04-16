@@ -13,6 +13,8 @@ It provides:
 - Node `uploadFile(path)` support
 - Node `downloadFileToPath(path)` support
 - lifecycle and progress callbacks for upload UX
+- typed idempotency support for create, complete, and cancel flows
+- typed upload debug flags for `blobId` and Walrus diagnostics when exposed by the server
 
 ## Install
 
@@ -54,6 +56,8 @@ const floe = new FloeClient({
 
 const result = await floe.uploadFile("./video.mp4", {
   includeBlobId: true,
+  includeWalrusDebug: true,
+  idempotencyKey: "upload-video-1",
   onStageChange(event) {
     console.log("stage", event.stage, event.uploadId ?? "");
   },
@@ -62,7 +66,7 @@ const result = await floe.uploadFile("./video.mp4", {
   },
 });
 
-console.log(result.fileId, result.blobId);
+console.log(result.fileId, result.blobId, result.walrusDebug);
 ```
 
 ## Stream Introspection And Node Downloads
@@ -116,6 +120,38 @@ console.log(version.apiVersion, version.serverVersion, version.compatibility.cli
 const compatibility = await floe.checkCompatibility();
 console.log(compatibility.compatible, compatibility.supportedRange, compatibility.reason ?? "");
 ```
+
+## Auth And Request Controls
+
+```ts
+import { FloeClient } from "@floehq/sdk";
+
+const floe = new FloeClient({
+  baseUrl: "http://127.0.0.1:3001/v1",
+  auth: {
+    bearerToken: process.env.FLOE_BEARER_TOKEN,
+  },
+});
+
+const status = await floe.getUploadStatus("upload_123", {
+  includeBlobId: true,
+  includeWalrusDebug: true,
+});
+
+const canceled = await floe.cancelUpload("upload_123", {
+  idempotencyKey: "cancel-upload-123",
+});
+
+console.log(status.blobId, status.walrusDebug, canceled.status);
+```
+
+Notes:
+
+- `auth.apiKey` sends `x-api-key`
+- `auth.bearerToken` sends `Authorization: Bearer <token>`
+- if both are configured, Floe core evaluates `Authorization` first
+- `idempotencyKey` maps to the `Idempotency-Key` request header
+- `includeWalrusDebug` maps to the upload `debug=1` query flag
 
 ## Design Notes
 

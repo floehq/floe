@@ -19,6 +19,8 @@ type CliOptions = {
   epochs?: number;
   parallel?: number;
   includeBlobId?: boolean;
+  includeWalrusDebug?: boolean;
+  idempotencyKey?: string;
   noResume?: boolean;
   noCompatCheck?: boolean;
   pollIntervalMs?: number;
@@ -85,7 +87,7 @@ const ANSI = {
 };
 
 const COLOR_ENABLED = Boolean(process.stdout.isTTY && !process.env.NO_COLOR);
-const CLI_VERSION = "0.2.4";
+const CLI_VERSION = "0.2.5";
 
 function paint(text: string, ...codes: string[]): string {
   if (!COLOR_ENABLED || codes.length === 0) return text;
@@ -311,6 +313,8 @@ function printHelp(topic?: string) {
     "  --json                  Print JSON only",
     "  --no-compat-check       Skip CLI/server compatibility guard",
     "  --include-blob-id       Ask Floe to include blobId when supported",
+    "  --include-walrus-debug  Ask Floe to include walrus debug fields when supported",
+    "  --idempotency-key <k>   Send Idempotency-Key on create/complete/cancel",
     section("Upload Options"),
     "  --chunk-size <bytes>    Upload chunk size in bytes",
     "  --epochs <n>            Walrus epochs for upload create",
@@ -466,6 +470,12 @@ function parseArgState(argv: string[]): ParsedArgState {
         break;
       case "--include-blob-id":
         overrides.includeBlobId = true;
+        break;
+      case "--include-walrus-debug":
+        overrides.includeWalrusDebug = true;
+        break;
+      case "--idempotency-key":
+        overrides.idempotencyKey = readValue() || "";
         break;
       case "--no-resume":
         overrides.noResume = true;
@@ -657,6 +667,8 @@ function printUploadResult(
     chunkSize?: number;
     totalChunks?: number;
     walrusEndEpoch?: number;
+    walrusDebug?: { source?: string; objectId?: string };
+    blobId?: string;
   },
   options: CliOptions
 ) {
@@ -675,6 +687,13 @@ function printUploadResult(
     valueLine("chunks", value.totalChunks),
   ];
   pushOptionalLine(lines, "walrusEndEpoch", value.walrusEndEpoch);
+  if (options.includeBlobId) {
+    pushOptionalLine(lines, "blobId", value.blobId);
+  }
+  if (options.includeWalrusDebug && value.walrusDebug) {
+    pushOptionalLine(lines, "walrusSource", value.walrusDebug.source);
+    pushOptionalLine(lines, "walrusObjectId", value.walrusDebug.objectId);
+  }
   writeLines(lines);
 }
 
@@ -713,6 +732,11 @@ function printUploadStatusResult(value: Record<string, unknown>, options: CliOpt
   pushOptionalLine(lines, "walrusEndEpoch", value.walrusEndEpoch);
   if (options.includeBlobId) {
     pushOptionalLine(lines, "blobId", value.blobId);
+  }
+  if (options.includeWalrusDebug && value.walrusDebug && typeof value.walrusDebug === "object") {
+    const walrusDebug = value.walrusDebug as Record<string, unknown>;
+    pushOptionalLine(lines, "walrusSource", walrusDebug.source);
+    pushOptionalLine(lines, "walrusObjectId", walrusDebug.objectId);
   }
   writeLines(lines);
 }
@@ -914,6 +938,8 @@ function printConfigResult(
     valueLine("epochs", value.upload.epochs),
     valueLine("parallel", value.upload.parallel),
     valueLine("includeBlobId", value.upload.includeBlobId),
+    valueLine("includeWalrusDebug", value.upload.includeWalrusDebug),
+    valueLine("idempotencyKey", value.upload.idempotencyKey ? "[configured]" : null),
     valueLine("resumeDisabled", value.upload.noResume),
     valueLine("pollIntervalMs", value.upload.pollIntervalMs),
     valueLine("maxWaitMs", value.upload.maxWaitMs),
@@ -1089,6 +1115,7 @@ async function runUpload(filePathRaw: string | undefined, options: CliOptions) {
   verboseLine(options, "resume", options.noResume ? "disabled" : "enabled");
   verboseLine(options, "parallel", options.parallel);
   verboseLine(options, "chunkSize", options.chunkSize ?? "default");
+  verboseLine(options, "idempotencyKey", options.idempotencyKey ? "[configured]" : "none");
 
   const result = await client.uploadBlob(blob, {
     filename: path.basename(filePath),
@@ -1097,6 +1124,8 @@ async function runUpload(filePathRaw: string | undefined, options: CliOptions) {
     ...(options.epochs ? { epochs: options.epochs } : {}),
     ...(options.parallel ? { parallel: options.parallel } : {}),
     ...(options.includeBlobId ? { includeBlobId: true } : {}),
+    ...(options.includeWalrusDebug ? { includeWalrusDebug: true } : {}),
+    ...(options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
     ...(options.pollIntervalMs ? { finalizePollIntervalMs: options.pollIntervalMs } : {}),
     ...(options.maxWaitMs ? { finalizeMaxWaitMs: options.maxWaitMs } : {}),
     onProgress(progress) {
@@ -1126,7 +1155,8 @@ async function runUploadStatus(uploadIdRaw: string | undefined, options: CliOpti
   if (!options.json) infoLine(`checking upload ${uploadId}`);
   const client = await buildApiClient(options);
   const result = await client.getUploadStatus(uploadId, {
-    ...(options.includeBlobId ? { query: { includeBlobId: 1 } } : {}),
+    includeBlobId: options.includeBlobId || undefined,
+    includeWalrusDebug: options.includeWalrusDebug || undefined,
   });
   printUploadStatusResult(result as Record<string, unknown>, options);
 }
@@ -1135,7 +1165,9 @@ async function runUploadCancel(uploadIdRaw: string | undefined, options: CliOpti
   const uploadId = requireValue(uploadIdRaw, "uploadId");
   if (!options.json) infoLine(`canceling upload ${uploadId}`);
   const client = await buildApiClient(options);
-  const result = await client.cancelUpload(uploadId);
+  const result = await client.cancelUpload(uploadId, {
+    idempotencyKey: options.idempotencyKey || undefined,
+  });
   printSimpleActionResult("Upload Canceled", result as Record<string, unknown>, options);
 }
 
@@ -1144,7 +1176,9 @@ async function runUploadComplete(uploadIdRaw: string | undefined, options: CliOp
   if (!options.json) infoLine(`completing upload ${uploadId}`);
   const client = await buildApiClient(options);
   const result = await client.completeUpload(uploadId, {
-    ...(options.includeBlobId ? { includeBlobId: true } : {}),
+    includeBlobId: options.includeBlobId || undefined,
+    includeWalrusDebug: options.includeWalrusDebug || undefined,
+    idempotencyKey: options.idempotencyKey || undefined,
   });
   printUploadStatusResult(result as Record<string, unknown>, options);
 }
@@ -1156,9 +1190,10 @@ async function runUploadWait(uploadIdRaw: string | undefined, options: CliOption
   verboseLine(options, "maxWaitMs", options.maxWaitMs ?? "default");
   const client = await buildApiClient(options);
   const result = await client.waitForUploadReady(uploadId, {
-    ...(options.includeBlobId ? { includeBlobId: true } : {}),
-    ...(options.pollIntervalMs ? { pollIntervalMs: options.pollIntervalMs } : {}),
-    ...(options.maxWaitMs ? { maxWaitMs: options.maxWaitMs } : {}),
+    includeBlobId: options.includeBlobId || undefined,
+    includeWalrusDebug: options.includeWalrusDebug || undefined,
+    pollIntervalMs: options.pollIntervalMs || undefined,
+    maxWaitMs: options.maxWaitMs || undefined,
   });
   printUploadStatusResult(result as Record<string, unknown>, options);
 }
@@ -1360,6 +1395,8 @@ async function runConfigShow(options: CliOptions) {
         epochs: options.epochs ?? null,
         parallel: options.parallel ?? null,
         includeBlobId: options.includeBlobId ?? false,
+        includeWalrusDebug: options.includeWalrusDebug ?? false,
+        idempotencyKey: options.idempotencyKey ? "[configured]" : null,
         noResume: options.noResume ?? false,
         pollIntervalMs: options.pollIntervalMs ?? null,
         maxWaitMs: options.maxWaitMs ?? null,

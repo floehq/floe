@@ -74,6 +74,9 @@ test("uploadFile infers filename, content type, and emits lifecycle stages", asy
     createBody: null,
     chunkCount: 0,
     finalizeCalls: 0,
+    createIdempotencyKey: null,
+    completeSearch: null,
+    completeIdempotencyKey: null,
   };
   const stages = [];
   const progress = [];
@@ -87,6 +90,7 @@ test("uploadFile infers filename, content type, and emits lifecycle stages", asy
 
       if (parsed.pathname === "/v1/uploads/create" && init?.method === "POST") {
         seen.createBody = JSON.parse(init.body);
+        seen.createIdempotencyKey = new Headers(init?.headers).get("idempotency-key");
         return Response.json({
           uploadId: "upload_1",
           chunkSize: 4,
@@ -133,6 +137,10 @@ test("uploadFile infers filename, content type, and emits lifecycle stages", asy
           status: "completed",
           fileId: "file_1",
           blobId: "blob_1",
+          walrusDebug: {
+            source: "publisher",
+            objectId: "0xwalrus",
+          },
         });
       }
 
@@ -143,6 +151,8 @@ test("uploadFile infers filename, content type, and emits lifecycle stages", asy
 
       if (parsed.pathname === "/v1/uploads/upload_1/complete" && init?.method === "POST") {
         seen.finalizeCalls += 1;
+        seen.completeSearch = parsed.search;
+        seen.completeIdempotencyKey = new Headers(init?.headers).get("idempotency-key");
         return Response.json({
           uploadId: "upload_1",
           status: "finalizing",
@@ -168,6 +178,8 @@ test("uploadFile infers filename, content type, and emits lifecycle stages", asy
 
   const result = await client.uploadFile(filePath, {
     includeBlobId: true,
+    includeWalrusDebug: true,
+    idempotencyKey: "upload-file-1",
     finalizePollIntervalMs: 1,
     onStageChange(event) {
       stages.push(event.stage);
@@ -184,8 +196,15 @@ test("uploadFile infers filename, content type, and emits lifecycle stages", asy
   });
   assert.equal(seen.chunkCount, 3);
   assert.equal(seen.finalizeCalls, 1);
+  assert.equal(seen.createIdempotencyKey, "upload-file-1");
+  assert.equal(seen.completeIdempotencyKey, "upload-file-1");
+  assert.equal(seen.completeSearch, "?includeBlobId=1&debug=1");
   assert.equal(result.fileId, "file_1");
   assert.equal(result.blobId, "blob_1");
+  assert.deepEqual(result.walrusDebug, {
+    source: "publisher",
+    objectId: "0xwalrus",
+  });
   assert.ok(stages.includes("creating_upload"));
   assert.ok(stages.includes("uploading_chunks"));
   assert.ok(stages.includes("finalizing"));
@@ -317,8 +336,44 @@ test("getVersion and checkCompatibility expose typed server compatibility", asyn
 });
 
 test("SDK exports a stable diagnostic version constant", () => {
-  assert.equal(SDK_VERSION, "0.2.3");
+  assert.equal(SDK_VERSION, "0.2.4");
   assert.equal(FloeClient.VERSION, SDK_VERSION);
+});
+
+test("getUploadStatus applies typed blob and walrus debug query flags", async () => {
+  let seenSearch = null;
+
+  const client = new FloeClient({
+    baseUrl: "http://example.test/v1",
+    fetch: async (url, init) => {
+      const href = typeof url === "string" ? url : url.toString();
+      const parsed = new URL(href);
+      assert.equal(init?.method, "GET");
+      seenSearch = parsed.search;
+      return Response.json({
+        uploadId: "upload_1",
+        chunkSize: 4,
+        totalChunks: 1,
+        receivedChunks: [],
+        receivedChunkCount: 0,
+        expiresAt: Date.now() + 60_000,
+        status: "finalizing",
+        blobId: "blob_1",
+        walrusDebug: {
+          source: "publisher",
+        },
+      });
+    },
+  });
+
+  const status = await client.getUploadStatus("upload_1", {
+    includeBlobId: true,
+    includeWalrusDebug: true,
+  });
+
+  assert.equal(seenSearch, "?includeBlobId=1&debug=1");
+  assert.equal(status.blobId, "blob_1");
+  assert.deepEqual(status.walrusDebug, { source: "publisher" });
 });
 
 test("compatibilityCheck warn mode logs one warning for incompatible servers", async () => {

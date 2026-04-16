@@ -44,5 +44,6 @@ export type {
   UploadStageEvent,
   UploadStatus,
   UploadStatusResponse,
+  WalrusDebugInfo,
   WaitForUploadReadyOptions,
 } from "./types.js";
