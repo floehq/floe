@@ -30,6 +30,7 @@ function parseBoolEnv(name: string, fallback: boolean): boolean {
 
 const METRICS_ENABLED = parseBoolEnv("FLOE_ENABLE_METRICS", true);
 const METRICS_TOKEN = (process.env.FLOE_METRICS_TOKEN ?? "").trim();
+const PUBLIC_HEALTH_DETAILS = parseBoolEnv("FLOE_PUBLIC_HEALTH_DETAILS", false);
 
 const FINALIZE_QUEUE_STUCK_AGE_MS = (() => {
   const raw = process.env.FLOE_FINALIZE_QUEUE_STUCK_AGE_MS;
@@ -360,6 +361,17 @@ export default async function healthRoute(app: FastifyInstance) {
 
   app.get("/health", async (req, reply) => {
     const snapshot = await getCachedHealthSnapshot(req);
+    if (!PUBLIC_HEALTH_DETAILS) {
+      return reply.status(snapshot.statusCode).send({
+        service: (snapshot.payload as any).service,
+        apiVersion: (snapshot.payload as any).apiVersion,
+        serverVersion: (snapshot.payload as any).serverVersion,
+        status: (snapshot.payload as any).status,
+        ready: (snapshot.payload as any).ready,
+        degraded: (snapshot.payload as any).degraded,
+        timestamp: (snapshot.payload as any).timestamp,
+      });
+    }
     return reply.status(snapshot.statusCode).send(snapshot.payload);
   });
 }

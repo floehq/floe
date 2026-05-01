@@ -165,14 +165,35 @@ export class S3ChunkStore implements ChunkStore {
     const key = this.chunkKey(uploadId, index);
 
     try {
-      await this.cfg.client.send(
+      const head = await this.cfg.client.send(
         new this.cfg.cmd.HeadObjectCommand({
           Bucket: this.cfg.bucket,
           Key: key,
         })
       );
+      const contentLength = Number(head?.ContentLength ?? head?.contentLength);
+      const storedHash = String(head?.Metadata?.sha256 ?? head?.metadata?.sha256 ?? "").toLowerCase();
+      if (Number.isFinite(contentLength)) {
+        if (isLastChunk) {
+          if (contentLength <= 0 || contentLength > expectedSize) {
+            throw new Error("INVALID_LAST_CHUNK_SIZE");
+          }
+        } else if (contentLength !== expectedSize) {
+          throw new Error("CHUNK_SIZE_MISMATCH");
+        }
+      }
+      if (storedHash && storedHash !== expectedHash.toLowerCase()) {
+        throw new Error("HASH_MISMATCH");
+      }
       return { alreadyExisted: true };
-    } catch {
+    } catch (err: any) {
+      if (
+        err?.message === "HASH_MISMATCH" ||
+        err?.message === "CHUNK_SIZE_MISMATCH" ||
+        err?.message === "INVALID_LAST_CHUNK_SIZE"
+      ) {
+        throw err;
+      }
       // Continue for missing keys.
     }
 

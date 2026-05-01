@@ -140,6 +140,13 @@ class DefaultAuthProvider implements AuthProvider {
     }
     if (!AuthOwnerPolicyConfig.enforceUploadOwner) return { allowed: true };
     const expected = params.fileOwner?.trim();
+    if (!expected && !base.identity.authenticated) {
+      return {
+        allowed: false,
+        code: "AUTH_REQUIRED",
+        message: "Authenticated access is required for owner-protected file reads",
+      };
+    }
     if (!expected) return { allowed: true };
     const owner = base.identity.owner?.trim();
     if (!owner || owner.toLowerCase() !== expected.toLowerCase()) {

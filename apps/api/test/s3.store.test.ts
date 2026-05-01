@@ -24,6 +24,7 @@ async function collectBody(body: Readable): Promise<Buffer> {
 function makeStore(overrides?: {
   onPut?: (input: any) => Promise<void>;
   headExists?: boolean;
+  headResult?: any;
 }) {
   const store = Object.create(S3ChunkStore.prototype) as S3ChunkStore & { cfg: any };
   store.cfg = {
@@ -33,7 +34,7 @@ function makeStore(overrides?: {
     client: {
       async send(command: any) {
         if (command instanceof HeadObjectCommand) {
-          if (overrides?.headExists) return {};
+          if (overrides?.headExists) return overrides.headResult ?? {};
           throw new Error("NotFound");
         }
         if (command instanceof PutObjectCommand) {
@@ -105,4 +106,56 @@ test("s3 chunk store rejects hash mismatch without buffering to a final object",
   );
 
   assert.equal(putAttempted, true);
+});
+
+test("s3 chunk store validates existing chunk metadata before reusing it", async () => {
+  const chunk = Buffer.from("already-there");
+  const expectedHash = createHash("sha256").update(chunk).digest("hex");
+  const store = makeStore({
+    headExists: true,
+    headResult: {
+      ContentLength: chunk.length,
+      Metadata: {
+        sha256: expectedHash,
+      },
+    },
+  });
+
+  const result = await store.writeChunk(
+    "upload-3",
+    0,
+    Readable.from(chunk),
+    expectedHash,
+    chunk.length,
+    false
+  );
+
+  assert.deepEqual(result, { alreadyExisted: true });
+});
+
+test("s3 chunk store rejects existing chunk hash mismatch", async () => {
+  const chunk = Buffer.from("already-there");
+  const expectedHash = createHash("sha256").update(chunk).digest("hex");
+  const store = makeStore({
+    headExists: true,
+    headResult: {
+      ContentLength: chunk.length,
+      Metadata: {
+        sha256: "0".repeat(64),
+      },
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      store.writeChunk(
+        "upload-4",
+        0,
+        Readable.from(chunk),
+        expectedHash,
+        chunk.length,
+        false
+      ),
+    /HASH_MISMATCH/
+  );
 });

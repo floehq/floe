@@ -28,6 +28,7 @@ process.env.FLOE_WALRUS_SDK_BASE_URL = "http://127.0.0.1:1";
 process.env.FLOE_NETWORK = "testnet";
 process.env.SUI_PRIVATE_KEY = Buffer.alloc(32, 7).toString("base64");
 process.env.FLOE_METRICS_TOKEN = "ops-test-token";
+process.env.FLOE_PUBLIC_HEALTH_DETAILS = "1";
 delete process.env.DATABASE_URL;
 
 type RedisModule = typeof import("../src/state/redis.ts");

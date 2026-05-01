@@ -44,6 +44,29 @@ export class DiskChunkStore implements ChunkStore {
     return path.join(this.dir(uploadId), String(index));
   }
 
+  private async verifyExistingChunk(
+    finalPath: string,
+    expectedHash: string,
+    expectedSize: number,
+    isLastChunk: boolean
+  ): Promise<void> {
+    const stat = await fs.promises.stat(finalPath);
+    if (isLastChunk) {
+      if (stat.size <= 0 || stat.size > expectedSize) {
+        throw new Error("INVALID_LAST_CHUNK_SIZE");
+      }
+    } else if (stat.size !== expectedSize) {
+      throw new Error("CHUNK_SIZE_MISMATCH");
+    }
+
+    const hash = crypto.createHash("sha256");
+    await pipeline(fs.createReadStream(finalPath), hash);
+    const actualHash = hash.digest("hex");
+    if (actualHash !== expectedHash.toLowerCase()) {
+      throw new Error("HASH_MISMATCH");
+    }
+  }
+
   async writeChunk(
     uploadId: string,
     index: number,
@@ -60,6 +83,7 @@ export class DiskChunkStore implements ChunkStore {
 
     // If the final chunk already exists, treat this as idempotent.
     if (fs.existsSync(finalPath)) {
+      await this.verifyExistingChunk(finalPath, expectedHash, expectedSize, isLastChunk);
       return { alreadyExisted: true };
     }
 
@@ -77,6 +101,7 @@ export class DiskChunkStore implements ChunkStore {
 
         // Another writer may be in progress, or a previous attempt crashed.
         if (fs.existsSync(finalPath)) {
+          await this.verifyExistingChunk(finalPath, expectedHash, expectedSize, isLastChunk);
           return { alreadyExisted: true };
         }
 

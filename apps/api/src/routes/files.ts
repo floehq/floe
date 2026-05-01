@@ -99,6 +99,7 @@ type NormalizedFileFields = {
 };
 
 const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
+const TRUSTED_FILE_OBJECT_TYPE = `${process.env.SUI_PACKAGE_ID}::file::FileMeta`.toLowerCase();
 
 function normalizeSuiAddress(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
@@ -109,6 +110,10 @@ function normalizeSuiAddress(raw: unknown): string | null {
 
 function normalizeFileIdParam(raw: unknown): string | null {
   return normalizeSuiAddress(raw);
+}
+
+function isTrustedFileObjectType(raw: unknown): boolean {
+  return typeof raw === "string" && raw.toLowerCase() === TRUSTED_FILE_OBJECT_TYPE;
 }
 
 function parseOptionalU64(raw: unknown): number | null {
@@ -321,7 +326,11 @@ async function getFileFieldsCached(fileId: string): Promise<CachedFileFieldsResu
     options: { showContent: true },
   });
 
-  if (!obj.data?.content || obj.data.content.dataType !== "moveObject") {
+  if (
+    !obj.data?.content ||
+    obj.data.content.dataType !== "moveObject" ||
+    !isTrustedFileObjectType((obj.data as any).type)
+  ) {
     return { fields: null, source: null, postgresState };
   }
 

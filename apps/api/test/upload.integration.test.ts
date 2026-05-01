@@ -973,6 +973,43 @@ test("complete returns stable finalizing shape when only meta remains", async ()
   }
 });
 
+test("status authorizes before reconciling chunk store state", async () => {
+  const uploadId = await seedUpload();
+  let listCalls = 0;
+  const originalListChunks = storeIndexModule.chunkStore.listChunks.bind(storeIndexModule.chunkStore);
+  const app = await createRouteApp({
+    async authorizeUploadAccess() {
+      return {
+        allowed: false,
+        code: "OWNER_MISMATCH",
+        message: "Upload owner mismatch",
+      };
+    },
+  });
+
+  try {
+    storeIndexModule.chunkStore.listChunks = async (...args: Parameters<typeof storeIndexModule.chunkStore.listChunks>) => {
+      listCalls += 1;
+      return originalListChunks(...args);
+    };
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/v1/uploads/${uploadId}/status`,
+      routePath: "/v1/uploads/:uploadId/status",
+      params: { uploadId },
+    });
+    const body = res.json();
+
+    assert.equal(res.statusCode, 403);
+    assert.equal(body.error.code, "OWNER_MISMATCH");
+    assert.equal(listCalls, 0);
+  } finally {
+    storeIndexModule.chunkStore.listChunks = originalListChunks;
+    await cleanupUpload(uploadId);
+  }
+});
+
 test("cancel keeps gc tracking when terminal artifact cleanup fails", async () => {
   const uploadId = await seedUpload();
   const app = await createRouteApp();
