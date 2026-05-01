@@ -1,4 +1,5 @@
 import type { FastifyRequest } from "fastify";
+import crypto from "node:crypto";
 
 import { AuthApiKeyConfig, type RateLimitTier } from "../../config/auth.config.js";
 import { extractPresentedCredential } from "./auth.credentials.js";
@@ -15,7 +16,11 @@ export interface VerifiedApiKeyPrincipal {
 export function verifyRequestApiKey(req: FastifyRequest): VerifiedApiKeyPrincipal | null {
   const presented = extractPresentedCredential(req);
   if (!presented) return null;
-  const match = AuthApiKeyConfig.keys.find((entry) => entry.secret === presented.value);
+  const presentedDigest = crypto.createHash("sha256").update(presented.value).digest();
+  const match = AuthApiKeyConfig.keys.find((entry) => {
+    const configuredDigest = crypto.createHash("sha256").update(entry.secret).digest();
+    return crypto.timingSafeEqual(configuredDigest, presentedDigest);
+  });
   if (!match) return null;
   return {
     keyId: match.id,

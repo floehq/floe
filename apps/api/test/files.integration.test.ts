@@ -46,6 +46,7 @@ function buildFileFields(overrides?: Partial<{
 async function mockSuiFile(fields?: Parameters<typeof buildFileFields>[0]) {
   (suiModule.suiClient as any).getObject = async () => ({
     data: {
+      type: "0x2::file::FileMeta",
       content: {
         dataType: "moveObject",
         fields: buildFileFields(fields),
@@ -251,6 +252,7 @@ test("metadata route exposes degraded postgres fallback when Sui is used", async
   );
   (suiModule.suiClient as any).getObject = async () => ({
     data: {
+      type: "0x2::file::FileMeta",
       content: {
         dataType: "moveObject",
         fields: {
@@ -333,6 +335,7 @@ test("manifest route exposes degraded postgres fallback headers", async () => {
   );
   (suiModule.suiClient as any).getObject = async () => ({
     data: {
+      type: "0x2::file::FileMeta",
       content: {
         dataType: "moveObject",
         fields: {
@@ -554,6 +557,7 @@ test("metadata and manifest expose public streamUrl when configured", async () =
   process.env.FLOE_PUBLIC_STREAM_BASE_URL = "https://cdn.example.com/floe/";
   (suiModule.suiClient as any).getObject = async () => ({
     data: {
+      type: "0x2::file::FileMeta",
       content: {
         dataType: "moveObject",
         fields: {
@@ -624,6 +628,7 @@ test("metadata auth precheck rejects before file lookup", async () => {
     suiLookups += 1;
     return {
       data: {
+        type: "0x2::file::FileMeta",
         content: {
           dataType: "moveObject",
           fields: buildFileFields(),
@@ -703,6 +708,30 @@ test("metadata invalid metadata does not inherit public cache headers", async ()
   assert.equal(res.statusCode, 502);
   assert.equal(body.error.code, "INVALID_FILE_METADATA");
   assert.equal(res.headers["cache-control"], undefined);
+});
+
+test("metadata rejects move objects outside the trusted file package", async () => {
+  (suiModule.suiClient as any).getObject = async () => ({
+    data: {
+      type: "0x2::other::FileMeta",
+      content: {
+        dataType: "moveObject",
+        fields: buildFileFields(),
+      },
+    },
+  });
+  const app = await createRouteApp();
+  const fileId = "0x5555555555555555555555555555555555555555555555555555555555555557";
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/metadata`,
+    routePath: "/v1/files/:fileId/metadata",
+    params: { fileId },
+  });
+  const body = res.json() as any;
+
+  assert.equal(res.statusCode, 404);
+  assert.equal(body.error.code, "FILE_NOT_FOUND");
 });
 
 test("stream auth denial does not inherit public cache headers", async () => {

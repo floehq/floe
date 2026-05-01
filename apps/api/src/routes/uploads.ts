@@ -1014,24 +1014,6 @@ export default async function uploadRoutes(app: FastifyInstance) {
       : meta;
     if (refreshedMeta === REDIS_DEPENDENCY_UNAVAILABLE) return;
     const currentMeta = refreshedMeta;
-    let receivedChunks: number[];
-    try {
-      receivedChunks = await reconcileReceivedChunks(uploadId);
-    } catch (err) {
-      if (isRedisDependencyError(err)) {
-        return sendRedisUnavailable(reply);
-      }
-      req.log.error({ err, uploadId }, "Chunk store reconciliation failed during status");
-      reply.header("Retry-After", String(RETRYABLE_RETRY_AFTER_SECONDS));
-      return sendApiError(
-        reply,
-        503,
-        "CHUNK_STORE_UNAVAILABLE",
-        "Upload chunk state is temporarily unavailable",
-        { retryable: true }
-      );
-    }
-
     if (!session) {
       const status = currentMeta?.status;
       if (!status) {
@@ -1045,11 +1027,29 @@ export default async function uploadRoutes(app: FastifyInstance) {
       });
       if (!authzStatus.allowed) {
         return sendApiError(
-        reply,
-        authzStatusCode(authzStatus.code),
-        authzErrorCode(authzStatus.code),
-        authzStatus.message ?? "Upload access denied"
-      );
+          reply,
+          authzStatusCode(authzStatus.code),
+          authzErrorCode(authzStatus.code),
+          authzStatus.message ?? "Upload access denied"
+        );
+      }
+
+      let receivedChunks: number[];
+      try {
+        receivedChunks = await reconcileReceivedChunks(uploadId);
+      } catch (err) {
+        if (isRedisDependencyError(err)) {
+          return sendRedisUnavailable(reply);
+        }
+        req.log.error({ err, uploadId }, "Chunk store reconciliation failed during status");
+        reply.header("Retry-After", String(RETRYABLE_RETRY_AFTER_SECONDS));
+        return sendApiError(
+          reply,
+          503,
+          "CHUNK_STORE_UNAVAILABLE",
+          "Upload chunk state is temporarily unavailable",
+          { retryable: true }
+        );
       }
 
       return {
@@ -1088,6 +1088,24 @@ export default async function uploadRoutes(app: FastifyInstance) {
         authzStatusCode(authzStatus.code),
         authzErrorCode(authzStatus.code),
         authzStatus.message ?? "Upload access denied"
+      );
+    }
+
+    let receivedChunks: number[];
+    try {
+      receivedChunks = await reconcileReceivedChunks(uploadId);
+    } catch (err) {
+      if (isRedisDependencyError(err)) {
+        return sendRedisUnavailable(reply);
+      }
+      req.log.error({ err, uploadId }, "Chunk store reconciliation failed during status");
+      reply.header("Retry-After", String(RETRYABLE_RETRY_AFTER_SECONDS));
+      return sendApiError(
+        reply,
+        503,
+        "CHUNK_STORE_UNAVAILABLE",
+        "Upload chunk state is temporarily unavailable",
+        { retryable: true }
       );
     }
 
