@@ -201,6 +201,13 @@ Returns normalized file metadata:
 - `createdAt`
 - optional `walrusEndEpoch`
 - optional `blobId`
+- optional `blobObjectId`
+- optional `expiryStatus`
+  - `currentEpoch`: current Sui epoch
+  - `endEpoch`: epoch when Walrus storage expires
+  - `epochsRemaining`: number of epochs until expiry
+  - `estimatedDaysRemaining`: estimated days until expiry (14 days per epoch)
+  - `isExpired`: boolean indicating if storage has expired
 
 Response headers also include:
 
@@ -211,6 +218,38 @@ Rate limiting:
 
 - uses the `file_meta_read` scope
 - `429 RATE_LIMITED` includes `Retry-After`
+
+### `POST /v1/files/:fileId/renew`
+
+Extends the storage duration of a file on Walrus and updates the metadata on Sui.
+
+Required JSON fields:
+
+- `epochs`: number of epochs to extend (1 to 53)
+
+Optional JSON fields:
+
+- `blobObjectId`: required if the file's metadata on Sui is missing the Walrus object ID (common for older uploads)
+
+Returns:
+
+- `200 OK`
+- `success: true`
+- `fileId`
+- `walrusEndEpoch`: new end epoch
+
+Possible errors:
+
+- `400 INVALID_FILE_ID`
+- `400 INVALID_EPOCHS`
+- `400 MISSING_BLOB_OBJECT_ID`
+- `404 FILE_NOT_FOUND`
+- `500 RENEWAL_FAILED`
+- `429 RATE_LIMITED`
+
+Rate limiting:
+
+- uses the `file_meta_read` scope (or a dedicated `file_renew` scope if configured)
 
 ### `GET /v1/files/:fileId/manifest`
 

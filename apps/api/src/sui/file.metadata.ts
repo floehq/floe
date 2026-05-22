@@ -9,6 +9,7 @@ if (!SUI_PACKAGE_ID) {
 
 export interface FinalizeFileInput {
   blobId: string;
+  blobObjectId?: string;
   sizeBytes: number;
   mimeType: string;
   owner?: string;
@@ -28,6 +29,9 @@ export async function finalizeFileMetadata(
     target: `${SUI_PACKAGE_ID}::file::create_with_owner`,
     arguments: [
       tx.pure.string(input.blobId),
+      input.blobObjectId
+        ? tx.pure.option("address", input.blobObjectId)
+        : tx.pure.option("address", null),
       tx.pure.u64(input.sizeBytes),
       tx.pure.string(input.mimeType),
       input.owner 
@@ -64,4 +68,42 @@ export async function finalizeFileMetadata(
   }
 
   return { fileId: created.objectId };
+}
+
+export async function renewFileMetadata(params: {
+  fileId: string;
+  blobObjectId?: string;
+  walrusEndEpoch: number;
+}): Promise<void> {
+  const tx = new Transaction();
+
+  if (params.blobObjectId) {
+    tx.moveCall({
+      target: `${SUI_PACKAGE_ID}::file::update_walrus_info`,
+      arguments: [
+        tx.object(params.fileId),
+        tx.pure.address(params.blobObjectId),
+        tx.pure.u64(params.walrusEndEpoch),
+      ],
+    });
+  } else {
+    tx.moveCall({
+      target: `${SUI_PACKAGE_ID}::file::update_expiry`,
+      arguments: [
+        tx.object(params.fileId),
+        tx.pure.u64(params.walrusEndEpoch),
+      ],
+    });
+  }
+
+  try {
+    await suiClient.signAndExecuteTransaction({
+      transaction: tx,
+      signer: suiSigner,
+    });
+  } catch (err) {
+    throw new Error(
+      `SUI_RENEW_SUBMIT_FAILED:${(err as Error)?.message ?? "unknown"}`
+    );
+  }
 }

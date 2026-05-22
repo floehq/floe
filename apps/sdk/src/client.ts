@@ -13,6 +13,8 @@ import type {
   FileStreamResponseInfo,
   FileManifestResponse,
   FileMetadataResponse,
+  FileRenewResponse,
+  RenewFileOptions,
   FileStreamOptions,
   FloeCompatibilityCheckResult,
   FloeCompatibilityTarget,
@@ -47,7 +49,7 @@ type ResponseRequestOptions = JsonRequestOptions & {
   acceptedStatuses?: number[];
 };
 
-export const SDK_VERSION = "0.2.4";
+export const SDK_VERSION = "0.2.5";
 
 export class FloeClient {
   static readonly VERSION = SDK_VERSION;
@@ -232,6 +234,19 @@ export class FloeClient {
     opts: RequestOptions = {}
   ): Promise<FileManifestResponse> {
     return this.requestJson("GET", `/files/${encodeURIComponent(fileId)}/manifest`, opts);
+  }
+
+  async renewFile(
+    fileId: string,
+    options: RenewFileOptions
+  ): Promise<FileRenewResponse> {
+    return this.requestJson("POST", `/files/${encodeURIComponent(fileId)}/renew`, {
+      ...options,
+      json: {
+        epochs: options.epochs,
+        blobObjectId: options.blobObjectId,
+      },
+    });
   }
 
   getFileStreamUrl(fileId: string): string {

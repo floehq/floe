@@ -39,6 +39,7 @@ type ResolvedCommand =
   | { kind: "file.head"; fileId?: string }
   | { kind: "file.metadata"; fileId?: string }
   | { kind: "file.manifest"; fileId?: string }
+  | { kind: "file.renew"; fileId?: string; epochs?: number }
   | { kind: "file.download"; fileId?: string; outputPath?: string }
   | { kind: "file.stream"; fileId?: string }
   | { kind: "file.stream-url"; fileId?: string }
@@ -228,6 +229,7 @@ function printHelp(topic?: string) {
       "  floe file head <fileId> [options]",
       "  floe file metadata <fileId> [options]",
       "  floe file manifest <fileId> [options]",
+      "  floe file renew <fileId> --epochs <n> [options]",
       "  floe file download <fileId> <path> [options]",
       "  floe file stream <fileId> [options]",
       "  floe file stream-url <fileId> [options]",
@@ -281,6 +283,7 @@ function printHelp(topic?: string) {
     "  floe file head <fileId>",
     "  floe file metadata <fileId>",
     "  floe file manifest <fileId>",
+    "  floe file renew <fileId> --epochs <n>",
     "  floe file download <fileId> <path>",
     "  floe file stream <fileId>",
     "  floe file stream-url <fileId>",
@@ -298,6 +301,7 @@ function printHelp(topic?: string) {
     "  floe head <fileId>",
     "  floe metadata <fileId>",
     "  floe manifest <fileId>",
+    "  floe renew <fileId> --epochs <n>",
     "  floe download <fileId> <path>",
     "  floe stream <fileId>",
     "  floe stream-url <fileId>",
@@ -539,6 +543,9 @@ function resolveCommand(tokens: string[]): ResolvedCommand {
         case "manifest":
           command = { kind: "file.manifest", fileId: tokens[2] };
           break;
+        case "renew":
+          command = { kind: "file.renew", fileId: tokens[2] };
+          break;
         case "download":
           command = { kind: "file.download", fileId: tokens[2], outputPath: tokens[3] };
           break;
@@ -603,6 +610,9 @@ function resolveCommand(tokens: string[]): ResolvedCommand {
       break;
     case "manifest":
       command = { kind: "file.manifest", fileId: tokens[1] };
+      break;
+    case "renew":
+      command = { kind: "file.renew", fileId: tokens[1] };
       break;
     case "download":
       command = { kind: "file.download", fileId: tokens[1], outputPath: tokens[2] };
@@ -779,8 +789,33 @@ function printFileMetadataResult(value: Record<string, unknown>, options: CliOpt
   pushOptionalLine(lines, "walrusEndEpoch", value.walrusEndEpoch);
   if (options.includeBlobId) {
     pushOptionalLine(lines, "blobId", value.blobId);
+    pushOptionalLine(lines, "blobObjectId", value.blobObjectId);
   }
+  
+  const expiry = value.expiryStatus as Record<string, unknown> | undefined;
+  if (expiry) {
+    lines.push(section("Storage Expiry"));
+    lines.push(valueLine("status", statusBadge(expiry.isExpired ? "expired" : "healthy")));
+    lines.push(valueLine("remaining", `${expiry.epochsRemaining} epochs (~${expiry.estimatedDaysRemaining} days)`));
+    lines.push(valueLine("endEpoch", expiry.endEpoch));
+  }
+  
   writeLines(lines);
+}
+
+async function runFileRenew(fileIdRaw: string | undefined, options: CliOptions) {
+  const fileId = requireValue(fileIdRaw, "fileId");
+  const epochs = options.epochs;
+  if (!epochs) {
+    throw new Error("--epochs <n> is required for storage renewal");
+  }
+
+  if (!options.json) infoLine(`renewing storage for ${fileId} (+${epochs} epochs)`);
+  const client = await buildApiClient(options);
+  const result = await client.renewFile(fileId, {
+    epochs,
+  });
+  printSimpleActionResult("File Renewed", result as Record<string, unknown>, options);
 }
 
 function printStreamUrlResult(fileId: string, streamUrl: string, options: CliOptions) {
@@ -1450,6 +1485,9 @@ async function main() {
       return;
     case "file.manifest":
       await runFileManifest(command.fileId, options);
+      return;
+    case "file.renew":
+      await runFileRenew(command.fileId, options);
       return;
     case "file.download":
       await runFileDownload(command.fileId, command.outputPath, options);

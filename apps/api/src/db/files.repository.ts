@@ -3,6 +3,7 @@ import { getPostgres } from "../state/postgres.js";
 export type IndexedFileRecord = {
   fileId: string;
   blobId: string;
+  blobObjectId: string | null;
   ownerAddress: string | null;
   sizeBytes: number;
   mimeType: string;
@@ -17,6 +18,7 @@ export async function ensureFilesTable(): Promise<void> {
     create table if not exists floe_files (
       file_id text primary key,
       blob_id text not null,
+      blob_object_id text null,
       owner_address text null,
       size_bytes bigint not null,
       mime_type text not null,
@@ -31,6 +33,11 @@ export async function ensureFilesTable(): Promise<void> {
     create index if not exists floe_files_owner_created_idx
     on floe_files (owner_address, created_at desc);
   `);
+
+  // Migration for existing table
+  await pg.query(`
+    alter table floe_files add column if not exists blob_object_id text;
+  `).catch(() => {});
 }
 
 export async function upsertIndexedFile(record: IndexedFileRecord): Promise<void> {
@@ -40,10 +47,11 @@ export async function upsertIndexedFile(record: IndexedFileRecord): Promise<void
   await pg.query(
     `
       insert into floe_files (
-        file_id, blob_id, owner_address, size_bytes, mime_type, walrus_end_epoch, created_at_ms, updated_at
-      ) values ($1, $2, $3, $4, $5, $6, $7, now())
+        file_id, blob_id, blob_object_id, owner_address, size_bytes, mime_type, walrus_end_epoch, created_at_ms, updated_at
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, now())
       on conflict (file_id) do update set
         blob_id = excluded.blob_id,
+        blob_object_id = excluded.blob_object_id,
         owner_address = excluded.owner_address,
         size_bytes = excluded.size_bytes,
         mime_type = excluded.mime_type,
@@ -54,6 +62,7 @@ export async function upsertIndexedFile(record: IndexedFileRecord): Promise<void
     [
       record.fileId,
       record.blobId,
+      record.blobObjectId,
       record.ownerAddress,
       Math.trunc(record.sizeBytes),
       record.mimeType,
@@ -74,6 +83,7 @@ export async function getIndexedFile(
       select
         file_id,
         blob_id,
+        blob_object_id,
         owner_address,
         size_bytes,
         mime_type,
@@ -92,6 +102,7 @@ export async function getIndexedFile(
   return {
     fileId: String(row.file_id),
     blobId: String(row.blob_id),
+    blobObjectId: row.blob_object_id ? String(row.blob_object_id) : null,
     ownerAddress: row.owner_address ? String(row.owner_address) : null,
     sizeBytes: Number(row.size_bytes),
     mimeType: String(row.mime_type),

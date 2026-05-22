@@ -297,6 +297,7 @@ export async function finalizeUpload(
         try {
           const result = await finalizeFileMetadata({
             blobId,
+            blobObjectId: walrusObjectId,
             sizeBytes: session.sizeBytes,
             mimeType: session.contentType ?? "application/octet-stream",
             owner: session.owner,
