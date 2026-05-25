@@ -361,6 +361,7 @@ export async function finalizeUpload(
     await upsertIndexedFile({
       fileId,
       blobId,
+      blobObjectId: walrusObjectId ?? null,
       ownerAddress: session.owner ?? null,
       sizeBytes: session.sizeBytes,
       mimeType: session.contentType ?? "application/octet-stream",

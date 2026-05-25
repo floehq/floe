@@ -359,6 +359,7 @@ async function getFileFieldsCached(fileId: string): Promise<CachedFileFieldsResu
     await upsertIndexedFile({
       fileId,
       blobId: normalized.blobId,
+      blobObjectId: normalized.blobObjectId,
       ownerAddress: normalized.ownerAddress,
       sizeBytes: normalized.sizeBytes,
       mimeType: normalized.mimeType,

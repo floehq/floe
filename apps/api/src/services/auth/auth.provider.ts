@@ -27,7 +27,7 @@ export interface AuthProvider {
   }): Promise<{ allowed: boolean; code?: string; message?: string }>;
   authorizeFileAccess(params: {
     req: FastifyRequest;
-    action: "metadata" | "manifest" | "stream";
+    action: "metadata" | "manifest" | "stream" | "renew";
     fileId: string;
     fileOwner?: string | null;
   }): Promise<{ allowed: boolean; code?: string; message?: string }>;
@@ -128,7 +128,7 @@ class DefaultAuthProvider implements AuthProvider {
 
   async authorizeFileAccess(params: {
     req: FastifyRequest;
-    action: "metadata" | "manifest" | "stream";
+    action: "metadata" | "manifest" | "stream" | "renew";
     fileId: string;
     fileOwner?: string | null;
   }): Promise<{ allowed: boolean; code?: string; message?: string }> {
