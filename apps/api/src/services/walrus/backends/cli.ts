@@ -38,7 +38,7 @@ export async function uploadToWalrusViaCli(
   const ws = createWriteStream(tmpFile);
   await pipeline(rs, ws);
 
-  const args = ["store", tmpFile, "--epochs", String(params.epochs), "--context", suiNetwork];
+  const args = ["store", tmpFile, "--epochs", String(params.epochs)];
   if (WALRUS_CLI_CONFIG) args.push("--config", WALRUS_CLI_CONFIG);
   if (WALRUS_CLI_WALLET) args.push("--wallet", WALRUS_CLI_WALLET);
   if (WALRUS_CLI_UPLOAD_RELAY) args.push("--upload-relay", WALRUS_CLI_UPLOAD_RELAY);

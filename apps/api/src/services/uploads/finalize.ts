@@ -346,11 +346,11 @@ export async function finalizeUpload(
     if (!fileId) {
       assertFinalizeLockHealthy();
       await refreshFinalizeLock();
-      
-      const isSui = !session.targetChain || session.targetChain.toLowerCase() === "sui";
 
-      const minted = await runStage(isSui ? "sui_finalize" : "walrus_publish" as any, async () => {
-        const metadataStartedAt = Date.now();
+      const isSui = !session.targetChain || session.targetChain.toLowerCase() === "sui";
+      context.log?.info({ uploadId, targetChain: session.targetChain, isSui }, "Determining metadata finalization chain");
+
+      const minted = await runStage(isSui ? "sui_finalize" : "walrus_publish" as any, async () => {        const metadataStartedAt = Date.now();
         try {
           if (isSui) {
             const result = await finalizeFileMetadata({

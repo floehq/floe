@@ -49,6 +49,8 @@ export type CreateUploadInput = {
   sizeBytes: number;
   chunkSize?: number;
   epochs?: number;
+  targetChain?: string;
+  checksum?: string;
 };
 
 export type CreateUploadResponse = {
@@ -211,6 +213,8 @@ export type UploadBlobOptions = {
   chunkSize?: number;
   epochs?: number;
   parallel?: number;
+  targetChain?: string;
+  checksum?: string;
   uploadId?: string;
   resumeKey?: string;
   includeBlobId?: boolean;

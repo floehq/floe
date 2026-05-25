@@ -1,3 +1,5 @@
+import { ServerConfig } from "../../config/server.config.js";
+
 const TATUM_API_KEY = process.env.TATUM_API_KEY;
 
 export interface MultiChainAnchorParams {
@@ -20,23 +22,44 @@ export async function anchorMetadataMultiChain(params: MultiChainAnchorParams): 
     throw new Error("TATUM_API_KEY is not set");
   }
 
+  const baseUrl = ServerConfig.publicBaseUrl.replace(/\/$/, "");
+
   // Build a metadata object that standard NFT marketplaces can read
   const metadata = {
     name: params.filename,
     description: `Floe Decentralized File Anchor: ${params.blobId}`,
-    image: `https://api.floehq.com/v1/files/${params.blobId}/icon`, // Placeholder
+    image: `${baseUrl}/v1/files/${params.blobId}/icon`, // Placeholder
     attributes: [
       { trait_type: "Blob ID", value: params.blobId },
       { trait_type: "Size", value: params.sizeBytes },
       { trait_type: "Mime Type", value: params.mimeType },
       ...(params.checksum ? [{ trait_type: "Checksum", value: params.checksum }] : []),
     ],
-    external_url: `https://floehq.com/files/${params.blobId}`,
+    external_url: `${baseUrl}/files/${params.blobId}`,
   };
 
   // In a real app, you'd upload this metadata to IPFS first.
   // For the hackathon, we'll use a data URI or a Floe-hosted URL.
-  const metadataUrl = `https://api.floehq.com/v1/files/${params.blobId}/metadata.json`;
+  const metadataUrl = `${baseUrl}/v1/files/${params.blobId}/metadata.json`;
+
+  const chainMap: Record<string, string> = {
+    "BASE": "ETH_BASE",
+    "ETHEREUM": "ETH",
+    "POLYGON": "MATIC",
+    "ARBITRUM": "ETH_ARB",
+    "OPTIMISM": "ETH_OP",
+    "AVALANCHE": "AVAX",
+    "FANTOM": "FTM",
+  };
+
+  const rawChain = params.chain.toUpperCase();
+  const tatumChain = chainMap[rawChain] || rawChain;
+
+  console.log("Tatum Mint Parameters:", JSON.stringify({
+    chain: tatumChain,
+    to: params.to,
+    url: metadataUrl,
+  }, null, 2));
 
   const response = await fetch("https://api.tatum.io/v3/nft/mint", {
     method: "POST",
@@ -45,7 +68,7 @@ export async function anchorMetadataMultiChain(params: MultiChainAnchorParams): 
       "x-api-key": TATUM_API_KEY,
     },
     body: JSON.stringify({
-      chain: params.chain.toUpperCase(),
+      chain: tatumChain,
       to: params.to,
       url: metadataUrl,
       // We use Tatum NFT Express (no private key needed, uses Tatum's credits)

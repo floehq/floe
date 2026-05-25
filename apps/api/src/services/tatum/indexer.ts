@@ -32,24 +32,30 @@ export async function searchGlobalFiles(query: FileMetaSearchQuery) {
   const gatewayUrl = suiNetwork === "mainnet" ? MAINNET_GATEWAY : TESTNET_GATEWAY;
   const structType = `${SUI_PACKAGE_ID}::file::FileMeta`;
 
-  const params: any = [
-    {
-      filter: {
-        MatchAll: [
-          { StructType: structType },
-          ...(query.owner ? [{ AddressOwner: query.owner }] : []),
-        ],
-      },
-      options: {
-        showType: true,
-        showContent: true,
-        showOwner: true,
-      },
-    },
-    query.cursor ?? null,
-    query.limit ?? 50,
-    true, // Descending
-  ];
+  // Tatum's Sui Gateway currently supports suix_getOwnedObjects but not suix_queryObjects.
+  // We prioritize suix_getOwnedObjects if an owner is provided.
+  const useQueryObjects = !query.owner;
+  const method = useQueryObjects ? "suix_queryObjects" : "suix_getOwnedObjects";
+
+  const params: any = useQueryObjects
+    ? [
+        {
+          filter: { StructType: structType },
+          options: { showType: true, showContent: true, showOwner: true },
+        },
+        query.cursor ?? null,
+        query.limit ?? 50,
+        true, // Descending
+      ]
+    : [
+        query.owner,
+        {
+          filter: { StructType: structType },
+          options: { showType: true, showContent: true, showOwner: true },
+        },
+        query.cursor ?? null,
+        query.limit ?? 50,
+      ];
 
   const response = await fetch(gatewayUrl, {
     method: "POST",
@@ -60,7 +66,7 @@ export async function searchGlobalFiles(query: FileMetaSearchQuery) {
     body: JSON.stringify({
       jsonrpc: "2.0",
       id: 1,
-      method: "suix_queryObjects",
+      method,
       params,
     }),
   });
@@ -72,6 +78,11 @@ export async function searchGlobalFiles(query: FileMetaSearchQuery) {
 
   const json = (await response.json()) as any;
   if (json.error) {
+    if (json.error.code === -32601 && useQueryObjects) {
+      throw new Error(
+        "Tatum's Sui gateway does not support global filtering (suix_queryObjects). Please provide an 'owner' address to use suix_getOwnedObjects, or use a full-indexer RPC provider."
+      );
+    }
     throw new Error(`TATUM_SUI_QUERY_ERROR:${JSON.stringify(json.error)}`);
   }
 
@@ -81,7 +92,7 @@ export async function searchGlobalFiles(query: FileMetaSearchQuery) {
       version: item.data?.version,
       digest: item.data?.digest,
       type: item.data?.type,
-      owner: item.data?.owner?.AddressOwner,
+      owner: item.data?.owner?.AddressOwner || item.data?.owner,
       content: item.data?.content?.fields,
     })) as FileMetaSearchResult[],
     nextCursor: json.result?.nextCursor,

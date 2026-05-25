@@ -32,9 +32,13 @@ export interface AuthContext {
 
 export type RequestIdentity = AuthContext;
 
-export function buildPublicAuthContext(req: Pick<FastifyRequest, "ip">): AuthContext {
+export function buildPublicAuthContext(req: FastifyRequest): AuthContext {
   const subjectId =
     typeof req.ip === "string" && req.ip.trim().length > 0 ? req.ip.trim() : "unknown";
+  
+  const ownerAddress = (req.headers["x-owner-address"] as string)?.trim() || undefined;
+  const walletAddress = (req.headers["x-wallet-address"] as string)?.trim() || undefined;
+
   return {
     authenticated: false,
     provider: "none",
@@ -43,6 +47,9 @@ export function buildPublicAuthContext(req: Pick<FastifyRequest, "ip">): AuthCon
     subjectId,
     subject: `public:${subjectId}`,
     scopes: [],
+    ownerAddress,
+    owner: ownerAddress,
+    walletAddress,
     tier: "public",
     credentialType: "public",
   };

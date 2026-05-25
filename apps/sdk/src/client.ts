@@ -98,6 +98,8 @@ export class FloeClient {
         sizeBytes: input.sizeBytes,
         chunkSize: input.chunkSize,
         epochs: input.epochs,
+        targetChain: input.targetChain,
+        checksum: input.checksum,
       },
     });
   }
@@ -397,6 +399,14 @@ export class FloeClient {
 
     if (!uploadId) {
       options.onStageChange?.({ stage: "creating_upload" });
+
+      let checksum = options.checksum;
+      if (!checksum) {
+        options.onStageChange?.({ stage: "creating_upload" as any, message: "calculating_checksum" } as any);
+        const buffer = await blob.arrayBuffer();
+        checksum = await sha256Hex(buffer);
+      }
+
       create = await this.createUpload(
         {
           filename: options.filename,
@@ -404,6 +414,8 @@ export class FloeClient {
           sizeBytes: blob.size,
           chunkSize: options.chunkSize,
           epochs: options.epochs,
+          targetChain: options.targetChain,
+          checksum,
         },
         {
           signal: options.signal,
@@ -438,6 +450,12 @@ export class FloeClient {
         await this.resumeStore.remove(resumeKey);
       }
 
+      let checksum = options.checksum;
+      if (!checksum) {
+        const buffer = await blob.arrayBuffer();
+        checksum = await sha256Hex(buffer);
+      }
+
       create = await this.createUpload(
         {
           filename: options.filename,
@@ -445,6 +463,8 @@ export class FloeClient {
           sizeBytes: blob.size,
           chunkSize: options.chunkSize,
           epochs: options.epochs,
+          targetChain: options.targetChain,
+          checksum,
         },
         {
           signal: options.signal,

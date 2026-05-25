@@ -502,7 +502,8 @@ export default async function uploadRoutes(app: FastifyInstance) {
       );
     }
 
-    const { filename, contentType, sizeBytes, chunkSize, epochs, checksum, targetChain } = body;
+    const { filename, contentType, sizeBytes, chunkSize, epochs, checksum, targetChain, owner: bodyOwner } = body;
+    log.info({ filename, targetChain, bodyOwner }, "Received create upload request");
 
     if (!filename || !contentType || !sizeBytes) {
       return sendApiError(
@@ -512,6 +513,8 @@ export default async function uploadRoutes(app: FastifyInstance) {
         "Missing required fields"
       );
     }
+
+    const requestOwner = (bodyOwner as string)?.trim() || createLimit.identity.owner;
 
     if (typeof filename !== "string" || filename.length > 512) {
       return sendApiError(
@@ -695,7 +698,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         contentType,
         owner: createLimit.identity.authenticated
           ? createLimit.identity.owner
-          : (createLimit.identity.owner ?? DEFAULT_OWNER_ADDRESS),
+          : (requestOwner ?? DEFAULT_OWNER_ADDRESS),
         sizeBytes: fileSizeNum,
         chunkSize: resolvedChunkSize,
         totalChunks,

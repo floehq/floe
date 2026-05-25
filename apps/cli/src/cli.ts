@@ -18,6 +18,8 @@ type CliOptions = {
   chunkSize?: number;
   epochs?: number;
   parallel?: number;
+  targetChain?: string;
+  checksum?: string;
   includeBlobId?: boolean;
   includeWalrusDebug?: boolean;
   idempotencyKey?: string;
@@ -193,7 +195,7 @@ function printHelp(topic?: string) {
       section("Precedence"),
       "  flags override env vars, env vars override config, config overrides defaults",
       section("Examples"),
-      "  floe config set base-url https://api.floehq.com/v1",
+      "  floe config set base-url http://localhost:3000/v1",
       "  floe config set api-key sk_live_xxx",
       "  floe config unset api-key",
       "  floe config path",
@@ -322,6 +324,8 @@ function printHelp(topic?: string) {
     section("Upload Options"),
     "  --chunk-size <bytes>    Upload chunk size in bytes",
     "  --epochs <n>            Walrus epochs for upload create",
+    "  --target-chain <name>   Destination chain for Tatum anchoring",
+    "  --checksum <hex>        Optional file checksum (SHA256)",
     "  --parallel <n>          Parallel chunk uploads (default: 3)",
     "  --no-resume             Disable resume-store lookup for uploads",
     "  --poll-interval-ms <n>  Finalize wait poll interval",
@@ -337,7 +341,7 @@ function printHelp(topic?: string) {
     "  floe ops version",
     "  floe doctor",
     "  floe config show",
-    "  floe config set base-url https://api.floehq.com/v1",
+    "  floe config set base-url http://localhost:3000/v1",
   ]);
 }
 
@@ -462,6 +466,12 @@ function parseArgState(argv: string[]): ParsedArgState {
         break;
       case "--epochs":
         overrides.epochs = parsePositiveIntegerFlag("--epochs", readValue());
+        break;
+      case "--target-chain":
+        overrides.targetChain = readValue() || "";
+        break;
+      case "--checksum":
+        overrides.checksum = readValue() || "";
         break;
       case "--parallel":
         overrides.parallel = parsePositiveIntegerFlag("--parallel", readValue());
@@ -1150,6 +1160,7 @@ async function runUpload(filePathRaw: string | undefined, options: CliOptions) {
   verboseLine(options, "resume", options.noResume ? "disabled" : "enabled");
   verboseLine(options, "parallel", options.parallel);
   verboseLine(options, "chunkSize", options.chunkSize ?? "default");
+  verboseLine(options, "targetChain", options.targetChain ?? "none");
   verboseLine(options, "idempotencyKey", options.idempotencyKey ? "[configured]" : "none");
 
   const result = await client.uploadBlob(blob, {
@@ -1157,6 +1168,8 @@ async function runUpload(filePathRaw: string | undefined, options: CliOptions) {
     contentType,
     ...(options.chunkSize ? { chunkSize: options.chunkSize } : {}),
     ...(options.epochs ? { epochs: options.epochs } : {}),
+    ...(options.targetChain ? { targetChain: options.targetChain } : {}),
+    ...(options.checksum ? { checksum: options.checksum } : {}),
     ...(options.parallel ? { parallel: options.parallel } : {}),
     ...(options.includeBlobId ? { includeBlobId: true } : {}),
     ...(options.includeWalrusDebug ? { includeWalrusDebug: true } : {}),
@@ -1428,6 +1441,8 @@ async function runConfigShow(options: CliOptions) {
       upload: {
         chunkSize: options.chunkSize ?? null,
         epochs: options.epochs ?? null,
+        targetChain: options.targetChain ?? null,
+        checksum: options.checksum ?? null,
         parallel: options.parallel ?? null,
         includeBlobId: options.includeBlobId ?? false,
         includeWalrusDebug: options.includeWalrusDebug ?? false,

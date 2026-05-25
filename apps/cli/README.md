@@ -30,7 +30,7 @@ floe ops version
 floe doctor
 floe config show
 floe config path
-floe config set base-url https://api.floehq.com/v1
+floe config set base-url http://localhost:3000/v1
 floe config unset api-key
 ```
 
@@ -93,7 +93,7 @@ Examples:
 
 ```bash
 floe config path
-floe config set base-url https://api.floehq.com/v1
+floe config set base-url http://localhost:3000/v1
 floe config set api-key sk_live_xxx
 floe config unset api-key
 ```

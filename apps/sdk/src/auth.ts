@@ -1,13 +1,17 @@
 import type { AuthConfig, HeaderProvider } from "./types.js";
 
 const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
+const EVM_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{40}$/;
 
 function normalizeAddress(name: string, value?: string): string | undefined {
   if (!value) return undefined;
-  if (!SUI_ADDRESS_RE.test(value)) {
-    throw new Error(`${name} must be a valid 32-byte Sui address`);
+  const isSui = SUI_ADDRESS_RE.test(value);
+  const isEvm = EVM_ADDRESS_RE.test(value);
+  if (!isSui && !isEvm) {
+    throw new Error(`${name} must be a valid Sui (32-byte) or EVM (20-byte) address`);
   }
-  return `0x${value.replace(/^0x/i, "").toLowerCase()}`;
+  const clean = value.replace(/^0x/i, "");
+  return isSui ? `0x${clean.toLowerCase()}` : `0x${clean}`;
 }
 
 export async function resolveHeaderProvider(

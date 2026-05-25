@@ -31,6 +31,12 @@ export async function ensureFilesTable(): Promise<void> {
     );
   `);
 
+  // Migration for existing table
+  await Promise.all([
+    pg.query(`alter table floe_files add column if not exists blob_object_id text;`).catch(() => {}),
+    pg.query(`alter table floe_files add column if not exists checksum text;`).catch(() => {}),
+  ]);
+
   await pg.query(`
     create index if not exists floe_files_owner_created_idx
     on floe_files (owner_address, created_at desc);
@@ -40,12 +46,6 @@ export async function ensureFilesTable(): Promise<void> {
     create index if not exists floe_files_checksum_idx
     on floe_files (checksum) where checksum is not null;
   `);
-
-  // Migration for existing table
-  await Promise.all([
-    pg.query(`alter table floe_files add column if not exists blob_object_id text;`).catch(() => {}),
-    pg.query(`alter table floe_files add column if not exists checksum text;`).catch(() => {}),
-  ]);
 }
 
 export async function upsertIndexedFile(record: IndexedFileRecord): Promise<void> {

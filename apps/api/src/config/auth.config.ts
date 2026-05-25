@@ -17,15 +17,19 @@ function parseBoolEnv(name: string, fallback: boolean): boolean {
 }
 
 const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
+const EVM_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{40}$/;
 
-function normalizeOptionalSuiAddress(raw: unknown): string | undefined {
+function normalizeOptionalAddress(raw: unknown): string | undefined {
   if (typeof raw !== "string") return undefined;
   const value = raw.trim();
   if (!value) return undefined;
-  if (!SUI_ADDRESS_RE.test(value)) {
-    throw new Error(`Invalid Sui address: ${value}`);
+  const isSui = SUI_ADDRESS_RE.test(value);
+  const isEvm = EVM_ADDRESS_RE.test(value);
+  if (!isSui && !isEvm) {
+    throw new Error(`Invalid address: ${value}. Must be a valid Sui (32-byte) or EVM (20-byte) address.`);
   }
-  return `0x${value.replace(/^0x/i, "").toLowerCase()}`;
+  const clean = value.replace(/^0x/i, "");
+  return isSui ? `0x${clean.toLowerCase()}` : `0x${clean}`;
 }
 
 const LIMIT_DEFAULTS = {
@@ -198,7 +202,7 @@ function parseApiKeys(): StaticApiKeyConfig[] {
           .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
           .map((value) => value.trim())
       : ["*"];
-    const owner = normalizeOptionalSuiAddress(candidate.owner);
+    const owner = normalizeOptionalAddress(candidate.owner);
 
     if (!id) throw new Error(`FLOE_API_KEYS_JSON[${index}].id is required`);
     if (!secret) {
