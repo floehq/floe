@@ -741,6 +741,39 @@ export async function filesRoutes(app: FastifyInstance) {
     };
   });
 
+  app.get("/v1/files/:fileId/metadata.json", async (req, res) => {
+    const { fileId: rawFileId } = req.params as { fileId: string };
+    const fileId = normalizeFileIdParam(rawFileId);
+    if (!fileId) {
+      return sendApiError(res, 400, "INVALID_FILE_ID", "fileId must be a valid Sui object id");
+    }
+
+    const { fields } = await getFileFieldsCached(fileId);
+    if (!fields) {
+      return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
+    }
+
+    const normalized = normalizeFileFields(fields);
+    if (!normalized) {
+      return sendApiError(res, 502, "INVALID_FILE_METADATA", "File metadata is invalid");
+    }
+
+    const baseUrl = (process.env.FLOE_PUBLIC_BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
+
+    return {
+      name: normalized.filename || `Floe File ${fileId.slice(0, 10)}`,
+      description: `Floe Decentralized File: ${normalized.blobId}`,
+      image: `${baseUrl}/v1/files/${normalized.blobId}/icon`,
+      attributes: [
+        { trait_type: "Blob ID", value: normalized.blobId },
+        { trait_type: "Size", value: normalized.sizeBytes },
+        { trait_type: "Mime Type", value: normalized.mimeType },
+        ...(normalized.checksum ? [{ trait_type: "Checksum", value: normalized.checksum }] : []),
+      ],
+      external_url: `${baseUrl}/files/${normalized.blobId}`,
+    };
+  });
+
   app.post("/v1/files/:fileId/renew", async (req, res) => {
     const { fileId: rawFileId } = req.params as { fileId: string };
     const { epochs } = req.body as { epochs: number };
