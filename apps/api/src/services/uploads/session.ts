@@ -36,6 +36,7 @@ export async function createSession(input: {
   filename: string;
   contentType: string;
   owner?: string;
+  checksum?: string;
   sizeBytes: number;
   chunkSize: number;
   totalChunks: number;
@@ -49,6 +50,7 @@ export async function createSession(input: {
     filename,
     contentType,
     owner,
+    checksum,
     sizeBytes,
     chunkSize,
     totalChunks,
@@ -70,6 +72,7 @@ export async function createSession(input: {
       filename,
       contentType,
       ...(owner ? { owner } : {}),
+      ...(checksum ? { checksum } : {}),
       sizeBytes: String(sizeBytes),
       chunkSize: String(chunkSize),
       totalChunks: String(totalChunks),
@@ -87,6 +90,7 @@ export async function createSession(input: {
       updatedAt: String(now),
       expiresAt: String(expiresAt),
       ...(owner ? { owner } : {}),
+      ...(checksum ? { checksum } : {}),
       sizeBytes: String(sizeBytes),
       chunkSize: String(chunkSize),
       totalChunks: String(totalChunks),
@@ -124,6 +128,7 @@ export async function createSession(input: {
     filename,
     contentType,
     owner,
+    checksum,
     sizeBytes,
     chunkSize,
     totalChunks,
@@ -231,6 +236,7 @@ export async function getSession(
     filename: data.filename,
     contentType: data.contentType,
     owner: data.owner,
+    checksum: data.checksum,
     sizeBytes,
     chunkSize,
     totalChunks,

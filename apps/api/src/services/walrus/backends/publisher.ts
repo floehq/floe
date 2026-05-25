@@ -37,6 +37,23 @@ function parseSdkBaseUrls(): string[] {
   return singleLegacy ? [singleLegacy] : [];
 }
 
+function pickFirstString(values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function pickFirstNumber(values: unknown[]): number | undefined {
+  for (const value of values) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
+}
+
 function parseOptionalSuiAddressEnv(name: string): string | undefined {
   const raw = process.env[name]?.trim();
   if (!raw) return undefined;
@@ -157,30 +174,84 @@ export async function uploadToWalrusViaPublisher(
       }
 
       const json = (await res.json()) as any;
-      const blobId =
-        json?.newlyCreated?.blobObject?.blobId ??
-        json?.alreadyCertified?.blobId ??
-        json?.blobObject?.blobId;
+      const newlyCreated = json?.newlyCreated ?? json?.newly_created;
+      const alreadyCertified = json?.alreadyCertified ?? json?.already_certified;
+      const blobObject =
+        newlyCreated?.blobObject ??
+        newlyCreated?.blob_object ??
+        alreadyCertified?.blobObject ??
+        alreadyCertified?.blob_object ??
+        json?.blobObject ??
+        json?.blob_object;
+
+      const blobId = pickFirstString([
+        newlyCreated?.blobId,
+        newlyCreated?.blob_id,
+        newlyCreated?.blobObject?.blobId,
+        newlyCreated?.blobObject?.blob_id,
+        newlyCreated?.blob_object?.blobId,
+        newlyCreated?.blob_object?.blob_id,
+        alreadyCertified?.blobId,
+        alreadyCertified?.blob_id,
+        alreadyCertified?.blobObject?.blobId,
+        alreadyCertified?.blobObject?.blob_id,
+        alreadyCertified?.blob_object?.blobId,
+        alreadyCertified?.blob_object?.blob_id,
+        blobObject?.blobId,
+        blobObject?.blob_id,
+      ]);
 
       if (!blobId) {
         throw new Error("WALRUS_MISSING_BLOB_ID");
       }
 
+      const objectId = pickFirstString([
+        newlyCreated?.blobObjectId,
+        newlyCreated?.blob_object_id,
+        newlyCreated?.blobObject?.id,
+        newlyCreated?.blobObject?.objectId,
+        newlyCreated?.blobObject?.object_id,
+        newlyCreated?.blob_object?.id,
+        newlyCreated?.blob_object?.objectId,
+        newlyCreated?.blob_object?.object_id,
+        alreadyCertified?.blobObjectId,
+        alreadyCertified?.blob_object_id,
+        alreadyCertified?.blobObject?.id,
+        alreadyCertified?.blobObject?.objectId,
+        alreadyCertified?.blobObject?.object_id,
+        alreadyCertified?.blob_object?.id,
+        alreadyCertified?.blob_object?.objectId,
+        alreadyCertified?.blob_object?.object_id,
+        blobObject?.id,
+        blobObject?.objectId,
+        blobObject?.object_id,
+      ]);
+      const endEpoch = pickFirstNumber([
+        newlyCreated?.endEpoch,
+        newlyCreated?.end_epoch,
+        newlyCreated?.blobObject?.storage?.endEpoch,
+        newlyCreated?.blobObject?.storage?.end_epoch,
+        newlyCreated?.blob_object?.storage?.endEpoch,
+        newlyCreated?.blob_object?.storage?.end_epoch,
+        alreadyCertified?.endEpoch,
+        alreadyCertified?.end_epoch,
+        alreadyCertified?.blobObject?.storage?.endEpoch,
+        alreadyCertified?.blobObject?.storage?.end_epoch,
+        alreadyCertified?.blob_object?.storage?.endEpoch,
+        alreadyCertified?.blob_object?.storage?.end_epoch,
+        blobObject?.storage?.endEpoch,
+        blobObject?.storage?.end_epoch,
+      ]);
+
       lastGoodWriterIdx = idx;
       return {
         blobId,
-        objectId:
-          json?.newlyCreated?.blobObject?.id ??
-          json?.alreadyCertified?.blobObject?.id ??
-          json?.blobObject?.id,
-        cost: json?.newlyCreated?.cost,
-        endEpoch:
-          json?.newlyCreated?.blobObject?.storage?.endEpoch ??
-          json?.alreadyCertified?.endEpoch ??
-          json?.blobObject?.storage?.endEpoch,
-        source: json?.newlyCreated
+        objectId,
+        cost: pickFirstNumber([newlyCreated?.cost, newlyCreated?.storageCost, newlyCreated?.storage_cost]),
+        endEpoch,
+        source: newlyCreated
           ? "newly_created"
-          : json?.alreadyCertified
+          : alreadyCertified
             ? "already_certified"
             : "unknown",
       };

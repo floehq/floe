@@ -298,6 +298,7 @@ function buildCreateUploadFingerprint(input: {
   filename: string;
   contentType: string;
   sizeBytes: number;
+  checksum?: string;
   chunkSize: number;
   epochs: number;
 }): string {
@@ -502,7 +503,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       );
     }
 
-    const { filename, contentType, sizeBytes, chunkSize, epochs } = body;
+    const { filename, contentType, sizeBytes, chunkSize, epochs, checksum } = body;
 
     if (!filename || !contentType || !sizeBytes) {
       return sendApiError(
@@ -529,6 +530,14 @@ export default async function uploadRoutes(app: FastifyInstance) {
         "INVALID_CONTENT_TYPE",
         "contentType must be <= 128 chars"
       );
+    }
+
+    let checksumValue: string | undefined;
+    if (checksum !== undefined) {
+      if (typeof checksum !== "string" || !/^[a-f0-9]{64}$/i.test(checksum)) {
+        return sendApiError(reply, 400, "INVALID_CHECKSUM", "checksum must be a 64-char hex sha256");
+      }
+      checksumValue = checksum.toLowerCase();
     }
 
     const fileSizeNum = Number(sizeBytes);
@@ -612,6 +621,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           filename,
           contentType,
           sizeBytes: fileSizeNum,
+          checksum: checksumValue,
           chunkSize: resolvedChunkSize,
           epochs: resolvedEpochs,
         })
@@ -687,6 +697,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         owner: createLimit.identity.authenticated
           ? createLimit.identity.owner
           : (createLimit.identity.owner ?? DEFAULT_OWNER_ADDRESS),
+        checksum: checksumValue,
         sizeBytes: fileSizeNum,
         chunkSize: resolvedChunkSize,
         totalChunks,

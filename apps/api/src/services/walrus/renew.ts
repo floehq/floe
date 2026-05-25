@@ -3,8 +3,8 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import { suiClient } from "../../state/sui.js";
 import { WalrusUploadLimits } from "../../config/walrus.config.js";
+import { getWalrusBlobState } from "./blob.js";
 
 export interface WalrusRenewParams {
   blobObjectId: string;
@@ -58,13 +58,8 @@ export async function renewWalrusBlob(
       maxBuffer: 10 * 1024 * 1024,
     });
 
-    const updatedObj = await suiClient.getObject({
-      id: params.blobObjectId,
-      options: { showContent: true },
-    });
-
-    const fields = (updatedObj.data?.content as any)?.fields;
-    const endEpoch = fields?.storage?.fields?.end_epoch ?? 0;
+    const state = await getWalrusBlobState(params.blobObjectId);
+    const endEpoch = state.endEpoch ?? 0;
 
     return { endEpoch: Number(endEpoch) };
   } catch (err: any) {
