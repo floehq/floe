@@ -95,8 +95,9 @@ type NormalizedFileFields = {
   blobObjectId: string | null;
   sizeBytes: number;
   mimeType: string;
+  checksum: string | null;
   createdAt: number;
-  owner: unknown;
+  owner: any;
   ownerAddress: string | null;
   walrusEndEpoch: number | null;
 };
@@ -158,6 +159,7 @@ function normalizeFileFields(fields: any): NormalizedFileFields | null {
 
   const blobId = typeof fields.blob_id === "string" ? fields.blob_id.trim() : "";
   const blobObjectId = parseOptionalAddress(fields.blob_object_id);
+  const checksum = typeof fields.checksum === "string" ? fields.checksum : null;
   const rawSizeBytes = Number(fields.size_bytes);
   const rawCreatedAt = Number(fields.created_at);
   const mimeType =
@@ -176,6 +178,7 @@ function normalizeFileFields(fields: any): NormalizedFileFields | null {
     blobObjectId,
     sizeBytes: rawSizeBytes,
     mimeType,
+    checksum,
     createdAt: rawCreatedAt,
     owner: fields.owner ?? null,
     ownerAddress: normalizeSuiAddress(fields.owner),
@@ -359,9 +362,11 @@ async function getFileFieldsCached(fileId: string): Promise<CachedFileFieldsResu
     await upsertIndexedFile({
       fileId,
       blobId: normalized.blobId,
+      blobObjectId: normalized.blobObjectId,
       ownerAddress: normalized.ownerAddress,
       sizeBytes: normalized.sizeBytes,
       mimeType: normalized.mimeType,
+      checksum: normalized.checksum,
       walrusEndEpoch: normalized.walrusEndEpoch,
       createdAtMs: normalized.createdAt,
     }).catch(() => {
@@ -806,6 +811,7 @@ export async function filesRoutes(app: FastifyInstance) {
         ...normalized,
         fileId,
         blobObjectId,
+        checksum: normalized.checksum,
         walrusEndEpoch: walrusResult.endEpoch,
         createdAtMs: normalized.createdAt,
       }).catch(() => {});

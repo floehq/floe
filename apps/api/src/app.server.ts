@@ -7,6 +7,7 @@ import path from "path";
 
 import uploadRoutes from "./routes/uploads.js";
 import healthRoute from "./routes/health.js";
+import tatumRoutes from "./routes/tatum.js";
 import { filesRoutes } from "./routes/files.js";
 import { closeRedis, initRedis } from "./state/redis.js";
 import {
@@ -220,6 +221,7 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
   if (TopologyConfig.routes.files) {
     await app.register(filesRoutes);
   }
+  await app.register(tatumRoutes);
   await app.register(healthRoute);
 
   app.addHook("onClose", async () => {

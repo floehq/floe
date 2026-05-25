@@ -45,6 +45,10 @@ export type ApiErrorCode =
   | "INVALID_RANGE"
   | "FILE_CONTENT_NOT_FOUND"
   | "FILE_BLOB_UNAVAILABLE"
+  | "INVALID_CHECKSUM"
+  | "CHECKSUM_MISMATCH"
+  | "MISSING_BLOB_OBJECT_ID"
+  | "RENEWAL_FAILED"
   | "AUTH_REQUIRED";
 
 export interface ApiErrorResponse {

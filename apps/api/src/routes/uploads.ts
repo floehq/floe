@@ -502,7 +502,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       );
     }
 
-    const { filename, contentType, sizeBytes, chunkSize, epochs } = body;
+    const { filename, contentType, sizeBytes, chunkSize, epochs, checksum, targetChain } = body;
 
     if (!filename || !contentType || !sizeBytes) {
       return sendApiError(
@@ -528,6 +528,15 @@ export default async function uploadRoutes(app: FastifyInstance) {
         400,
         "INVALID_CONTENT_TYPE",
         "contentType must be <= 128 chars"
+      );
+    }
+
+    if (checksum !== undefined && (typeof checksum !== "string" || checksum.length > 256)) {
+      return sendApiError(
+        reply,
+        400,
+        "INVALID_CHECKSUM",
+        "checksum must be a string <= 256 chars"
       );
     }
 
@@ -691,6 +700,8 @@ export default async function uploadRoutes(app: FastifyInstance) {
         chunkSize: resolvedChunkSize,
         totalChunks,
         epochs: resolvedEpochs,
+        checksum,
+        targetChain,
       });
       sessionCreated = true;
 

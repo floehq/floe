@@ -95,3 +95,8 @@ const suiPrivateKey = parseSuiPrivateKey();
 export const suiClient = new SuiClient({ url: suiRpcUrl });
 
 export const suiSigner = createSignerFromEnv(suiPrivateKey);
+
+export async function getCurrentSuiEpoch(): Promise<number> {
+  const state = await suiClient.getLatestSuiSystemState();
+  return Number(state.epoch);
+}

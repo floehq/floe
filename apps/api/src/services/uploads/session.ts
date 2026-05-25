@@ -40,6 +40,8 @@ export async function createSession(input: {
   chunkSize: number;
   totalChunks: number;
   epochs: number;
+  checksum?: string;
+  targetChain?: string;
 }): Promise<InternalSession> {
   const redis = getRedis();
   const now = Date.now();
@@ -53,6 +55,8 @@ export async function createSession(input: {
     chunkSize,
     totalChunks,
     epochs,
+    checksum,
+    targetChain,
   } = input;
 
   if (!uploadId) throw new Error("UPLOAD_ID_REQUIRED");
@@ -74,6 +78,8 @@ export async function createSession(input: {
       chunkSize: String(chunkSize),
       totalChunks: String(totalChunks),
       epochs: String(epochs),
+      ...(checksum ? { checksum } : {}),
+      ...(targetChain ? { targetChain } : {}),
       status: "uploading",
       createdAt: String(now),
       updatedAt: String(now),
@@ -90,6 +96,8 @@ export async function createSession(input: {
       sizeBytes: String(sizeBytes),
       chunkSize: String(chunkSize),
       totalChunks: String(totalChunks),
+      ...(checksum ? { checksum } : {}),
+      ...(targetChain ? { targetChain } : {}),
     })
     .expire(uploadKeys.meta(uploadId), metaTtlSecondsValue)
 
@@ -130,6 +138,8 @@ export async function createSession(input: {
     receivedChunks: [],
     resolvedEpochs: epochs,
     status: "uploading",
+    checksum,
+    targetChain,
     createdAt: now,
     expiresAt,
   };
@@ -237,6 +247,8 @@ export async function getSession(
     receivedChunks: [],
     resolvedEpochs: epochs,
     status: data.status as any,
+    checksum: data.checksum,
+    targetChain: data.targetChain,
     createdAt,
     expiresAt,
   };
