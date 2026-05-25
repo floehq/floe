@@ -123,6 +123,9 @@ async function createRouteApp(customAuthProvider?: any) {
     get(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
       handlers.set(`GET ${path}`, handler);
     },
+    post(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
+      handlers.set(`POST ${path}`, handler);
+    },
     route(definition: { method: string[]; url: string; handler: (req: any, reply: any) => Promise<unknown> | unknown }) {
       for (const method of definition.method) {
         handlers.set(`${method} ${definition.url}`, definition.handler);
@@ -134,12 +137,13 @@ async function createRouteApp(customAuthProvider?: any) {
 
   return {
     async inject(params: {
-      method: "GET" | "HEAD";
+      method: "GET" | "HEAD" | "POST";
       url: string;
       routePath?: string;
       params?: Record<string, unknown>;
       query?: Record<string, unknown>;
       headers?: Record<string, string>;
+      body?: unknown;
     }) {
       const routePath = params.routePath ?? params.url;
       const handler = handlers.get(`${params.method} ${routePath}`);
@@ -176,6 +180,7 @@ async function createRouteApp(customAuthProvider?: any) {
         params: params.params ?? {},
         query: params.query ?? {},
         headers: params.headers ?? {},
+        body: params.body,
         log,
         server: { authProvider },
         raw: {
