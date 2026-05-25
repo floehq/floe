@@ -5,7 +5,6 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { pipeline } from "node:stream/promises";
-import { suiNetwork } from "../../../state/sui.js";
 import { WalrusUploadLimits } from "../../../config/walrus.config.js";
 import type { WalrusUploadParams, WalrusUploadResult } from "./types.js";
 
@@ -14,13 +13,25 @@ const FETCH_TIMEOUT_MS = WalrusUploadLimits.timeoutMs;
 
 const WALRUS_CLI_BIN = (process.env.FLOE_WALRUS_CLI_BIN ?? "walrus").trim();
 const WALRUS_CLI_CONFIG = process.env.FLOE_WALRUS_CLI_CONFIG?.trim() || undefined;
+const WALRUS_CLI_CONTEXT = process.env.FLOE_WALRUS_CLI_CONTEXT?.trim() || undefined;
 const WALRUS_CLI_WALLET = process.env.FLOE_WALRUS_CLI_WALLET?.trim() || undefined;
 const WALRUS_CLI_UPLOAD_RELAY = process.env.FLOE_WALRUS_CLI_UPLOAD_RELAY?.trim() || undefined;
+
+function defaultWalrusCliConfigPath(): string | undefined {
+  if (WALRUS_CLI_CONFIG) return WALRUS_CLI_CONFIG;
+
+  if (process.env.FLOE_NETWORK === "testnet") {
+    return path.join(os.homedir(), ".walrus", "client_config.yaml");
+  }
+
+  return undefined;
+}
 
 export function describeWalrusCliBackend() {
   return {
     cliBin: WALRUS_CLI_BIN,
-    cliConfig: WALRUS_CLI_CONFIG ?? null,
+    cliConfig: defaultWalrusCliConfigPath() ?? null,
+    cliContext: WALRUS_CLI_CONTEXT ?? null,
     cliWallet: WALRUS_CLI_WALLET ?? null,
     uploadRelay: WALRUS_CLI_UPLOAD_RELAY ?? null,
   };
@@ -38,8 +49,10 @@ export async function uploadToWalrusViaCli(
   const ws = createWriteStream(tmpFile);
   await pipeline(rs, ws);
 
-  const args = ["store", tmpFile, "--epochs", String(params.epochs), "--context", suiNetwork];
-  if (WALRUS_CLI_CONFIG) args.push("--config", WALRUS_CLI_CONFIG);
+  const args = ["store", tmpFile, "--epochs", String(params.epochs)];
+  const walrusConfig = defaultWalrusCliConfigPath();
+  if (walrusConfig) args.push("--config", walrusConfig);
+  if (WALRUS_CLI_CONTEXT) args.push("--context", WALRUS_CLI_CONTEXT);
   if (WALRUS_CLI_WALLET) args.push("--wallet", WALRUS_CLI_WALLET);
   if (WALRUS_CLI_UPLOAD_RELAY) args.push("--upload-relay", WALRUS_CLI_UPLOAD_RELAY);
 

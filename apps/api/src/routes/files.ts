@@ -7,6 +7,7 @@ import { getIndexedFile, upsertIndexedFile } from "../db/files.repository.js";
 import { isPostgresConfigured, isPostgresEnabled } from "../state/postgres.js";
 import { fetchWalrusBlob } from "../services/walrus/read.js";
 import { renewWalrusBlob } from "../services/walrus/renew.js";
+import { getCurrentWalrusEpoch } from "../services/walrus/epoch.js";
 import { renewFileMetadata } from "../sui/file.metadata.js";
 import { WalrusReadLimits } from "../config/walrus.config.js";
 import { AuthModeConfig, AuthOwnerPolicyConfig } from "../config/auth.config.js";
@@ -329,6 +330,7 @@ async function getFileFieldsCached(fileId: string): Promise<CachedFileFieldsResu
   if (indexed) {
     const fields = {
       blob_id: indexed.blobId,
+      blob_object_id: indexed.blobObjectId,
       size_bytes: indexed.sizeBytes,
       mime: indexed.mimeType,
       created_at: indexed.createdAtMs,
@@ -694,20 +696,21 @@ export async function filesRoutes(app: FastifyInstance) {
     let expiryStatus: any = null;
     if (normalized.walrusEndEpoch !== null) {
       try {
-        const sysState = await suiClient.getLatestSuiSystemState();
-        const currentEpoch = Number(sysState.epoch);
+        const currentEpoch = await getCurrentWalrusEpoch();
+        if (currentEpoch !== null) {
         const epochsRemaining = Math.max(0, normalized.walrusEndEpoch - currentEpoch);
-        // Walrus epochs are ~14 days
-        const daysRemaining = epochsRemaining * 14;
-        expiryStatus = {
-          currentEpoch,
-          endEpoch: normalized.walrusEndEpoch,
-          epochsRemaining,
-          estimatedDaysRemaining: daysRemaining,
-          isExpired: epochsRemaining === 0,
-        };
+          // Walrus testnet epochs are currently 1 day.
+          const daysRemaining = epochsRemaining;
+          expiryStatus = {
+            currentEpoch,
+            endEpoch: normalized.walrusEndEpoch,
+            epochsRemaining,
+            estimatedDaysRemaining: daysRemaining,
+            isExpired: epochsRemaining === 0,
+          };
+        }
       } catch (err) {
-        req.log.warn({ err }, "Failed to fetch Sui system state for expiry estimation");
+        req.log.warn({ err }, "Failed to fetch Walrus epoch for expiry estimation");
       }
     }
 

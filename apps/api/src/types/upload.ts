@@ -17,6 +17,7 @@ export interface UploadSession {
   receivedChunks: number[];
   resolvedEpochs: number;
   status: UploadStatus;
+  checksum?: string;
   createdAt: number;
   expiresAt: number;
 }

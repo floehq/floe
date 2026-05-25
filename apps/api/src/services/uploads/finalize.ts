@@ -300,6 +300,7 @@ export async function finalizeUpload(
             blobObjectId: walrusObjectId,
             sizeBytes: session.sizeBytes,
             mimeType: session.contentType ?? "application/octet-stream",
+            checksum: session.checksum,
             owner: session.owner,
             walrusEndEpoch,
           });

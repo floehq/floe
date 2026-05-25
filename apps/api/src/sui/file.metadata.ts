@@ -12,6 +12,7 @@ export interface FinalizeFileInput {
   blobObjectId?: string;
   sizeBytes: number;
   mimeType: string;
+  checksum?: string;
   owner?: string;
   walrusEndEpoch?: number;
 }
@@ -34,6 +35,9 @@ export async function finalizeFileMetadata(
         : tx.pure.option("address", null),
       tx.pure.u64(input.sizeBytes),
       tx.pure.string(input.mimeType),
+      input.checksum
+        ? tx.pure.option("string", input.checksum)
+        : tx.pure.option("string", null),
       input.owner 
         ? tx.pure.option("address", input.owner)
         : tx.pure.option("address", null),
