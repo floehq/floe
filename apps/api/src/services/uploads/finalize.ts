@@ -11,11 +11,15 @@ import { uploadKeys } from "../../state/keys.js";
 import { chunkStore } from "../../store/index.js";
 import { uploadToWalrusWithMetrics } from "../walrus/metrics.js";
 import { finalizeFileMetadata } from "../../sui/file.metadata.js";
+import { getCurrentSuiEpoch } from "../../state/sui.js";
+import { anchorMetadataMultiChain } from "../tatum/anchor.js";
 import {
   observeFinalizeStage,
   observeSuiFinalize,
 } from "../metrics/runtime.metrics.js";
-import { upsertIndexedFile } from "../../db/files.repository.js";
+import { upsertIndexedFile, findFileByChecksum } from "../../db/files.repository.js";
+import { getWalrusBlobMetadata } from "../walrus/read.js";
+import { renewWalrusBlob } from "../walrus/renew.js";
 import {
   buildCompletedFinalizeResult,
   buildFinalizeFollowupWarningMeta,
@@ -228,6 +232,25 @@ export async function finalizeUpload(
           throw new Error("MISSING_CHUNKS");
         }
       }
+
+      if (session.checksum) {
+        const hash = crypto.createHash("sha256");
+        const stream = createChunkAssemblyStream({
+          uploadId,
+          totalChunks: session.totalChunks,
+        });
+
+        for await (const chunk of stream) {
+          hash.update(chunk);
+        }
+
+        const actualChecksum = hash.digest("hex");
+        if (actualChecksum !== session.checksum) {
+          throw new Error(
+            `CHECKSUM_MISMATCH: expected ${session.checksum}, got ${actualChecksum}`
+          );
+        }
+      }
     });
 
     let blobId: string | null = meta?.blobId ?? null;
@@ -249,23 +272,54 @@ export async function finalizeUpload(
     if (!blobId) {
       assertFinalizeLockHealthy();
       await refreshFinalizeLock();
-      const result = await runStage("walrus_publish", async () =>
-        uploadToWalrusWithMetrics({
-          uploadId,
-          sizeBytes: session.sizeBytes,
-          epochs: session.resolvedEpochs,
-          streamFactory: () =>
-            createChunkAssemblyStream({
-              uploadId,
-              totalChunks: session.totalChunks,
-            }),
-        })
-      );
 
-      blobId = result.blobId;
-      walrusObjectId = result.objectId;
-      walrusEndEpoch = result.endEpoch;
-      walrusSource = result.source;
+      const existingFile = session.checksum ? await findFileByChecksum(session.checksum) : null;
+      
+      if (existingFile && existingFile.blobId) {
+        context.log?.info({ uploadId, blobId: existingFile.blobId }, "Found existing blob via checksum, checking Walrus status");
+        try {
+          const walrusMeta = await getWalrusBlobMetadata({ blobId: existingFile.blobId });
+          blobId = existingFile.blobId;
+          walrusObjectId = existingFile.blobObjectId ?? undefined;
+          walrusEndEpoch = walrusMeta.storage.endEpoch;
+          walrusSource = "already_certified";
+
+          const currentEpoch = await getCurrentSuiEpoch();
+          const targetEndEpoch = currentEpoch + session.resolvedEpochs;
+
+          if (walrusEndEpoch < targetEndEpoch && walrusObjectId) {
+            const extraEpochs = targetEndEpoch - walrusEndEpoch;
+            context.log?.info({ uploadId, blobId, extraEpochs }, "Existing blob needs renewal, extending storage");
+            const renewResult = await renewWalrusBlob({
+              blobObjectId: walrusObjectId,
+              epochs: extraEpochs,
+            });
+            walrusEndEpoch = renewResult.endEpoch;
+          }
+        } catch (err) {
+          context.log?.warn({ uploadId, blobId: existingFile.blobId, err }, "Existing blob not found on Walrus or metadata fetch failed, proceeding with fresh upload");
+        }
+      }
+
+      if (!blobId) {
+        const result = await runStage("walrus_publish", async () =>
+          uploadToWalrusWithMetrics({
+            uploadId,
+            sizeBytes: session.sizeBytes,
+            epochs: session.resolvedEpochs,
+            streamFactory: () =>
+              createChunkAssemblyStream({
+                uploadId,
+                totalChunks: session.totalChunks,
+              }),
+          })
+        );
+
+        blobId = result.blobId;
+        walrusObjectId = result.objectId;
+        walrusEndEpoch = result.endEpoch;
+        walrusSource = result.source;
+      }
 
       if (!blobId) {
         throw new Error("WALRUS_UPLOAD_FAILED");
@@ -292,26 +346,47 @@ export async function finalizeUpload(
     if (!fileId) {
       assertFinalizeLockHealthy();
       await refreshFinalizeLock();
-      const minted = await runStage("sui_finalize", async () => {
-        const suiStartedAt = Date.now();
+      
+      const isSui = !session.targetChain || session.targetChain.toLowerCase() === "sui";
+
+      const minted = await runStage(isSui ? "sui_finalize" : "walrus_publish" as any, async () => {
+        const metadataStartedAt = Date.now();
         try {
-          const result = await finalizeFileMetadata({
-            blobId,
-            sizeBytes: session.sizeBytes,
-            mimeType: session.contentType ?? "application/octet-stream",
-            owner: session.owner,
-            walrusEndEpoch,
-          });
-          observeSuiFinalize({
-            durationMs: Date.now() - suiStartedAt,
-            outcome: "success",
-          });
-          return result;
+          if (isSui) {
+            const result = await finalizeFileMetadata({
+              blobId,
+              blobObjectId: walrusObjectId,
+              sizeBytes: session.sizeBytes,
+              mimeType: session.contentType ?? "application/octet-stream",
+              checksum: session.checksum,
+              owner: session.owner,
+              walrusEndEpoch,
+            });
+            observeSuiFinalize({
+              durationMs: Date.now() - metadataStartedAt,
+              outcome: "success",
+            });
+            return result;
+          } else {
+            // Tatum Multi-Chain Anchor
+            const result = await anchorMetadataMultiChain({
+              chain: session.targetChain!,
+              to: session.owner || "0x0000000000000000000000000000000000000000", // Fallback for EVM
+              blobId,
+              sizeBytes: session.sizeBytes,
+              checksum: session.checksum,
+              mimeType: session.contentType ?? "application/octet-stream",
+              filename: session.filename,
+            });
+            return { fileId: result.txId }; // Use TxID as fileId for other chains
+          }
         } catch (err) {
-          observeSuiFinalize({
-            durationMs: Date.now() - suiStartedAt,
-            outcome: "failure",
-          });
+          if (isSui) {
+            observeSuiFinalize({
+              durationMs: Date.now() - metadataStartedAt,
+              outcome: "failure",
+            });
+          }
           throw err;
         }
       });
@@ -321,6 +396,7 @@ export async function finalizeUpload(
       await redis.hset(metaKey, {
         fileId,
         metadataFinalizedAt: String(Date.now()),
+        ...(session.targetChain ? { targetChain: session.targetChain } : {}),
       });
     }
 
@@ -360,9 +436,11 @@ export async function finalizeUpload(
     await upsertIndexedFile({
       fileId,
       blobId,
+      blobObjectId: walrusObjectId ?? null,
       ownerAddress: session.owner ?? null,
       sizeBytes: session.sizeBytes,
       mimeType: session.contentType ?? "application/octet-stream",
+      checksum: session.checksum ?? null,
       walrusEndEpoch: walrusEndEpoch ?? null,
       createdAtMs: Date.now(),
     }).catch(() => {});

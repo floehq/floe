@@ -4,8 +4,17 @@ import {
   isPostgresRequired,
 } from "../../state/postgres.js";
 import { getRedis } from "../../state/redis.js";
+import { getUploadFinalizeQueueStats } from "../uploads/finalize.queue.js";
 
 export type DependencyState = "healthy" | "degraded" | "unavailable" | "disabled";
+
+export type FinalizeQueueHealth = {
+  ok: boolean;
+  depth: number;
+  activeLocal: number;
+  oldestQueuedAgeMs: number;
+  status: DependencyState;
+};
 
 export type RedisDependencyHealth = {
   ok: boolean;
@@ -81,4 +90,28 @@ export async function checkPostgresDependencyHealth(): Promise<PostgresDependenc
     latencyMs: postgres.latencyMs,
     status: required ? "unavailable" : "degraded",
   };
+}
+
+export async function checkFinalizeQueueHealth(): Promise<FinalizeQueueHealth> {
+  try {
+    const stats = await getUploadFinalizeQueueStats();
+    const ageLimitMs = 60 * 60 * 1000; // 1 hour
+    const isStuck = (stats.oldestQueuedAgeMs ?? 0) > ageLimitMs;
+
+    return {
+      ok: !isStuck,
+      depth: stats.depth,
+      activeLocal: stats.activeLocal,
+      oldestQueuedAgeMs: stats.oldestQueuedAgeMs ?? 0,
+      status: isStuck ? "degraded" : "healthy",
+    };
+  } catch {
+    return {
+      ok: false,
+      depth: 0,
+      activeLocal: 0,
+      oldestQueuedAgeMs: 0,
+      status: "unavailable",
+    };
+  }
 }

@@ -27,7 +27,7 @@ export interface AuthProvider {
   }): Promise<{ allowed: boolean; code?: string; message?: string }>;
   authorizeFileAccess(params: {
     req: FastifyRequest;
-    action: "metadata" | "manifest" | "stream";
+    action: "metadata" | "manifest" | "stream" | "renew";
     fileId: string;
     fileOwner?: string | null;
   }): Promise<{ allowed: boolean; code?: string; message?: string }>;
@@ -128,14 +128,15 @@ class DefaultAuthProvider implements AuthProvider {
 
   async authorizeFileAccess(params: {
     req: FastifyRequest;
-    action: "metadata" | "manifest" | "stream";
+    action: "metadata" | "manifest" | "stream" | "renew";
     fileId: string;
     fileOwner?: string | null;
   }): Promise<{ allowed: boolean; code?: string; message?: string }> {
     const base = await this.requireAuthentication(params.req, "file_read");
     if (!base.allowed) return base;
     if (base.identity.authenticated) {
-      const scopeCheck = this.requireScope(base.identity, "files:read");
+      const scope = params.action === "renew" ? "files:write" : "files:read";
+      const scopeCheck = this.requireScope(base.identity, scope);
       if (!scopeCheck.allowed) return scopeCheck;
     }
     if (!AuthOwnerPolicyConfig.enforceUploadOwner) return { allowed: true };

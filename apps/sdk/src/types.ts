@@ -122,16 +122,26 @@ export type CompleteUploadResponse =
   | CompleteUploadReadyResponse
   | CompleteUploadFinalizingResponse;
 
+export type WalrusExpiryStatus = {
+  currentEpoch: number;
+  endEpoch: number;
+  epochsRemaining: number;
+  estimatedDaysRemaining: number;
+  isExpired: boolean;
+};
+
 export type FileMetadataResponse = {
   fileId: string;
   manifestVersion: number;
   container: string | null;
   blobId?: string;
+  blobObjectId?: string;
   sizeBytes: number;
   mimeType: string;
   owner: unknown;
   createdAt: number;
   walrusEndEpoch?: number;
+  expiryStatus?: WalrusExpiryStatus;
   streamUrl?: string;
 };
 
@@ -150,11 +160,23 @@ export type FileManifestResponse = {
   sizeBytes: number;
   createdAt: number;
   walrusEndEpoch?: number;
+  expiryStatus?: WalrusExpiryStatus;
   streamUrl?: string;
   layout: {
     type: "walrus_single_blob";
     segments: FileManifestSegment[];
   };
+};
+
+export type FileRenewResponse = {
+  success: boolean;
+  fileId: string;
+  walrusEndEpoch: number;
+};
+
+export type RenewFileOptions = RequestOptions & {
+  epochs: number;
+  blobObjectId?: string;
 };
 
 export type UploadProgress = {

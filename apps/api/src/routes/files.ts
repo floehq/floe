@@ -6,6 +6,8 @@ import { suiClient } from "../state/sui.js";
 import { getIndexedFile, upsertIndexedFile } from "../db/files.repository.js";
 import { isPostgresConfigured, isPostgresEnabled } from "../state/postgres.js";
 import { fetchWalrusBlob } from "../services/walrus/read.js";
+import { renewWalrusBlob } from "../services/walrus/renew.js";
+import { renewFileMetadata } from "../sui/file.metadata.js";
 import { WalrusReadLimits } from "../config/walrus.config.js";
 import { AuthModeConfig, AuthOwnerPolicyConfig } from "../config/auth.config.js";
 import { sendApiError } from "../utils/apiError.js";
@@ -90,10 +92,12 @@ type ParsedRange = {
 
 type NormalizedFileFields = {
   blobId: string;
+  blobObjectId: string | null;
   sizeBytes: number;
   mimeType: string;
+  checksum: string | null;
   createdAt: number;
-  owner: unknown;
+  owner: any;
   ownerAddress: string | null;
   walrusEndEpoch: number | null;
 };
@@ -137,10 +141,25 @@ function parseOptionalU64(raw: unknown): number | null {
   return null;
 }
 
+function parseOptionalAddress(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "string") return normalizeSuiAddress(raw);
+  if (typeof raw === "object") {
+    const vec = (raw as any)?.vec;
+    if (Array.isArray(vec)) {
+      if (vec.length === 0) return null;
+      return normalizeSuiAddress(vec[0]);
+    }
+  }
+  return null;
+}
+
 function normalizeFileFields(fields: any): NormalizedFileFields | null {
   if (!fields || typeof fields !== "object") return null;
 
   const blobId = typeof fields.blob_id === "string" ? fields.blob_id.trim() : "";
+  const blobObjectId = parseOptionalAddress(fields.blob_object_id);
+  const checksum = typeof fields.checksum === "string" ? fields.checksum : null;
   const rawSizeBytes = Number(fields.size_bytes);
   const rawCreatedAt = Number(fields.created_at);
   const mimeType =
@@ -156,8 +175,10 @@ function normalizeFileFields(fields: any): NormalizedFileFields | null {
 
   return {
     blobId,
+    blobObjectId,
     sizeBytes: rawSizeBytes,
     mimeType,
+    checksum,
     createdAt: rawCreatedAt,
     owner: fields.owner ?? null,
     ownerAddress: normalizeSuiAddress(fields.owner),
@@ -341,9 +362,11 @@ async function getFileFieldsCached(fileId: string): Promise<CachedFileFieldsResu
     await upsertIndexedFile({
       fileId,
       blobId: normalized.blobId,
+      blobObjectId: normalized.blobObjectId,
       ownerAddress: normalized.ownerAddress,
       sizeBytes: normalized.sizeBytes,
       mimeType: normalized.mimeType,
+      checksum: normalized.checksum,
       walrusEndEpoch: normalized.walrusEndEpoch,
       createdAtMs: normalized.createdAt,
     }).catch(() => {
@@ -670,6 +693,28 @@ export async function filesRoutes(app: FastifyInstance) {
     const exposeBlobId = shouldExposeBlobId(req);
     const container = inferContainerFromMime(normalized.mimeType);
     const publicStreamUrl = getPublicStreamUrl(fileId);
+    
+    // Estimate expiry status
+    let expiryStatus: any = null;
+    if (normalized.walrusEndEpoch !== null) {
+      try {
+        const sysState = await suiClient.getLatestSuiSystemState();
+        const currentEpoch = Number(sysState.epoch);
+        const epochsRemaining = Math.max(0, normalized.walrusEndEpoch - currentEpoch);
+        // Walrus epochs are ~14 days
+        const daysRemaining = epochsRemaining * 14;
+        expiryStatus = {
+          currentEpoch,
+          endEpoch: normalized.walrusEndEpoch,
+          epochsRemaining,
+          estimatedDaysRemaining: daysRemaining,
+          isExpired: epochsRemaining === 0,
+        };
+      } catch (err) {
+        req.log.warn({ err }, "Failed to fetch Sui system state for expiry estimation");
+      }
+    }
+
     const authz = await req.server.authProvider.authorizeFileAccess({
       req,
       action: "metadata",
@@ -685,14 +730,106 @@ export async function filesRoutes(app: FastifyInstance) {
       fileId,
       manifestVersion: 1,
       container,
-      ...(exposeBlobId ? { blobId: normalized.blobId } : {}),
+      ...(exposeBlobId ? { blobId: normalized.blobId, blobObjectId: normalized.blobObjectId } : {}),
       sizeBytes: normalized.sizeBytes,
       mimeType: normalized.mimeType,
       ...(publicStreamUrl ? { streamUrl: publicStreamUrl } : {}),
       owner: normalized.owner,
       createdAt: normalized.createdAt,
       ...(normalized.walrusEndEpoch !== null ? { walrusEndEpoch: normalized.walrusEndEpoch } : {}),
+      ...(expiryStatus ? { expiryStatus } : {}),
     };
+  });
+
+  app.post("/v1/files/:fileId/renew", async (req, res) => {
+    const { fileId: rawFileId } = req.params as { fileId: string };
+    const { epochs } = req.body as { epochs: number };
+
+    const fileId = normalizeFileIdParam(rawFileId);
+    if (!fileId) {
+      return sendApiError(res, 400, "INVALID_FILE_ID", "fileId must be a valid Sui object id");
+    }
+
+    if (!Number.isInteger(epochs) || epochs <= 0 || epochs > 53) {
+      return sendApiError(res, 400, "INVALID_EPOCHS", "epochs must be an integer between 1 and 53");
+    }
+
+    const authz = await req.server.authProvider.authorizeFileAccess({
+      req,
+      action: "renew",
+      fileId,
+    });
+    if (!authz.allowed) {
+      return sendFileAccessDenied(res, authz);
+    }
+
+    const { fields } = await getFileFieldsCached(fileId);
+    if (!fields) {
+      return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
+    }
+
+    const normalized = normalizeFileFields(fields);
+    if (!normalized) {
+      return sendApiError(res, 502, "INVALID_FILE_METADATA", "File metadata is invalid");
+    }
+
+    // Walrus renewal requires a Blob object ID.
+    // Older Floe uploads might not have this stored.
+    // If missing, we try to update it if the user provides it or we can find it.
+    let blobObjectId = normalized.blobObjectId;
+    if (!blobObjectId) {
+      // For beta, we allow the user to provide it in the body if missing from metadata.
+      blobObjectId = (req.body as any).blobObjectId || (req.body as any).blob_object_id;
+    }
+
+    if (!blobObjectId) {
+      return sendApiError(
+        res,
+        400,
+        "MISSING_BLOB_OBJECT_ID",
+        "Walrus renewal requires a blob object ID which is missing from this file's metadata."
+      );
+    }
+
+    try {
+      // 1. Extend Walrus storage
+      const walrusResult = await renewWalrusBlob({
+        blobObjectId,
+        epochs,
+      });
+
+      // 2. Update Floe metadata on Sui
+      await renewFileMetadata({
+        fileId,
+        blobObjectId: !normalized.blobObjectId ? blobObjectId : undefined,
+        walrusEndEpoch: walrusResult.endEpoch,
+      });
+
+      // 3. Update local cache
+      fileFieldsMemoryCache.delete(fileId);
+      await upsertIndexedFile({
+        ...normalized,
+        fileId,
+        blobObjectId,
+        checksum: normalized.checksum,
+        walrusEndEpoch: walrusResult.endEpoch,
+        createdAtMs: normalized.createdAt,
+      }).catch(() => {});
+
+      return {
+        success: true,
+        fileId,
+        walrusEndEpoch: walrusResult.endEpoch,
+      };
+    } catch (err) {
+      req.log.error({ err, fileId }, "Renewal failed");
+      return sendApiError(
+        res,
+        500,
+        "RENEWAL_FAILED",
+        `Failed to renew file: ${(err as Error)?.message ?? "unknown"}`
+      );
+    }
   });
 
   app.get("/v1/files/:fileId/manifest", async (req, res) => {

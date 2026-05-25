@@ -92,6 +92,36 @@ async function fetchWithTimeout(params: {
   }
 }
 
+export async function getWalrusBlobMetadata(params: {
+  blobId: string;
+  signal?: AbortSignal;
+}): Promise<{ blobId: string; storage: { endEpoch: number } }> {
+  const urls = WalrusEnv.aggregatorUrls;
+  const startIdx = lastGoodAggregatorIdx;
+
+  for (let aggAttempt = 0; aggAttempt < urls.length; aggAttempt++) {
+    const idx = (startIdx + aggAttempt) % urls.length;
+    const base = normalizeBaseUrl(urls[idx]);
+    const url = `${base}/v1/blobs/${encodeURIComponent(params.blobId)}/metadata`;
+
+    try {
+      const res = await fetchWithTimeout({ url, headers: {}, signal: params.signal });
+      if (res.status === 200) {
+        lastGoodAggregatorIdx = idx;
+        return (await res.json()) as any;
+      }
+      if (res.status === 404) {
+        throw new Error("WALRUS_BLOB_NOT_FOUND");
+      }
+    } catch (err) {
+      if ((err as Error).message === "WALRUS_BLOB_NOT_FOUND") throw err;
+      // Continue to next aggregator on other errors
+    }
+  }
+
+  throw new Error("WALRUS_METADATA_FETCH_FAILED");
+}
+
 export async function fetchWalrusBlob(params: {
   blobId: string;
   rangeHeader?: string;
