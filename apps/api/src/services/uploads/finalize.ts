@@ -10,6 +10,9 @@ import { getRedis } from "../../state/redis.js";
 import { uploadKeys } from "../../state/keys.js";
 import { chunkStore } from "../../store/index.js";
 import { uploadToWalrusWithMetrics } from "../walrus/metrics.js";
+import { renewWalrusBlob } from "../walrus/renew.js";
+import { getCurrentWalrusEpoch } from "../walrus/epoch.js";
+import { getWalrusBlobState } from "../walrus/blob.js";
 import { finalizeFileMetadata } from "../../sui/file.metadata.js";
 import { getCurrentSuiEpoch } from "../../state/sui.js";
 import { anchorMetadataMultiChain } from "../tatum/anchor.js";
@@ -17,9 +20,13 @@ import {
   observeFinalizeStage,
   observeSuiFinalize,
 } from "../metrics/runtime.metrics.js";
-import { upsertIndexedFile, findFileByChecksum } from "../../db/files.repository.js";
+import {
+  findFileByChecksum,
+  getBlobObjectIdByBlobId,
+  upsertBlobObjectMapping,
+  upsertIndexedFile,
+} from "../../db/files.repository.js";
 import { getWalrusBlobMetadata } from "../walrus/read.js";
-import { renewWalrusBlob } from "../walrus/renew.js";
 import {
   buildCompletedFinalizeResult,
   buildFinalizeFollowupWarningMeta,
@@ -48,6 +55,13 @@ type FinalizeContext = {
   log?: FastifyBaseLogger;
   attempt?: number;
   queueWaitMs?: number;
+};
+
+type ReusedWalrusBlob = {
+  blobId: string;
+  blobObjectId?: string;
+  walrusEndEpoch: number;
+  walrusSource: "already_certified";
 };
 
 function attachFinalizeStage(err: unknown, stage: FinalizeStage): Error {
@@ -104,6 +118,93 @@ function createChunkAssemblyStream(params: {
     }
   };
   return Readable.from(iter());
+}
+
+async function computeUploadChecksum(params: {
+  uploadId: string;
+  totalChunks: number;
+}): Promise<string> {
+  const hash = crypto.createHash("sha256");
+  for (let i = 0; i < params.totalChunks; i++) {
+    const rs = chunkStore.openChunk(params.uploadId, i);
+    for await (const buf of rs) {
+      hash.update(buf as Uint8Array);
+    }
+  }
+  return hash.digest("hex");
+}
+
+async function resolveReusableWalrusBlob(params: {
+  checksum?: string;
+  requestedEpochs: number;
+  log?: FastifyBaseLogger;
+}): Promise<ReusedWalrusBlob | null> {
+  const checksum = params.checksum?.trim();
+  if (!checksum) return null;
+
+  const indexed = await findFileByChecksum(checksum).catch((err) => {
+    params.log?.warn({ err, checksum }, "Checksum lookup failed during finalize");
+    return null;
+  });
+  if (!indexed?.blobId) return null;
+
+  let walrusEndEpoch =
+    indexed.walrusEndEpoch !== null && Number.isFinite(indexed.walrusEndEpoch)
+      ? indexed.walrusEndEpoch
+      : undefined;
+  const blobObjectId =
+    indexed.blobObjectId ??
+    (await getBlobObjectIdByBlobId(indexed.blobId).catch(() => null)) ??
+    undefined;
+  if (blobObjectId) {
+    const blobState = await getWalrusBlobState(blobObjectId).catch((err) => {
+      params.log?.warn({ err, blobObjectId }, "Failed to inspect reusable Walrus blob state");
+      return null;
+    });
+    if (blobState && blobState.endEpoch !== null) {
+      walrusEndEpoch = blobState.endEpoch;
+    }
+  }
+
+  if (walrusEndEpoch === undefined) return null;
+
+  const currentWalrusEpoch = await getCurrentWalrusEpoch().catch((err) => {
+    params.log?.warn({ err }, "Failed to fetch current Walrus epoch during finalize reuse");
+    return null;
+  });
+  if (currentWalrusEpoch === null) {
+    return null;
+  }
+
+  const epochsRemaining = Math.max(0, walrusEndEpoch - currentWalrusEpoch);
+  const missingEpochs = Math.max(0, params.requestedEpochs - epochsRemaining);
+
+  if (missingEpochs > 0) {
+    if (!blobObjectId) {
+      return null;
+    }
+    const renewResult = await renewWalrusBlob({
+      blobObjectId,
+      epochs: missingEpochs,
+    }).catch((err) => {
+      params.log?.warn(
+        { err, blobObjectId, missingEpochs, checksum },
+        "Failed to extend reusable Walrus blob during finalize"
+      );
+      return null;
+    });
+    if (!renewResult?.endEpoch || !Number.isFinite(renewResult.endEpoch)) {
+      return null;
+    }
+    walrusEndEpoch = renewResult.endEpoch;
+  }
+
+  return {
+    blobId: indexed.blobId,
+    blobObjectId,
+    walrusEndEpoch,
+    walrusSource: "already_certified",
+  };
 }
 
 export async function finalizeUpload(
@@ -219,6 +320,9 @@ export async function finalizeUpload(
       finalizeLastProgressAt: String(Date.now()),
     });
 
+    const providedChecksum = session.checksum?.trim() || meta?.checksum?.trim() || undefined;
+    let checksum: string | undefined;
+
     await runStage("verify_chunks", async () => {
       const redisCount = await redis.scard(uploadKeys.chunks(uploadId));
       if (redisCount !== session.totalChunks) {
@@ -233,25 +337,23 @@ export async function finalizeUpload(
         }
       }
 
-      if (session.checksum) {
-        const hash = crypto.createHash("sha256");
-        const stream = createChunkAssemblyStream({
-          uploadId,
-          totalChunks: session.totalChunks,
-        });
-
-        for await (const chunk of stream) {
-          hash.update(chunk);
-        }
-
-        const actualChecksum = hash.digest("hex");
-        if (actualChecksum !== session.checksum) {
-          throw new Error(
-            `CHECKSUM_MISMATCH: expected ${session.checksum}, got ${actualChecksum}`
-          );
-        }
+      checksum = await computeUploadChecksum({
+        uploadId,
+        totalChunks: session.totalChunks,
+      });
+      if (providedChecksum && checksum !== providedChecksum) {
+        throw new Error("CHECKSUM_MISMATCH");
       }
     });
+
+    if (checksum && checksum !== meta?.checksum) {
+      await redis.hset(metaKey, { checksum });
+      await redis
+        .hset(uploadKeys.session(uploadId), {
+          checksum,
+        })
+        .catch(() => {});
+    }
 
     let blobId: string | null = meta?.blobId ?? null;
     let walrusObjectId: string | undefined = meta?.walrusObjectId ?? undefined;
@@ -273,53 +375,37 @@ export async function finalizeUpload(
       assertFinalizeLockHealthy();
       await refreshFinalizeLock();
 
-      const existingFile = session.checksum ? await findFileByChecksum(session.checksum) : null;
-      
-      if (existingFile && existingFile.blobId) {
-        context.log?.info({ uploadId, blobId: existingFile.blobId }, "Found existing blob via checksum, checking Walrus status");
-        try {
-          const walrusMeta = await getWalrusBlobMetadata({ blobId: existingFile.blobId });
-          blobId = existingFile.blobId;
-          walrusObjectId = existingFile.blobObjectId ?? undefined;
-          walrusEndEpoch = walrusMeta.storage.endEpoch;
-          walrusSource = "already_certified";
-
-          const currentEpoch = await getCurrentSuiEpoch();
-          const targetEndEpoch = currentEpoch + session.resolvedEpochs;
-
-          if (walrusEndEpoch < targetEndEpoch && walrusObjectId) {
-            const extraEpochs = targetEndEpoch - walrusEndEpoch;
-            context.log?.info({ uploadId, blobId, extraEpochs }, "Existing blob needs renewal, extending storage");
-            const renewResult = await renewWalrusBlob({
-              blobObjectId: walrusObjectId,
-              epochs: extraEpochs,
-            });
-            walrusEndEpoch = renewResult.endEpoch;
-          }
-        } catch (err) {
-          context.log?.warn({ uploadId, blobId: existingFile.blobId, err }, "Existing blob not found on Walrus or metadata fetch failed, proceeding with fresh upload");
+      const result = await runStage("walrus_publish", async () => {
+        const reused = await resolveReusableWalrusBlob({
+          checksum,
+          requestedEpochs: session.resolvedEpochs,
+          log: context.log,
+        });
+        if (reused) {
+          return {
+            blobId: reused.blobId,
+            objectId: reused.blobObjectId,
+            endEpoch: reused.walrusEndEpoch,
+            source: reused.walrusSource,
+          };
         }
-      }
 
-      if (!blobId) {
-        const result = await runStage("walrus_publish", async () =>
-          uploadToWalrusWithMetrics({
-            uploadId,
-            sizeBytes: session.sizeBytes,
-            epochs: session.resolvedEpochs,
-            streamFactory: () =>
-              createChunkAssemblyStream({
-                uploadId,
-                totalChunks: session.totalChunks,
-              }),
-          })
-        );
+        return uploadToWalrusWithMetrics({
+          uploadId,
+          sizeBytes: session.sizeBytes,
+          epochs: session.resolvedEpochs,
+          streamFactory: () =>
+            createChunkAssemblyStream({
+              uploadId,
+              totalChunks: session.totalChunks,
+            }),
+        });
+      });
 
-        blobId = result.blobId;
-        walrusObjectId = result.objectId;
-        walrusEndEpoch = result.endEpoch;
-        walrusSource = result.source;
-      }
+      blobId = result.blobId;
+      walrusObjectId = result.objectId;
+      walrusEndEpoch = result.endEpoch;
+      walrusSource = result.source;
 
       if (!blobId) {
         throw new Error("WALRUS_UPLOAD_FAILED");
@@ -350,7 +436,8 @@ export async function finalizeUpload(
       const isSui = !session.targetChain || session.targetChain.toLowerCase() === "sui";
       context.log?.info({ uploadId, targetChain: session.targetChain, isSui }, "Determining metadata finalization chain");
 
-      const minted = await runStage(isSui ? "sui_finalize" : "walrus_publish" as any, async () => {        const metadataStartedAt = Date.now();
+      const minted = await runStage(isSui ? "sui_finalize" : "walrus_publish" as any, async () => {
+        const metadataStartedAt = Date.now();
         try {
           if (isSui) {
             const result = await finalizeFileMetadata({
@@ -358,7 +445,7 @@ export async function finalizeUpload(
               blobObjectId: walrusObjectId,
               sizeBytes: session.sizeBytes,
               mimeType: session.contentType ?? "application/octet-stream",
-              checksum: session.checksum,
+              checksum,
               owner: session.owner,
               walrusEndEpoch,
             });
@@ -374,7 +461,7 @@ export async function finalizeUpload(
               to: session.owner || "0x0000000000000000000000000000000000000000", // Fallback for EVM
               blobId,
               sizeBytes: session.sizeBytes,
-              checksum: session.checksum,
+              checksum,
               mimeType: session.contentType ?? "application/octet-stream",
               filename: session.filename,
             });
@@ -437,13 +524,20 @@ export async function finalizeUpload(
       fileId,
       blobId,
       blobObjectId: walrusObjectId ?? null,
+      checksum: checksum ?? null,
       ownerAddress: session.owner ?? null,
       sizeBytes: session.sizeBytes,
       mimeType: session.contentType ?? "application/octet-stream",
-      checksum: session.checksum ?? null,
       walrusEndEpoch: walrusEndEpoch ?? null,
       createdAtMs: Date.now(),
     }).catch(() => {});
+    if (walrusObjectId) {
+      await upsertBlobObjectMapping({
+        blobId,
+        blobObjectId: walrusObjectId,
+        checksum: checksum ?? null,
+      }).catch(() => {});
+    }
 
     const cleanupStartedAt = Date.now();
     currentStage = "cleanup";

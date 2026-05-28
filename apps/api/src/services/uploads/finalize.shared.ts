@@ -4,6 +4,7 @@ export type FinalizeFailureCode =
   | "upload_not_found"
   | "incomplete_chunks"
   | "missing_chunks"
+  | "checksum_mismatch"
   | "walrus_upload_failed"
   | "walrus_retention_too_low"
   | "walrus_unavailable"
@@ -94,6 +95,9 @@ export function normalizeFinalizeFailure(err: unknown): {
   }
   if (message === "MISSING_CHUNKS") {
     return { reasonCode: "missing_chunks", retryable: false };
+  }
+  if (message === "CHECKSUM_MISMATCH") {
+    return { reasonCode: "checksum_mismatch", retryable: false };
   }
   if (message.includes("WALRUS_UPLOAD_FAILED")) {
     return { reasonCode: "walrus_upload_failed", retryable: true };

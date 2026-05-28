@@ -298,6 +298,7 @@ function buildCreateUploadFingerprint(input: {
   filename: string;
   contentType: string;
   sizeBytes: number;
+  checksum?: string;
   chunkSize: number;
   epochs: number;
 }): string {
@@ -534,13 +535,12 @@ export default async function uploadRoutes(app: FastifyInstance) {
       );
     }
 
-    if (checksum !== undefined && (typeof checksum !== "string" || checksum.length > 256)) {
-      return sendApiError(
-        reply,
-        400,
-        "INVALID_CHECKSUM",
-        "checksum must be a string <= 256 chars"
-      );
+    let checksumValue: string | undefined;
+    if (checksum !== undefined) {
+      if (typeof checksum !== "string" || !/^[a-f0-9]{64}$/i.test(checksum)) {
+        return sendApiError(reply, 400, "INVALID_CHECKSUM", "checksum must be a 64-char hex sha256");
+      }
+      checksumValue = checksum.toLowerCase();
     }
 
     const fileSizeNum = Number(sizeBytes);
@@ -624,6 +624,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           filename,
           contentType,
           sizeBytes: fileSizeNum,
+          checksum: checksumValue,
           chunkSize: resolvedChunkSize,
           epochs: resolvedEpochs,
         })
@@ -699,11 +700,11 @@ export default async function uploadRoutes(app: FastifyInstance) {
         owner: createLimit.identity.authenticated
           ? createLimit.identity.owner
           : (requestOwner ?? DEFAULT_OWNER_ADDRESS),
+        checksum: checksumValue,
         sizeBytes: fileSizeNum,
         chunkSize: resolvedChunkSize,
         totalChunks,
         epochs: resolvedEpochs,
-        checksum,
         targetChain,
       });
       sessionCreated = true;

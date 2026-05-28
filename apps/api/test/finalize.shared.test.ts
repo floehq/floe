@@ -83,6 +83,10 @@ test("normalizeFinalizeFailure preserves retryability and reason codes", () => {
     reasonCode: "lock_lost",
     retryable: true,
   });
+  assert.deepEqual(normalizeFinalizeFailure(new Error("CHECKSUM_MISMATCH")), {
+    reasonCode: "checksum_mismatch",
+    retryable: false,
+  });
   assert.deepEqual(normalizeFinalizeFailure(new Error("walrus upload failed: WALRUS_UPLOAD_FAILED upstream 503")), {
     reasonCode: "walrus_upload_failed",
     retryable: true,

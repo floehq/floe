@@ -3,10 +3,17 @@ import fs from "node:fs/promises";
 import { Readable } from "node:stream";
 
 import { suiClient } from "../state/sui.js";
-import { getIndexedFile, upsertIndexedFile } from "../db/files.repository.js";
+import {
+  findFileByBlobId,
+  findFileByChecksum,
+  getBlobObjectIdByBlobId,
+  getIndexedFile,
+  upsertIndexedFile,
+} from "../db/files.repository.js";
 import { isPostgresConfigured, isPostgresEnabled } from "../state/postgres.js";
 import { fetchWalrusBlob } from "../services/walrus/read.js";
 import { renewWalrusBlob } from "../services/walrus/renew.js";
+import { getCurrentWalrusEpoch } from "../services/walrus/epoch.js";
 import { renewFileMetadata } from "../sui/file.metadata.js";
 import { WalrusReadLimits } from "../config/walrus.config.js";
 import { AuthModeConfig, AuthOwnerPolicyConfig } from "../config/auth.config.js";
@@ -93,9 +100,9 @@ type ParsedRange = {
 type NormalizedFileFields = {
   blobId: string;
   blobObjectId: string | null;
+  checksum: string | null;
   sizeBytes: number;
   mimeType: string;
-  checksum: string | null;
   createdAt: number;
   owner: any;
   ownerAddress: string | null;
@@ -154,12 +161,28 @@ function parseOptionalAddress(raw: unknown): string | null {
   return null;
 }
 
+function parseOptionalString(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "string") {
+    const value = raw.trim();
+    return value ? value : null;
+  }
+  if (typeof raw === "object") {
+    const vec = (raw as any)?.vec;
+    if (Array.isArray(vec)) {
+      if (vec.length === 0) return null;
+      return parseOptionalString(vec[0]);
+    }
+  }
+  return null;
+}
+
 function normalizeFileFields(fields: any): NormalizedFileFields | null {
   if (!fields || typeof fields !== "object") return null;
 
   const blobId = typeof fields.blob_id === "string" ? fields.blob_id.trim() : "";
   const blobObjectId = parseOptionalAddress(fields.blob_object_id);
-  const checksum = typeof fields.checksum === "string" ? fields.checksum : null;
+  const checksum = parseOptionalString(fields.checksum);
   const rawSizeBytes = Number(fields.size_bytes);
   const rawCreatedAt = Number(fields.created_at);
   const mimeType =
@@ -176,9 +199,9 @@ function normalizeFileFields(fields: any): NormalizedFileFields | null {
   return {
     blobId,
     blobObjectId,
+    checksum,
     sizeBytes: rawSizeBytes,
     mimeType,
-    checksum,
     createdAt: rawCreatedAt,
     owner: fields.owner ?? null,
     ownerAddress: normalizeSuiAddress(fields.owner),
@@ -332,6 +355,8 @@ async function getFileFieldsCached(fileId: string): Promise<CachedFileFieldsResu
   if (indexed) {
     const fields = {
       blob_id: indexed.blobId,
+      blob_object_id: indexed.blobObjectId,
+      checksum: indexed.checksum,
       size_bytes: indexed.sizeBytes,
       mime: indexed.mimeType,
       created_at: indexed.createdAtMs,
@@ -363,10 +388,10 @@ async function getFileFieldsCached(fileId: string): Promise<CachedFileFieldsResu
       fileId,
       blobId: normalized.blobId,
       blobObjectId: normalized.blobObjectId,
+      checksum: normalized.checksum,
       ownerAddress: normalized.ownerAddress,
       sizeBytes: normalized.sizeBytes,
       mimeType: normalized.mimeType,
-      checksum: normalized.checksum,
       walrusEndEpoch: normalized.walrusEndEpoch,
       createdAtMs: normalized.createdAt,
     }).catch(() => {
@@ -698,20 +723,21 @@ export async function filesRoutes(app: FastifyInstance) {
     let expiryStatus: any = null;
     if (normalized.walrusEndEpoch !== null) {
       try {
-        const sysState = await suiClient.getLatestSuiSystemState();
-        const currentEpoch = Number(sysState.epoch);
+        const currentEpoch = await getCurrentWalrusEpoch();
+        if (currentEpoch !== null) {
         const epochsRemaining = Math.max(0, normalized.walrusEndEpoch - currentEpoch);
-        // Walrus epochs are ~14 days
-        const daysRemaining = epochsRemaining * 14;
-        expiryStatus = {
-          currentEpoch,
-          endEpoch: normalized.walrusEndEpoch,
-          epochsRemaining,
-          estimatedDaysRemaining: daysRemaining,
-          isExpired: epochsRemaining === 0,
-        };
+          // Walrus testnet epochs are currently 1 day.
+          const daysRemaining = epochsRemaining;
+          expiryStatus = {
+            currentEpoch,
+            endEpoch: normalized.walrusEndEpoch,
+            epochsRemaining,
+            estimatedDaysRemaining: daysRemaining,
+            isExpired: epochsRemaining === 0,
+          };
+        }
       } catch (err) {
-        req.log.warn({ err }, "Failed to fetch Sui system state for expiry estimation");
+        req.log.warn({ err }, "Failed to fetch Walrus epoch for expiry estimation");
       }
     }
 
@@ -813,6 +839,22 @@ export async function filesRoutes(app: FastifyInstance) {
     if (!blobObjectId) {
       // For beta, we allow the user to provide it in the body if missing from metadata.
       blobObjectId = (req.body as any).blobObjectId || (req.body as any).blob_object_id;
+    }
+    if (!blobObjectId) {
+      const indexed = await getIndexedFile(fileId).catch(() => null);
+      blobObjectId = indexed?.blobObjectId ?? null;
+    }
+    if (!blobObjectId && normalized.blobId) {
+      const mapped = await getBlobObjectIdByBlobId(normalized.blobId).catch(() => null);
+      blobObjectId = mapped ?? null;
+    }
+    if (!blobObjectId && normalized.blobId) {
+      const byBlob = await findFileByBlobId(normalized.blobId).catch(() => null);
+      blobObjectId = byBlob?.blobObjectId ?? null;
+    }
+    if (!blobObjectId && normalized.checksum) {
+      const byChecksum = await findFileByChecksum(normalized.checksum).catch(() => null);
+      blobObjectId = byChecksum?.blobObjectId ?? null;
     }
 
     if (!blobObjectId) {

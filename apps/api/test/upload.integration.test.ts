@@ -339,6 +339,42 @@ test("create rejects reusing an idempotency key with a different payload", async
   assert.equal(activeIds.length, 1);
 });
 
+test("create rejects reusing an idempotency key with a different checksum", async () => {
+  const app = await createRouteApp();
+
+  const first = await app.inject({
+    method: "POST",
+    url: "/v1/uploads/create",
+    routePath: "/v1/uploads/create",
+    headers: { "idempotency-key": "create-upload-checksum" },
+    body: {
+      filename: "video.mp4",
+      contentType: "video/mp4",
+      sizeBytes: 8,
+      chunkSize: 4,
+      checksum: "a".repeat(64),
+    },
+  });
+  const second = await app.inject({
+    method: "POST",
+    url: "/v1/uploads/create",
+    routePath: "/v1/uploads/create",
+    headers: { "idempotency-key": "create-upload-checksum" },
+    body: {
+      filename: "video.mp4",
+      contentType: "video/mp4",
+      sizeBytes: 8,
+      chunkSize: 4,
+      checksum: "b".repeat(64),
+    },
+  });
+
+  const secondBody = second.json();
+  assert.equal(first.statusCode, 201);
+  assert.equal(second.statusCode, 409);
+  assert.equal(secondBody.error.code, "IDEMPOTENCY_KEY_REUSED");
+});
+
 afterEach(async () => {
   const redis = redisModule.getRedis();
   const { uploadKeys } = keysModule;
