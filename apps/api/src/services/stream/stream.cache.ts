@@ -4,8 +4,13 @@ import path from "node:path";
 import { Readable } from "node:stream";
 
 import { UploadConfig } from "../../config/uploads.config.js";
-import { WalrusReadLimits } from "../../config/walrus.config.js";
 import { fetchWalrusBlob } from "../walrus/read.js";
+import {
+  STREAM_CACHE_FILL_CONCURRENCY,
+  STREAM_CACHE_MAX_BYTES,
+  STREAM_CACHE_TTL_MS,
+  shouldCacheFullObject as shouldCacheFullObjectPolicy,
+} from "./stream.cache.policy.js";
 import {
   observeStreamCacheFill,
   recordStreamCacheAccess,
@@ -13,13 +18,11 @@ import {
   setStreamCacheMetrics,
 } from "../metrics/runtime.metrics.js";
 
+export const shouldCacheFullObject = shouldCacheFullObjectPolicy;
+
 const STREAM_CACHE_DIR = path.join(UploadConfig.tmpDir, "_stream_cache");
 const STREAM_CACHE_FULL_DIR = path.join(STREAM_CACHE_DIR, "full");
 const STREAM_CACHE_RANGE_DIR = path.join(STREAM_CACHE_DIR, "ranges");
-const CACHE_TTL_MS = Number(process.env.FLOE_STREAM_CACHE_TTL_MS ?? 30 * 60_000);
-const CACHE_MAX_BYTES = Number(process.env.FLOE_STREAM_CACHE_MAX_BYTES ?? 2 * 1024 * 1024 * 1024);
-const CACHE_FILL_CONCURRENCY = Number(process.env.FLOE_STREAM_CACHE_FILL_CONCURRENCY ?? 4);
-
 const inFlightCacheFill = new Map<string, Promise<string | null>>();
 const inFlightRangeFill = new Map<string, Promise<string>>();
 let reservedCacheBytes = 0;
@@ -74,24 +77,24 @@ async function listCacheFiles() {
 }
 
 async function pruneStreamCacheIfNeeded() {
-  if (!Number.isFinite(CACHE_MAX_BYTES) || CACHE_MAX_BYTES <= 0) return;
+  if (!Number.isFinite(STREAM_CACHE_MAX_BYTES) || STREAM_CACHE_MAX_BYTES <= 0) return;
   const files = await listCacheFiles();
   let totalBytes = files.reduce((sum, file) => sum + file.size, 0);
-  if (totalBytes <= CACHE_MAX_BYTES) return;
+  if (totalBytes <= STREAM_CACHE_MAX_BYTES) return;
 
   files.sort((a, b) => a.mtimeMs - b.mtimeMs);
   for (const file of files) {
     await fsp.rm(file.path, { force: true }).catch(() => {});
     recordStreamCacheEviction({ reason: "size", bytes: file.size });
     totalBytes -= file.size;
-    if (totalBytes <= CACHE_MAX_BYTES) break;
+    if (totalBytes <= STREAM_CACHE_MAX_BYTES) break;
   }
 }
 
 async function sweepExpiredStreamCache() {
-  if (!Number.isFinite(CACHE_TTL_MS) || CACHE_TTL_MS <= 0) return;
+  if (!Number.isFinite(STREAM_CACHE_TTL_MS) || STREAM_CACHE_TTL_MS <= 0) return;
   const files = await listCacheFiles();
-  const cutoff = Date.now() - CACHE_TTL_MS;
+  const cutoff = Date.now() - STREAM_CACHE_TTL_MS;
   for (const file of files) {
     if (file.mtimeMs > cutoff) continue;
     await fsp.rm(file.path, { force: true }).catch(() => {});
@@ -99,10 +102,10 @@ async function sweepExpiredStreamCache() {
 }
 
 async function expireStreamCacheIfNeeded(filePath: string) {
-  if (!Number.isFinite(CACHE_TTL_MS) || CACHE_TTL_MS <= 0) return;
+  if (!Number.isFinite(STREAM_CACHE_TTL_MS) || STREAM_CACHE_TTL_MS <= 0) return;
   const stat = await fsp.stat(filePath).catch(() => null);
   if (!stat) return;
-  if (Date.now() - stat.mtimeMs <= CACHE_TTL_MS) return;
+  if (Date.now() - stat.mtimeMs <= STREAM_CACHE_TTL_MS) return;
   await fsp.rm(filePath, { force: true }).catch(() => {});
   recordStreamCacheEviction({ reason: "ttl", bytes: stat.size });
 }
@@ -111,14 +114,6 @@ export async function initStreamCache() {
   await ensureStreamCacheDir();
   await sweepExpiredStreamCache();
   await pruneStreamCacheIfNeeded();
-}
-
-export function shouldCacheFullObject(sizeBytes: number): boolean {
-  return (
-    Number.isFinite(sizeBytes) &&
-    sizeBytes > 0 &&
-    sizeBytes <= WalrusReadLimits.inlineFullObjectMaxBytes
-  );
 }
 
 export async function getCachedStreamPath(
@@ -172,7 +167,7 @@ export async function ensureCachedStreamBlob(params: {
   sizeBytes: number;
   signal?: AbortSignal;
 }): Promise<string | null> {
-  if (!shouldCacheFullObject(params.sizeBytes)) {
+  if (!shouldCacheFullObjectPolicy(params.sizeBytes)) {
     recordStreamCacheAccess({ cacheType: "full", outcome: "bypass" });
     return null;
   }
@@ -357,11 +352,14 @@ export function createCachedReadStream(params: {
 }
 
 async function acquireCacheFillSlot(): Promise<() => void> {
-  if (!Number.isFinite(CACHE_FILL_CONCURRENCY) || CACHE_FILL_CONCURRENCY <= 0) {
+  if (
+    !Number.isFinite(STREAM_CACHE_FILL_CONCURRENCY) ||
+    STREAM_CACHE_FILL_CONCURRENCY <= 0
+  ) {
     return () => {};
   }
 
-  while (activeCacheFills >= CACHE_FILL_CONCURRENCY) {
+  while (activeCacheFills >= STREAM_CACHE_FILL_CONCURRENCY) {
     await new Promise<void>((resolve) => pendingFillWaiters.push(resolve));
   }
   activeCacheFills += 1;
@@ -378,10 +376,10 @@ async function acquireCacheFillSlot(): Promise<() => void> {
 }
 
 async function reserveCacheBytes(expectedBytes: number): Promise<null | (() => void)> {
-  if (!Number.isFinite(CACHE_MAX_BYTES) || CACHE_MAX_BYTES <= 0) {
+  if (!Number.isFinite(STREAM_CACHE_MAX_BYTES) || STREAM_CACHE_MAX_BYTES <= 0) {
     return () => {};
   }
-  if (expectedBytes > CACHE_MAX_BYTES) {
+  if (expectedBytes > STREAM_CACHE_MAX_BYTES) {
     return null;
   }
 
@@ -389,7 +387,7 @@ async function reserveCacheBytes(expectedBytes: number): Promise<null | (() => v
     await pruneStreamCacheIfNeeded();
     const files = await listCacheFiles();
     const currentBytes = files.reduce((sum, file) => sum + file.size, 0);
-    if (currentBytes + reservedCacheBytes + expectedBytes > CACHE_MAX_BYTES) {
+    if (currentBytes + reservedCacheBytes + expectedBytes > STREAM_CACHE_MAX_BYTES) {
       return null;
     }
 

@@ -288,7 +288,7 @@ async function processFinalize(params: {
     throw new Error("UPLOAD_NOT_FOUND");
   }
 
-  const { finalizeUpload } = await import("./finalize.js");
+  const { finalizeUpload } = await import("./finalize.service.js");
   await finalizeUpload(session, {
     log: params.log,
     attempt: params.attempt,

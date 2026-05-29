@@ -1,5 +1,5 @@
 import { FastifyInstance } from "fastify";
-import { getFileFieldsCached, normalizeFileIdParam } from "./files.js";
+import { getFileFieldsCached, normalizeFileIdParam } from "../services/files/file.read-model.js";
 import { findFileByBlobId } from "../db/files.repository.js";
 
 function escapeHtml(value: unknown): string {

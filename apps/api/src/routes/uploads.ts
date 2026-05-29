@@ -12,7 +12,7 @@ import {
   createSession,
   getSession,
   touchUploadActivity,
-} from "../services/uploads/session.js";
+} from "../services/uploads/upload-state.js";
 import { buildFinalizeDiagnostics } from "../services/uploads/finalize.shared.js";
 import {
   enqueueUploadFinalize,
