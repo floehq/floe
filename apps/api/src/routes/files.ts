@@ -2,7 +2,6 @@ import { FastifyInstance } from "fastify";
 import fs from "node:fs/promises";
 import { Readable } from "node:stream";
 
-import { suiClient } from "../state/sui.js";
 import {
   findFileByBlobId,
   findFileByChecksum,
@@ -10,15 +9,25 @@ import {
   getIndexedFile,
   upsertIndexedFile,
 } from "../db/files.repository.js";
-import { isPostgresConfigured, isPostgresEnabled } from "../state/postgres.js";
 import { fetchWalrusBlob } from "../services/walrus/read.js";
 import { renewWalrusBlob } from "../services/walrus/renew.js";
 import { getCurrentWalrusEpoch } from "../services/walrus/epoch.js";
 import { renewFileMetadata } from "../sui/file.metadata.js";
 import { WalrusReadLimits } from "../config/walrus.config.js";
-import { AuthModeConfig, AuthOwnerPolicyConfig } from "../config/auth.config.js";
 import { sendApiError } from "../utils/apiError.js";
 import { applyRateLimitHeaders } from "../services/auth/auth.headers.js";
+import {
+  applyFileLookupHeaders,
+  applyFileReadCacheHeaders,
+  clearFileFieldsCache,
+  getFileFieldsCached,
+  getPublicStreamUrl,
+  isFileFieldsDebugEnabled,
+  normalizeFileFields,
+  normalizeFileIdParam,
+  type FileFieldsSource,
+  type PostgresReadState,
+} from "../services/files/file.read-model.js";
 import {
   observeMetadataLookup,
   observeStreamTtfb,
@@ -97,118 +106,6 @@ type ParsedRange = {
   end: number;
 };
 
-type NormalizedFileFields = {
-  blobId: string;
-  blobObjectId: string | null;
-  checksum: string | null;
-  sizeBytes: number;
-  mimeType: string;
-  createdAt: number;
-  owner: unknown;
-  ownerAddress: string | null;
-  walrusEndEpoch: number | null;
-};
-
-const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
-const TRUSTED_FILE_OBJECT_TYPE = `${process.env.SUI_PACKAGE_ID}::file::FileMeta`.toLowerCase();
-
-function normalizeSuiAddress(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
-  const value = raw.trim();
-  if (!SUI_ADDRESS_RE.test(value)) return null;
-  return `0x${value.replace(/^0x/i, "").toLowerCase()}`;
-}
-
-function normalizeFileIdParam(raw: unknown): string | null {
-  return normalizeSuiAddress(raw);
-}
-
-function isTrustedFileObjectType(raw: unknown): boolean {
-  return typeof raw === "string" && raw.toLowerCase() === TRUSTED_FILE_OBJECT_TYPE;
-}
-
-function parseOptionalU64(raw: unknown): number | null {
-  if (raw === null || raw === undefined) return null;
-
-  if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) {
-    return Math.floor(raw);
-  }
-  if (typeof raw === "string" && raw.trim() !== "") {
-    const n = Number(raw);
-    if (Number.isFinite(n) && n >= 0) return Math.floor(n);
-  }
-  if (typeof raw === "object") {
-    const vec = (raw as any)?.vec;
-    if (Array.isArray(vec)) {
-      if (vec.length === 0) return null;
-      return parseOptionalU64(vec[0]);
-    }
-  }
-
-  return null;
-}
-
-function parseOptionalAddress(raw: unknown): string | null {
-  if (raw === null || raw === undefined) return null;
-  if (typeof raw === "string") return normalizeSuiAddress(raw);
-  if (typeof raw === "object") {
-    const vec = (raw as any)?.vec;
-    if (Array.isArray(vec)) {
-      if (vec.length === 0) return null;
-      return normalizeSuiAddress(vec[0]);
-    }
-  }
-  return null;
-}
-
-function parseOptionalString(raw: unknown): string | null {
-  if (raw === null || raw === undefined) return null;
-  if (typeof raw === "string") {
-    const value = raw.trim();
-    return value ? value : null;
-  }
-  if (typeof raw === "object") {
-    const vec = (raw as any)?.vec;
-    if (Array.isArray(vec)) {
-      if (vec.length === 0) return null;
-      return parseOptionalString(vec[0]);
-    }
-  }
-  return null;
-}
-
-function normalizeFileFields(fields: any): NormalizedFileFields | null {
-  if (!fields || typeof fields !== "object") return null;
-
-  const blobId = typeof fields.blob_id === "string" ? fields.blob_id.trim() : "";
-  const blobObjectId = parseOptionalAddress(fields.blob_object_id);
-  const checksum = parseOptionalString(fields.checksum);
-  const rawSizeBytes = Number(fields.size_bytes);
-  const rawCreatedAt = Number(fields.created_at);
-  const mimeType =
-    typeof fields.mime === "string" && fields.mime.trim().length > 0
-      ? fields.mime
-      : "application/octet-stream";
-
-  if (!blobId) return null;
-  if (!Number.isFinite(rawSizeBytes) || !Number.isInteger(rawSizeBytes) || rawSizeBytes <= 0) {
-    return null;
-  }
-  if (!Number.isFinite(rawCreatedAt) || rawCreatedAt < 0) return null;
-
-  return {
-    blobId,
-    blobObjectId,
-    checksum,
-    sizeBytes: rawSizeBytes,
-    mimeType,
-    createdAt: rawCreatedAt,
-    owner: fields.owner ?? null,
-    ownerAddress: normalizeSuiAddress(fields.owner),
-    walrusEndEpoch: parseOptionalU64(fields.walrus_end_epoch),
-  };
-}
-
 function parseSingleRangeHeader(params: {
   rangeHeader: string;
   sizeBytes: number;
@@ -221,7 +118,6 @@ function parseSingleRangeHeader(params: {
   const rawStart = m[1];
   const rawEnd = m[2];
 
-  // Suffix: bytes=-N
   if (rawStart === "" && rawEnd !== "") {
     const suffixLen = Number(rawEnd);
     if (!Number.isFinite(suffixLen) || suffixLen <= 0) return { error: "INVALID_RANGE" };
@@ -234,7 +130,6 @@ function parseSingleRangeHeader(params: {
   const start = Number(rawStart);
   if (!Number.isFinite(start) || start < 0) return { error: "INVALID_RANGE" };
 
-  // Open ended: bytes=N-
   if (rawEnd === "") {
     const end = sizeBytes - 1;
     if (start > end) return { error: "INVALID_RANGE" };
@@ -247,167 +142,6 @@ function parseSingleRangeHeader(params: {
 
   const end = Math.min(endRaw, sizeBytes - 1);
   return { range: { start, end }, kind: "bounded" };
-}
-
-const FILE_FIELDS_MEMORY_CACHE_TTL_MS = Number(
-  process.env.FLOE_FILE_FIELDS_MEMORY_CACHE_TTL_MS ?? 60_000
-);
-const FILE_FIELDS_MEMORY_CACHE_MAX = Number(
-  process.env.FLOE_FILE_FIELDS_MEMORY_CACHE_MAX_ENTRIES ?? 5000
-);
-const FILE_FIELDS_DEBUG = process.env.FLOE_FILE_FIELDS_DEBUG === "1";
-
-type FileFieldsSource = "memory" | "postgres" | "sui";
-type PostgresReadState = "disabled" | "healthy" | "degraded";
-type CachedFileFieldsResult = {
-  fields: any | null;
-  source: FileFieldsSource | null;
-  postgresState: PostgresReadState;
-};
-
-function canExposePublicFileRead(): boolean {
-  return AuthModeConfig.mode !== "private" && !AuthOwnerPolicyConfig.enforceUploadOwner;
-}
-
-function getPublicStreamUrl(fileId: string): string | null {
-  if (!canExposePublicFileRead()) return null;
-  const configuredBaseUrl = (process.env.FLOE_PUBLIC_STREAM_BASE_URL ?? "").trim();
-  if (!configuredBaseUrl) return null;
-  const base = configuredBaseUrl.replace(/\/+$/, "");
-  return `${base}/v1/files/${encodeURIComponent(fileId)}/stream`;
-}
-
-function applyFileReadCacheHeaders(reply: any) {
-  if (canExposePublicFileRead()) {
-    reply.header("Cache-Control", "public, max-age=31536000, immutable");
-    return;
-  }
-
-  reply.header("Cache-Control", "private, no-store");
-  reply.header("Vary", "Authorization, x-api-key");
-}
-
-const fileFieldsMemoryCache = new Map<
-  string,
-  { value: any; expiresAt: number; touchedAt: number }
->();
-
-function getMemoryFileFields(fileId: string): any | null {
-  if (!Number.isFinite(FILE_FIELDS_MEMORY_CACHE_TTL_MS) || FILE_FIELDS_MEMORY_CACHE_TTL_MS <= 0) {
-    return null;
-  }
-  const now = Date.now();
-  const hit = fileFieldsMemoryCache.get(fileId);
-  if (!hit) return null;
-  if (hit.expiresAt <= now) {
-    fileFieldsMemoryCache.delete(fileId);
-    return null;
-  }
-  hit.touchedAt = now;
-  return hit.value;
-}
-
-function setMemoryFileFields(fileId: string, fields: any) {
-  if (!Number.isFinite(FILE_FIELDS_MEMORY_CACHE_TTL_MS) || FILE_FIELDS_MEMORY_CACHE_TTL_MS <= 0) {
-    return;
-  }
-  const now = Date.now();
-  fileFieldsMemoryCache.set(fileId, {
-    value: fields,
-    expiresAt: now + FILE_FIELDS_MEMORY_CACHE_TTL_MS,
-    touchedAt: now,
-  });
-
-  const maxEntries = Number.isFinite(FILE_FIELDS_MEMORY_CACHE_MAX) && FILE_FIELDS_MEMORY_CACHE_MAX > 0
-    ? Math.floor(FILE_FIELDS_MEMORY_CACHE_MAX)
-    : 5000;
-  if (fileFieldsMemoryCache.size <= maxEntries) return;
-
-  // Drop least-recently-touched entries when we exceed max size.
-  let over = fileFieldsMemoryCache.size - maxEntries;
-  const entries = [...fileFieldsMemoryCache.entries()].sort(
-    (a, b) => a[1].touchedAt - b[1].touchedAt
-  );
-  for (const [k] of entries) {
-    if (over <= 0) break;
-    fileFieldsMemoryCache.delete(k);
-    over -= 1;
-  }
-}
-
-async function getFileFieldsCached(fileId: string): Promise<CachedFileFieldsResult> {
-  const memory = getMemoryFileFields(fileId);
-  const postgresConfigured = isPostgresConfigured();
-  const postgresEnabled = isPostgresEnabled();
-  let postgresState: PostgresReadState = !postgresConfigured
-    ? "disabled"
-    : postgresEnabled
-      ? "healthy"
-      : "degraded";
-  if (memory) {
-    return { fields: memory, source: "memory", postgresState };
-  }
-
-  const indexed = await getIndexedFile(fileId).catch((err) => {
-    postgresState = "degraded";
-    return null;
-  });
-  if (indexed) {
-    const fields = {
-      blob_id: indexed.blobId,
-      blob_object_id: indexed.blobObjectId,
-      checksum: indexed.checksum,
-      size_bytes: indexed.sizeBytes,
-      mime: indexed.mimeType,
-      created_at: indexed.createdAtMs,
-      owner: indexed.ownerAddress,
-      walrus_end_epoch: indexed.walrusEndEpoch,
-    };
-    setMemoryFileFields(fileId, fields);
-    return { fields, source: "postgres", postgresState };
-  }
-
-  const obj = await suiClient.getObject({
-    id: fileId,
-    options: { showContent: true },
-  });
-
-  if (
-    !obj.data?.content ||
-    obj.data.content.dataType !== "moveObject" ||
-    !isTrustedFileObjectType((obj.data as any).type)
-  ) {
-    return { fields: null, source: null, postgresState };
-  }
-
-  const fields = obj.data.content.fields as any;
-  setMemoryFileFields(fileId, fields);
-  const normalized = normalizeFileFields(fields);
-  if (normalized) {
-    await upsertIndexedFile({
-      fileId,
-      blobId: normalized.blobId,
-      blobObjectId: normalized.blobObjectId,
-      checksum: normalized.checksum,
-      ownerAddress: normalized.ownerAddress,
-      sizeBytes: normalized.sizeBytes,
-      mimeType: normalized.mimeType,
-      walrusEndEpoch: normalized.walrusEndEpoch,
-      createdAtMs: normalized.createdAt,
-    }).catch(() => {
-      postgresState = "degraded";
-    });
-  }
-
-  return { fields, source: "sui", postgresState };
-}
-
-function applyFileLookupHeaders(reply: any, params: {
-  source: FileFieldsSource | null;
-  postgresState: PostgresReadState;
-}) {
-  reply.header("x-floe-metadata-source", params.source ?? "unknown");
-  reply.header("x-floe-postgres-state", params.postgresState);
 }
 
 async function* walrusByteStream(params: {
@@ -703,7 +437,7 @@ export async function filesRoutes(app: FastifyInstance) {
       );
     }
 
-    if (FILE_FIELDS_DEBUG) {
+    if (isFileFieldsDebugEnabled()) {
       req.log.info(
         { fileId, source: fieldsSource ?? "unknown", durationMs: Date.now() - t0 },
         "metadata fields lookup"
@@ -848,7 +582,7 @@ export async function filesRoutes(app: FastifyInstance) {
       });
 
       // 3. Update local cache
-      fileFieldsMemoryCache.delete(fileId);
+      clearFileFieldsCache(fileId);
       await upsertIndexedFile({
         ...normalized,
         fileId,
@@ -938,7 +672,7 @@ export async function filesRoutes(app: FastifyInstance) {
       );
     }
 
-    if (FILE_FIELDS_DEBUG) {
+    if (isFileFieldsDebugEnabled()) {
       req.log.info(
         { fileId, source: fieldsSource ?? "unknown", durationMs: Date.now() - t0 },
         "manifest fields lookup"
@@ -1059,7 +793,7 @@ export async function filesRoutes(app: FastifyInstance) {
         );
       }
 
-      if (FILE_FIELDS_DEBUG) {
+      if (isFileFieldsDebugEnabled()) {
         req.log.info(
           { fileId, source: fieldsSource ?? "unknown", durationMs: Date.now() - t0 },
           "stream fields lookup"

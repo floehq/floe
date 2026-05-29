@@ -18,6 +18,7 @@ export interface UploadSession {
   resolvedEpochs: number;
   status: UploadStatus;
   checksum?: string;
+  targetChain?: string;
   createdAt: number;
   expiresAt: number;
 }
