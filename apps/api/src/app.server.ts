@@ -9,6 +9,7 @@ import uploadRoutes from "./routes/uploads.js";
 import healthRoute from "./routes/health.js";
 import tatumRoutes from "./routes/tatum.js";
 import { filesRoutes } from "./routes/files.js";
+import viewRoutes from "./routes/view.js";
 import { closeRedis, initRedis } from "./state/redis.js";
 import {
   closePostgres,
@@ -156,6 +157,8 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
       files: 1,
     },
   });
+
+  await app.register(viewRoutes);
 
   try {
     await initRedis();

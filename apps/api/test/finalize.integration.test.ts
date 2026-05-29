@@ -698,7 +698,7 @@ test("livez stays cheap and reports process liveness", async () => {
   assert.equal(body.status, "UP");
   assert.equal(body.service, "floe-api-v1");
   assert.equal(body.apiVersion, "v1");
-  assert.equal(body.serverVersion, "0.1.2");
+  assert.equal(body.serverVersion, "0.1.4");
   assert.deepEqual(body.compatibility, {
     sdk: ">=0.2.0 <0.3.0",
     cli: ">=0.2.0 <0.3.0",
@@ -715,7 +715,7 @@ test("health route exposes node role capabilities", async () => {
   assert.equal(res.statusCode, 200);
   assert.equal(body.service, "floe-api-v1");
   assert.equal(body.apiVersion, "v1");
-  assert.equal(body.serverVersion, "0.1.2");
+  assert.equal(body.serverVersion, "0.1.4");
   assert.deepEqual(body.compatibility, {
     sdk: ">=0.2.0 <0.3.0",
     cli: ">=0.2.0 <0.3.0",
@@ -744,7 +744,7 @@ test("version route exposes API and client compatibility contract", async () => 
   assert.deepEqual(body, {
     service: "floe-api-v1",
     apiVersion: "v1",
-    serverVersion: "0.1.2",
+    serverVersion: "0.1.4",
     compatibility: {
       sdk: ">=0.2.0 <0.3.0",
       cli: ">=0.2.0 <0.3.0",

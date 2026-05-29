@@ -17,6 +17,26 @@ export interface MultiChainAnchorResult {
   assetId?: string;
 }
 
+/**
+ * Maps common chain names to Tatum's internal identifiers.
+ */
+const CHAIN_MAP: Record<string, string> = {
+  "BASE": "ETH_BASE",
+  "ETHEREUM": "ETH",
+  "MAINNET": "ETH",
+  "POLYGON": "MATIC",
+  "MUMBAI": "MATIC",
+  "ARBITRUM": "ETH_ARB",
+  "OPTIMISM": "ETH_OP",
+  "AVALANCHE": "AVAX",
+  "FANTOM": "FTM",
+  "CELO": "CELO",
+  "ALFAJORES": "CELO",
+  "BSC": "BSC",
+  "BINANCE": "BSC",
+  "SOLANA": "SOL",
+};
+
 export async function anchorMetadataMultiChain(params: MultiChainAnchorParams): Promise<MultiChainAnchorResult> {
   if (!TATUM_API_KEY) {
     throw new Error("TATUM_API_KEY is not set");
@@ -28,7 +48,7 @@ export async function anchorMetadataMultiChain(params: MultiChainAnchorParams): 
   const metadata = {
     name: params.filename,
     description: `Floe Decentralized File Anchor: ${params.blobId}`,
-    image: `${baseUrl}/v1/files/${params.blobId}/icon`, // Placeholder
+    image: `${baseUrl}/v1/files/${params.blobId}/stream`,
     attributes: [
       { trait_type: "Blob ID", value: params.blobId },
       { trait_type: "Size", value: params.sizeBytes },
@@ -38,51 +58,65 @@ export async function anchorMetadataMultiChain(params: MultiChainAnchorParams): 
     external_url: `${baseUrl}/files/${params.blobId}`,
   };
 
-  // In a real app, you'd upload this metadata to IPFS first.
-  // For the hackathon, we'll use a data URI or a Floe-hosted URL.
+  // The metadata URL should point to a JSON endpoint that returns the above object.
+  // In Floe, we have GET /v1/files/:fileId/metadata.json for this purpose.
   const metadataUrl = `${baseUrl}/v1/files/${params.blobId}/metadata.json`;
 
-  const chainMap: Record<string, string> = {
-    "BASE": "ETH_BASE",
-    "ETHEREUM": "ETH",
-    "POLYGON": "MATIC",
-    "ARBITRUM": "ETH_ARB",
-    "OPTIMISM": "ETH_OP",
-    "AVALANCHE": "AVAX",
-    "FANTOM": "FTM",
-  };
+  if (metadataUrl.includes("localhost") || metadataUrl.includes("127.0.0.1")) {
+    console.warn(`[Tatum] Warning: metadataUrl (${metadataUrl}) is on localhost. Tatum's minting service may not be able to reach it.`);
+  }
 
   const rawChain = params.chain.toUpperCase();
-  const tatumChain = chainMap[rawChain] || rawChain;
+  const tatumChain = CHAIN_MAP[rawChain] || rawChain;
 
-  console.log("Tatum Mint Parameters:", JSON.stringify({
+  console.log(`[Tatum] Anchoring ${params.blobId} to ${tatumChain}...`);
+
+  const body = {
     chain: tatumChain,
     to: params.to,
     url: metadataUrl,
-  }, null, 2));
-
-  const response = await fetch("https://api.tatum.io/v3/nft/mint", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": TATUM_API_KEY,
-    },
-    body: JSON.stringify({
-      chain: tatumChain,
-      to: params.to,
-      url: metadataUrl,
-      // We use Tatum NFT Express (no private key needed, uses Tatum's credits)
-    }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`TATUM_NFT_MINT_FAILED:${response.status}:${text}`);
-  }
-
-  const json = (await response.json()) as any;
-  return {
-    txId: json.txId,
-    assetId: json.tokenId,
   };
+
+  try {
+    const response = await fetch("https://api.tatum.io/v3/nft/mint", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": TATUM_API_KEY,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      let errorData;
+      try {
+        errorData = JSON.parse(text);
+      } catch {
+        errorData = text;
+      }
+
+      console.error("[Tatum] Minting failed:", {
+        status: response.status,
+        error: errorData,
+        chain: tatumChain,
+        to: params.to
+      });
+
+      throw new Error(`TATUM_NFT_MINT_FAILED:${response.status}:${text}`);
+    }
+
+    const json = (await response.json()) as any;
+    console.log(`[Tatum] Successfully anchored to ${tatumChain}. TxID: ${json.txId}`);
+
+    return {
+      txId: json.txId,
+      assetId: json.tokenId,
+    };
+  } catch (err: any) {
+    if (err.message.includes("TATUM_NFT_MINT_FAILED")) throw err;
+    
+    console.error("[Tatum] Network or unexpected error:", err.message);
+    throw new Error(`TATUM_CONNECTION_ERROR:${err.message}`);
+  }
 }

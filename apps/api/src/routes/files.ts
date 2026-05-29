@@ -8,6 +8,7 @@ import {
   findFileByChecksum,
   getBlobObjectIdByBlobId,
   getIndexedFile,
+  listDiscoveryFiles,
   upsertIndexedFile,
 } from "../db/files.repository.js";
 import { isPostgresConfigured, isPostgresEnabled } from "../state/postgres.js";
@@ -87,6 +88,28 @@ function sendFileAccessDenied(reply: any, authz: { code?: string; message?: stri
   );
 }
 
+function explorerUrlFromRecord(record: { targetChain: string | null; anchorTxId: string | null }): string | null {
+  if (!record.anchorTxId) return null;
+  const chain = (record.targetChain ?? "sui").toLowerCase();
+  const explorerByChain: Record<string, string> = {
+    polygon: "https://polygonscan.com/tx/",
+    matic: "https://polygonscan.com/tx/",
+    base: "https://basescan.org/tx/",
+    eth_base: "https://basescan.org/tx/",
+    arbitrum: "https://arbiscan.io/tx/",
+    eth_arb: "https://arbiscan.io/tx/",
+    optimism: "https://optimistic.etherscan.io/tx/",
+    eth_op: "https://optimistic.etherscan.io/tx/",
+    celo: "https://celoscan.io/tx/",
+    avax: "https://snowtrace.io/tx/",
+    bsc: "https://bscscan.com/tx/",
+    fantom: "https://ftmscan.com/tx/",
+    sui: "https://suivision.xyz/txblock/",
+  };
+  const base = explorerByChain[chain];
+  return base ? `${base}${encodeURIComponent(record.anchorTxId)}` : null;
+}
+
 export type StreamReadPlan = {
   initialSegmentBytes: number;
   segmentBytes: number;
@@ -119,7 +142,7 @@ function normalizeSuiAddress(raw: unknown): string | null {
   return `0x${value.replace(/^0x/i, "").toLowerCase()}`;
 }
 
-function normalizeFileIdParam(raw: unknown): string | null {
+export function normalizeFileIdParam(raw: unknown): string | null {
   return normalizeSuiAddress(raw);
 }
 
@@ -259,7 +282,7 @@ const FILE_FIELDS_DEBUG = process.env.FLOE_FILE_FIELDS_DEBUG === "1";
 
 type FileFieldsSource = "memory" | "postgres" | "sui";
 type PostgresReadState = "disabled" | "healthy" | "degraded";
-type CachedFileFieldsResult = {
+export type CachedFileFieldsResult = {
   fields: any | null;
   source: FileFieldsSource | null;
   postgresState: PostgresReadState;
@@ -335,7 +358,7 @@ function setMemoryFileFields(fileId: string, fields: any) {
   }
 }
 
-async function getFileFieldsCached(fileId: string): Promise<CachedFileFieldsResult> {
+export async function getFileFieldsCached(fileId: string): Promise<CachedFileFieldsResult> {
   const memory = getMemoryFileFields(fileId);
   const postgresConfigured = isPostgresConfigured();
   const postgresEnabled = isPostgresEnabled();
@@ -388,11 +411,14 @@ async function getFileFieldsCached(fileId: string): Promise<CachedFileFieldsResu
       fileId,
       blobId: normalized.blobId,
       blobObjectId: normalized.blobObjectId,
+      filename: null,
       checksum: normalized.checksum,
       ownerAddress: normalized.ownerAddress,
       sizeBytes: normalized.sizeBytes,
       mimeType: normalized.mimeType,
       walrusEndEpoch: normalized.walrusEndEpoch,
+      targetChain: null,
+      anchorTxId: null,
       createdAtMs: normalized.createdAt,
     }).catch(() => {
       postgresState = "degraded";
@@ -638,7 +664,62 @@ export function chooseStreamReadPlan(params: {
   };
 }
 
+async function resolveFileFields(id: string): Promise<CachedFileFieldsResult> {
+  let fileId = normalizeFileIdParam(id);
+  let out: CachedFileFieldsResult = { fields: null, source: null, postgresState: "disabled" };
+
+  if (fileId) {
+    try {
+      out = await getFileFieldsCached(fileId);
+    } catch (err) {
+      // Fallback
+    }
+  }
+
+  if (!out.fields) {
+    const indexed = await findFileByBlobId(id).catch(() => null);
+    if (indexed) {
+      out = {
+        fields: {
+          blob_id: indexed.blobId,
+          blob_object_id: indexed.blobObjectId,
+          checksum: indexed.checksum,
+          size_bytes: indexed.sizeBytes,
+          mime: indexed.mimeType,
+          created_at: indexed.createdAtMs,
+          owner: indexed.ownerAddress,
+          walrus_end_epoch: indexed.walrusEndEpoch,
+        },
+        source: "postgres",
+        postgresState: "healthy",
+      };
+    }
+  }
+
+  return out;
+}
+
 export async function filesRoutes(app: FastifyInstance) {
+  app.get("/v1/files", async (req, res) => {
+    const query = req.query as Record<string, string | undefined>;
+    const owner = query.owner?.trim() || null;
+    const chain = query.chain?.trim() || null;
+    const cursor = query.cursor?.trim() || null;
+    const parsedLimit = query.limit ? Number(query.limit) : undefined;
+    const limit = Number.isFinite(parsedLimit) ? parsedLimit : undefined;
+
+    try {
+      const result = await listDiscoveryFiles({ owner, chain, cursor, limit });
+      return {
+        source: "floe-core",
+        ...result,
+      };
+    } catch (err) {
+      req.log.error({ err }, "Failed to list files");
+      return sendApiError(res, 500, "INTERNAL_ERROR", "Failed to list files");
+    }
+  });
+
   app.get("/v1/files/:fileId/metadata", async (req, res) => {
     const readLimit = await req.server.authProvider.checkRateLimit({
       req,
@@ -769,34 +850,76 @@ export async function filesRoutes(app: FastifyInstance) {
 
   app.get("/v1/files/:fileId/metadata.json", async (req, res) => {
     const { fileId: rawFileId } = req.params as { fileId: string };
-    const fileId = normalizeFileIdParam(rawFileId);
-    if (!fileId) {
-      return sendApiError(res, 400, "INVALID_FILE_ID", "fileId must be a valid Sui object id");
-    }
 
-    const { fields } = await getFileFieldsCached(fileId);
+    const { fields } = await resolveFileFields(rawFileId);
     if (!fields) {
       return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
     }
 
+    const indexed =
+      (await getIndexedFile(rawFileId).catch(() => null)) ??
+      (await findFileByBlobId(rawFileId).catch(() => null));
     const normalized = normalizeFileFields(fields);
     if (!normalized) {
       return sendApiError(res, 502, "INVALID_FILE_METADATA", "File metadata is invalid");
     }
 
     const baseUrl = (process.env.FLOE_PUBLIC_BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
+    const filename = indexed?.filename ?? `Floe File ${rawFileId.slice(0, 10)}`;
 
     return {
-      name: normalized.filename || `Floe File ${fileId.slice(0, 10)}`,
+      name: filename,
       description: `Floe Decentralized File: ${normalized.blobId}`,
-      image: `${baseUrl}/v1/files/${normalized.blobId}/icon`,
+      image: `${baseUrl}/v1/files/${normalized.blobId}/stream`,
       attributes: [
         { trait_type: "Blob ID", value: normalized.blobId },
         { trait_type: "Size", value: normalized.sizeBytes },
         { trait_type: "Mime Type", value: normalized.mimeType },
+        ...(indexed?.targetChain ? [{ trait_type: "Chain", value: indexed.targetChain }] : []),
+        ...(indexed?.anchorTxId ? [{ trait_type: "Anchor Tx", value: indexed.anchorTxId }] : []),
+        ...(indexed?.ownerAddress ? [{ trait_type: "Owner", value: indexed.ownerAddress }] : []),
         ...(normalized.checksum ? [{ trait_type: "Checksum", value: normalized.checksum }] : []),
       ],
       external_url: `${baseUrl}/files/${normalized.blobId}`,
+    };
+  });
+
+  app.get("/v1/files/:fileId/provenance", async (req, res) => {
+    const { fileId: rawFileId } = req.params as { fileId: string };
+    const fileId = normalizeFileIdParam(rawFileId);
+    if (!fileId) {
+      return sendApiError(res, 400, "INVALID_FILE_ID", "fileId must be a valid Sui object id");
+    }
+
+    const indexed = await getIndexedFile(fileId).catch(() => null);
+    const { fields } = await getFileFieldsCached(fileId);
+    if (!indexed && !fields) {
+      return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
+    }
+
+    const normalized = fields ? normalizeFileFields(fields) : null;
+    const blobId = indexed?.blobId ?? normalized?.blobId ?? null;
+    const blobObjectId = indexed?.blobObjectId ?? normalized?.blobObjectId ?? null;
+    const ownerAddress = indexed?.ownerAddress ?? normalized?.ownerAddress ?? null;
+    const targetChain = indexed?.targetChain ?? null;
+    const anchorTxId = indexed?.anchorTxId ?? null;
+
+    return {
+      fileId,
+      filename: indexed?.filename ?? null,
+      blobId,
+      blobObjectId,
+      ownerAddress,
+      targetChain,
+      anchorTxId,
+      explorerUrl: explorerUrlFromRecord({ targetChain, anchorTxId }),
+      metadataUrl: `/v1/files/${encodeURIComponent(fileId)}/metadata.json`,
+      streamUrl: `/v1/files/${encodeURIComponent(fileId)}/stream`,
+      fileUrl: `/files/${encodeURIComponent(fileId)}`,
+      sizeBytes: indexed?.sizeBytes ?? normalized?.sizeBytes ?? null,
+      mimeType: indexed?.mimeType ?? normalized?.mimeType ?? null,
+      walrusEndEpoch: indexed?.walrusEndEpoch ?? normalized?.walrusEndEpoch ?? null,
+      createdAtMs: indexed?.createdAtMs ?? normalized?.createdAt ?? null,
     };
   });
 
@@ -831,6 +954,7 @@ export async function filesRoutes(app: FastifyInstance) {
     if (!normalized) {
       return sendApiError(res, 502, "INVALID_FILE_METADATA", "File metadata is invalid");
     }
+    const indexed = await getIndexedFile(fileId).catch(() => null);
 
     // Walrus renewal requires a Blob object ID.
     // Older Floe uploads might not have this stored.
@@ -883,11 +1007,17 @@ export async function filesRoutes(app: FastifyInstance) {
       // 3. Update local cache
       fileFieldsMemoryCache.delete(fileId);
       await upsertIndexedFile({
-        ...normalized,
         fileId,
+        blobId: normalized.blobId,
         blobObjectId,
+        filename: indexed?.filename ?? null,
         checksum: normalized.checksum,
+        ownerAddress: normalized.ownerAddress,
+        sizeBytes: normalized.sizeBytes,
+        mimeType: normalized.mimeType,
         walrusEndEpoch: walrusResult.endEpoch,
+        targetChain: indexed?.targetChain ?? null,
+        anchorTxId: indexed?.anchorTxId ?? null,
         createdAtMs: normalized.createdAt,
       }).catch(() => {});
 
@@ -1036,7 +1166,9 @@ export async function filesRoutes(app: FastifyInstance) {
       }
 
       const { fileId: rawFileId } = req.params as { fileId: string };
-      const fileId = normalizeFileIdParam(rawFileId);
+      const normalizedFileId = normalizeFileIdParam(rawFileId);
+      const indexedByBlob = normalizedFileId ? null : await findFileByBlobId(rawFileId).catch(() => null);
+      const fileId = normalizedFileId ?? indexedByBlob?.fileId ?? null;
       if (!fileId) {
         req.log.warn({ fileId: rawFileId }, "Invalid file id");
         return sendApiError(
@@ -1060,37 +1192,19 @@ export async function filesRoutes(app: FastifyInstance) {
       let fieldsSource: FileFieldsSource | null = null;
       let postgresState: PostgresReadState = "disabled";
       const t0 = Date.now();
-      try {
-        const out = await getFileFieldsCached(fileId);
-        fields = out.fields;
-        fieldsSource = out.source;
-        postgresState = out.postgresState;
-      } catch (err) {
-        req.log.error({ err, fileId }, "Sui read failed");
-        return sendApiError(
-          reply,
-          503,
-          "SUI_UNAVAILABLE",
-          "Failed to fetch file metadata from Sui",
-          { retryable: true }
-        );
-      }
+
+      const out = await resolveFileFields(rawFileId);
+      fields = out.fields;
+      fieldsSource = out.source;
+      postgresState = out.postgresState;
 
       if (!fields) {
         return sendApiError(reply, 404, "FILE_NOT_FOUND", "File not found");
       }
-      applyFileLookupHeaders(reply, { source: fieldsSource, postgresState });
 
-      const normalized = normalizeFileFields(fields);
-      if (!normalized) {
-        req.log.error({ fileId, fields }, "Invalid file metadata fields");
-        return sendApiError(
-          reply,
-          502,
-          "INVALID_FILE_METADATA",
-          "File metadata is invalid"
-        );
-      }
+      const normalized = normalizeFileFields(fields)!;
+
+      applyFileLookupHeaders(reply, { source: fieldsSource, postgresState });
 
       if (FILE_FIELDS_DEBUG) {
         req.log.info(

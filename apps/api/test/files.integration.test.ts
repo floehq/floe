@@ -418,6 +418,43 @@ test("stream routes expose metadata source headers", async () => {
   assert.equal(headRes.headers["x-floe-postgres-state"], "healthy");
 });
 
+test("stream route enforces rate limits before lookup", async () => {
+  let lookups = 0;
+  const app = await createRouteApp({
+    async checkRateLimit() {
+      return {
+        allowed: false,
+        current: 1000,
+        limit: 1000,
+        windowSeconds: 60,
+        identity: {
+          authenticated: false,
+          subject: "integration-test",
+          method: "public",
+          owner: null,
+        },
+      };
+    },
+    async authorizeFileAccess() {
+      lookups += 1;
+      return { allowed: true };
+    },
+  });
+
+  const fileId = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+  });
+  const body = res.json() as any;
+
+  assert.equal(res.statusCode, 429);
+  assert.equal(body.error.code, "RATE_LIMITED");
+  assert.equal(lookups, 0);
+});
+
 test("chooseStreamReadPlan uses larger full reads and conservative ranged reads", () => {
   const smallFull = filesRouteModule.chooseStreamReadPlan({
     sizeBytes: 8 * 1024 * 1024,
