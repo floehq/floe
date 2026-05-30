@@ -1,6 +1,10 @@
 import { ServerConfig } from "../../config/server.config.js";
+import { resolveTatumMintRoute } from "./mint.provider.js";
 
 const TATUM_API_KEY = process.env.TATUM_API_KEY;
+const TATUM_TEST_PRIVATE_KEY = process.env.TATUM_TEST_PRIVATE_KEY ?? process.env.TATUM_PRIVATE_KEY ?? null;
+const TATUM_SIGNATURE_ID = process.env.TATUM_SIGNATURE_ID ?? null;
+const TATUM_NATIVE_CONTRACT_ADDRESS = process.env.TATUM_NATIVE_CONTRACT_ADDRESS ?? null;
 
 export interface MultiChainAnchorParams {
   chain: string;
@@ -17,48 +21,15 @@ export interface MultiChainAnchorResult {
   assetId?: string;
 }
 
-/**
- * Maps common chain names to Tatum's internal identifiers.
- */
-const CHAIN_MAP: Record<string, string> = {
-  "BASE": "ETH_BASE",
-  "ETHEREUM": "ETH",
-  "MAINNET": "ETH",
-  "POLYGON": "MATIC",
-  "MUMBAI": "MATIC",
-  "ARBITRUM": "ETH_ARB",
-  "OPTIMISM": "ETH_OP",
-  "AVALANCHE": "AVAX",
-  "FANTOM": "FTM",
-  "CELO": "CELO",
-  "ALFAJORES": "CELO",
-  "BSC": "BSC",
-  "BINANCE": "BSC",
-  "SOLANA": "SOL",
-};
-
 export async function anchorMetadataMultiChain(params: MultiChainAnchorParams): Promise<MultiChainAnchorResult> {
   if (!TATUM_API_KEY) {
     throw new Error("TATUM_API_KEY is not set");
   }
 
   const baseUrl = ServerConfig.publicBaseUrl.replace(/\/$/, "");
+  const mintRoute = resolveTatumMintRoute(params.chain);
 
-  // Build a metadata object that standard NFT marketplaces can read
-  const metadata = {
-    name: params.filename,
-    description: `Floe Decentralized File Anchor: ${params.blobId}`,
-    image: `${baseUrl}/v1/files/${params.blobId}/stream`,
-    attributes: [
-      { trait_type: "Blob ID", value: params.blobId },
-      { trait_type: "Size", value: params.sizeBytes },
-      { trait_type: "Mime Type", value: params.mimeType },
-      ...(params.checksum ? [{ trait_type: "Checksum", value: params.checksum }] : []),
-    ],
-    external_url: `${baseUrl}/files/${params.blobId}`,
-  };
-
-  // The metadata URL should point to a JSON endpoint that returns the above object.
+  // The metadata URL should point to a JSON endpoint that returns the NFT metadata.
   // In Floe, we have GET /v1/files/:fileId/metadata.json for this purpose.
   const metadataUrl = `${baseUrl}/v1/files/${params.blobId}/metadata.json`;
 
@@ -66,16 +37,29 @@ export async function anchorMetadataMultiChain(params: MultiChainAnchorParams): 
     console.warn(`[Tatum] Warning: metadataUrl (${metadataUrl}) is on localhost. Tatum's minting service may not be able to reach it.`);
   }
 
-  const rawChain = params.chain.toUpperCase();
-  const tatumChain = CHAIN_MAP[rawChain] || rawChain;
+  const tatumChain = mintRoute.chain;
 
-  console.log(`[Tatum] Anchoring ${params.blobId} to ${tatumChain}...`);
+  console.log(`[Tatum] Anchoring ${params.blobId} to ${tatumChain} via ${mintRoute.mode}...`);
 
-  const body = {
+  const body: Record<string, unknown> = {
     chain: tatumChain,
     to: params.to,
     url: metadataUrl,
   };
+
+  if (mintRoute.mode === "native") {
+    if (!TATUM_NATIVE_CONTRACT_ADDRESS) {
+      throw new Error("TATUM_NATIVE_CONTRACT_ADDRESS is not set for native Tatum minting");
+    }
+    body.contractAddress = TATUM_NATIVE_CONTRACT_ADDRESS;
+    if (TATUM_SIGNATURE_ID) {
+      body.signatureId = TATUM_SIGNATURE_ID;
+    } else if (TATUM_TEST_PRIVATE_KEY) {
+      body.privateKey = TATUM_TEST_PRIVATE_KEY;
+    } else {
+      throw new Error("TATUM_TEST_PRIVATE_KEY or TATUM_SIGNATURE_ID is required for native Tatum minting");
+    }
+  }
 
   try {
     const response = await fetch("https://api.tatum.io/v3/nft/mint", {

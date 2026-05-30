@@ -1,0 +1,10 @@
+{
+  "name": "@floe/tatum",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node -e \"process.exit(0)\"",
+    "dev": "node server.mjs",
+    "start": "node server.mjs"
+  }
+}

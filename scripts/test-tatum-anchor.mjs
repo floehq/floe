@@ -13,7 +13,7 @@ async function testAnchoring() {
     // Tatum NFT Express supports CELO
     const result = await anchorMetadataMultiChain({
       chain: "CELO",
-      to: "0x471EcE370550c122170519083341112253063773", // Checksummed Celo address
+      to: "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", // Vitalik's address (valid EVM/CELO)
       blobId: "test-blob-" + Date.now(),
       sizeBytes: 1024,
       mimeType: "text/plain",

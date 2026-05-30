@@ -27,12 +27,14 @@ Minimum required environment values:
 - `FLOE_NETWORK`
 - `SUI_PRIVATE_KEY`
 - `SUI_PACKAGE_ID`
+- `TATUM_API_KEY`
 
 Mode-specific requirements:
 
 - when `FLOE_CHUNK_STORE_MODE=s3`: `FLOE_S3_BUCKET` and compatible credentials/config
 - when `FLOE_WALRUS_STORE_MODE=sdk`: `FLOE_WALRUS_SDK_BASE_URL`
 - when `FLOE_WALRUS_STORE_MODE=cli`: `FLOE_WALRUS_CLI_BIN`
+- when using Tatum native minting: `TATUM_NATIVE_CONTRACT_ADDRESS` and either `TATUM_TEST_PRIVATE_KEY` or `TATUM_SIGNATURE_ID`
 
 Use `.env.example` as the environment source of truth.
 
@@ -102,6 +104,13 @@ Sui:
 - `SUI_RPC_URL`
 - `SUI_PACKAGE_ID`
 
+Tatum:
+
+- `TATUM_API_KEY`
+- `TATUM_NATIVE_CONTRACT_ADDRESS`
+- `TATUM_TEST_PRIVATE_KEY`
+- `TATUM_SIGNATURE_ID`
+
 Upload and finalize limits:
 
 - `FLOE_MAX_FILE_SIZE_BYTES` default `16106127360`
@@ -142,8 +151,8 @@ Auth and request shaping:
 - `FLOE_RATE_LIMIT_FILE_META_AUTH` default `2400`
 - `FLOE_RATE_LIMIT_FILE_STREAM_PUBLIC` default `120`
 - `FLOE_RATE_LIMIT_FILE_STREAM_AUTH` default `1200`
-- `FLOE_PUBLIC_MAX_FILE_SIZE_BYTES` default `104857600`
-- `FLOE_AUTH_MAX_FILE_SIZE_BYTES` default `16106127360`
+- `FLOE_PUBLIC_MAX_FILE_SIZE_BYTES` default `5242880`
+- `FLOE_AUTH_MAX_FILE_SIZE_BYTES` default `10485760`
 - `FLOE_ENFORCE_UPLOAD_OWNER` default `0`
 - `FLOE_DEFAULT_OWNER_ADDRESS`
 

@@ -219,6 +219,25 @@ Rate limiting:
 - uses the `file_meta_read` scope
 - `429 RATE_LIMITED` includes `Retry-After`
 
+### `GET /v1/files/:fileId/metadata.json`
+
+Returns NFT-friendly metadata for the anchored file.
+
+Response fields:
+
+- `name`
+- `description`
+- `image`
+- `attributes`
+  - `Blob ID`
+  - `Size`
+  - `Mime Type`
+  - optional `Chain`
+  - optional `Anchor Tx`
+  - optional `Owner`
+  - optional `Checksum`
+- `external_url`
+
 ### `POST /v1/files/:fileId/renew`
 
 Extends the storage duration of a file on Walrus and updates the metadata on Sui.
@@ -250,6 +269,67 @@ Possible errors:
 Rate limiting:
 
 - uses the `file_meta_read` scope (or a dedicated `file_renew` scope if configured)
+
+## Discovery
+
+### `GET /v1/files`
+
+Returns the global discovery feed for anchored files.
+
+Query parameters:
+
+- `owner` optional owner address filter
+- `chain` optional chain filter such as `sui`, `polygon`, or `base`
+- `cursor` optional pagination cursor from a previous response
+- `limit` optional result cap, max `100`
+
+Response fields:
+
+- `source: "floe-core"`
+- `data`
+- `nextCursor`
+- `hasNextPage`
+
+### `GET /v1/search`
+
+Returns the Tatum-backed search feed used by the hackathon dashboard.
+
+Query parameters:
+
+- `owner` optional owner address filter
+- `chain` optional chain filter such as `polygon`, `base`, or `sui`
+- `cursor` optional pagination cursor from a previous response
+- `limit` optional result cap, max `100`
+
+Response fields:
+
+- `source: "tatum-gateway" | "floe-index" | "floe-index-fallback"`
+- `rpcProvider: "tatum" | "floe-db"`
+- `data`
+- `nextCursor`
+- `hasNextPage`
+
+### `GET /v1/files/:fileId/provenance`
+
+Returns provenance and dashboard links for a file.
+
+Response fields:
+
+- `fileId`
+- `filename`
+- `blobId`
+- `blobObjectId`
+- `ownerAddress`
+- `targetChain`
+- `anchorTxId`
+- `explorerUrl`
+- `metadataUrl`
+- `streamUrl`
+- `fileUrl`
+- `sizeBytes`
+- `mimeType`
+- `walrusEndEpoch`
+- `createdAtMs`
 
 ### `GET /v1/files/:fileId/manifest`
 

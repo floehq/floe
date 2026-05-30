@@ -22,6 +22,7 @@ BEARER_TOKEN="${FLOE_BEARER_TOKEN:-}"
 AUTH_USER="${FLOE_AUTH_USER:-}"
 WALLET_ADDRESS="${FLOE_WALLET_ADDRESS:-}"
 OWNER_ADDRESS="${FLOE_OWNER_ADDRESS:-}"
+TARGET_CHAIN="${FLOE_TARGET_CHAIN:-}"
 PUBLIC_MAX_FILE_SIZE_BYTES="${FLOE_PUBLIC_MAX_FILE_SIZE_BYTES:-$((100 * 1024 * 1024))}"
 AUTH_MAX_FILE_SIZE_BYTES="${FLOE_AUTH_MAX_FILE_SIZE_BYTES:-$((15 * 1024 * 1024 * 1024))}"
 GLOBAL_MAX_FILE_SIZE_BYTES="${FLOE_GLOBAL_MAX_FILE_SIZE_BYTES:-$((15 * 1024 * 1024 * 1024))}"
@@ -326,6 +327,7 @@ Options:
       --auth-user <id>  Auth header: x-auth-user
       --wallet <addr>   Auth header: x-wallet-address (0x...)
       --owner <addr>    Auth header: x-owner-address (0x...)
+      --target-chain <name> Destination chain for Tatum anchoring (base, polygon, etc.)
   -h, --help            Show help
 EOF
   exit 0
@@ -354,6 +356,7 @@ while [[ $# -gt 0 ]]; do
     --auth-user) AUTH_USER="$2"; shift ;;
     --wallet) WALLET_ADDRESS="$2"; shift ;;
     --owner) OWNER_ADDRESS="$2"; shift ;;
+    --target-chain) TARGET_CHAIN="$2"; shift ;;
     -h|--help) show_help ;;
     *) print_err "Unknown option: $1"; exit 1 ;;
   esac
@@ -407,13 +410,13 @@ if [[ "$INTERRUPT_CANCEL_UPLOAD" != "0" && "$INTERRUPT_CANCEL_UPLOAD" != "1" ]];
   exit 1
 fi
 
-if [[ -n "$WALLET_ADDRESS" ]] && ! [[ "$WALLET_ADDRESS" =~ ^(0x)?[0-9a-fA-F]{64}$ ]]; then
-  print_err "Invalid --wallet value (expected 0x + 64 hex chars)"
+if [[ -n "$WALLET_ADDRESS" ]] && ! [[ "$WALLET_ADDRESS" =~ ^(0x)?([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$ ]]; then
+  print_err "Invalid --wallet value (expected 0x + 40 or 64 hex chars)"
   exit 1
 fi
 
-if [[ -n "$OWNER_ADDRESS" ]] && ! [[ "$OWNER_ADDRESS" =~ ^(0x)?[0-9a-fA-F]{64}$ ]]; then
-  print_err "Invalid --owner value (expected 0x + 64 hex chars)"
+if [[ -n "$OWNER_ADDRESS" ]] && ! [[ "$OWNER_ADDRESS" =~ ^(0x)?([0-9a-fA-F]{40}|[0-9a-fA-F]{64})$ ]]; then
+  print_err "Invalid --owner value (expected 0x + 40 or 64 hex chars)"
   exit 1
 fi
 
@@ -814,6 +817,9 @@ print_kv "Size"          "$(numfmt --to=iec-i "$FILE_SIZE")"
 print_kv "Type"          "$CONTENT_TYPE"
 print_kv "Epochs"        "$EPOCHS"
 print_kv "Parallel"      "$PARALLEL_JOBS"
+if [[ -n "$TARGET_CHAIN" ]]; then
+  print_kv "Target chain"   "$TARGET_CHAIN"
+fi
 print_kv "Finalize wait" "${FINALIZE_MAX_WAIT_S}s"
 
 if [[ "$AUTO_FASTSTART" -eq 1 && -n "$FASTSTART_OUTPUT_PATH" ]]; then
@@ -927,12 +933,14 @@ if [[ "$RESUMING" -ne 1 ]]; then
     --argjson sizeBytes "$FILE_SIZE" \
     --argjson epochs "$EPOCHS" \
     --argjson chunkSize "$chunk_size_json" \
+    --arg targetChain "$TARGET_CHAIN" \
     '{
       filename: $filename,
       contentType: $contentType,
       sizeBytes: $sizeBytes,
       epochs: $epochs
-    } + (if $chunkSize == null then {} else {chunkSize: $chunkSize} end)')
+    } + (if $chunkSize == null then {} else {chunkSize: $chunkSize} end)
+      + (if $targetChain == "" then {} else {targetChain: $targetChain} end)')
 
   RESP=$(curl_json POST "$API_BASE/create" "$JSON" || true)
 
@@ -1312,6 +1320,7 @@ if [[ -n "$READ_API_BASE" ]]; then
   FILES_BASE="${READ_API_BASE%/}"
 fi
 print_kv "Metadata" "${FILES_BASE}/v1/files/$FILE_ID/metadata"
+print_kv "Portal"   "${FILES_BASE}/files/$FILE_ID"
 print_kv "Manifest" "${FILES_BASE}/v1/files/$FILE_ID/manifest"
 print_kv "Stream"   "${FILES_BASE}/v1/files/$FILE_ID/stream"
 

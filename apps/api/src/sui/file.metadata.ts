@@ -19,6 +19,7 @@ export interface FinalizeFileInput {
 
 export interface FinalizeFileResult {
   fileId: string;
+  txId?: string;
 }
 
 export async function finalizeFileMetadata(
@@ -71,14 +72,18 @@ export async function finalizeFileMetadata(
     throw new Error("SUI_FILE_CREATE_FAILED");
   }
 
-  return { fileId: created.objectId };
+  const txId = (result as any)?.digest ?? (result as any)?.transactionDigest;
+  return {
+    fileId: created.objectId,
+    txId: typeof txId === "string" ? txId : undefined,
+  };
 }
 
 export async function renewFileMetadata(params: {
   fileId: string;
   blobObjectId?: string;
   walrusEndEpoch: number;
-}): Promise<void> {
+}): Promise<{ txId?: string }> {
   const tx = new Transaction();
 
   if (params.blobObjectId) {
@@ -101,10 +106,12 @@ export async function renewFileMetadata(params: {
   }
 
   try {
-    await suiClient.signAndExecuteTransaction({
+    const result = await suiClient.signAndExecuteTransaction({
       transaction: tx,
       signer: suiSigner,
     });
+    const txId = (result as any)?.digest ?? (result as any)?.transactionDigest;
+    return { txId: typeof txId === "string" ? txId : undefined };
   } catch (err) {
     throw new Error(
       `SUI_RENEW_SUBMIT_FAILED:${(err as Error)?.message ?? "unknown"}`

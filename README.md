@@ -1,59 +1,71 @@
 # Floe
 
-Floe is a backend for uploading, finalizing, and reading large files with Walrus and Sui.
+Floe is a file upload and read platform built around Walrus, Sui, and a Tatum-backed hackathon demo flow.
 
-It supports resumable chunk uploads, asynchronous finalize flow, stable file metadata, and byte-range reads through a versioned API.
+This `tatum` branch keeps the core upload/read pipeline from Floe, then adds chain-aware minting, provenance, and a demo UI that makes it obvious when data came from Tatum RPC versus the local Floe index.
 
-## Features
+## What This Branch Does
 
-- resumable upload sessions for large files
-- chunk uploads with SHA-256 validation
-- asynchronous finalize flow backed by Walrus
-- Sui-based file metadata with stable `fileId` lookup
-- metadata, manifest, and stream endpoints
-- CLI and SDK clients in this workspace
+- resumable chunk uploads for large files
+- Walrus publish/finalize for stored blobs
+- chain-aware minting for uploaded file metadata
+- Tatum-backed search/index responses with explicit `source` and `rpcProvider`
+- hackathon UI for uploads, chain selection, and provenance inspection
 
-## API Version
+## Demo Flow
 
-The current server API contract is `v1`.
+1. A user starts an upload and chooses a target chain.
+2. Floe stages the chunks and finalizes the file to Walrus.
+3. The finalizer picks a mint path:
+   - **Tatum Express** for `polygon`, `bsc`, `celo`, and `ethereum`
+   - **Tatum native minting** for `base`, `arbitrum`, `optimism`, `avalanche`, and `fantom`
+4. The API stores the chain and mint provenance in the indexed file row.
+5. The Tatum search route returns `source: "tatum-gateway"` when the result comes from Tatum and `rpcProvider: "tatum"` so the UI can tell the user what was used.
 
-Compatibility window:
+## Supported Mint Paths
 
-- SDK: `>=0.2.0 <0.3.0`
-- CLI: `>=0.2.0 <0.3.0`
+### Tatum Express
 
-## How It Works
+Use this path for the fast hackathon mint flow:
 
-1. A client creates an upload session.
-2. The client uploads chunks in any order.
-3. Floe validates and stores uploaded chunks.
-4. The client requests finalize.
-5. Floe publishes the assembled file to Walrus.
-6. Floe records metadata on Sui and returns a `fileId`.
-7. Clients read the file through the file endpoints.
+- `polygon` → `MATIC`
+- `bsc` / `bnb` / `binance` → `BSC`
+- `celo` / `alfajores` → `CELO`
+- `ethereum` / `eth` / `mainnet` → `ETH`
 
-## Components
+### Tatum Native Minting
 
-- **API**: Fastify server and route handlers
-- **Redis**: upload state, chunk indexes, locks, queue state, and rate limiting
-- **Postgres**: optional cache for file lookups
-- **Chunk store**: `s3`/R2/MinIO-compatible storage by default, `disk` optional
-- **Walrus**: blob storage for finalized files
-- **Sui**: file metadata and ownership anchor
+Use this path when the chain needs a wallet-backed mint path:
+
+- `base` → `ETH_BASE`
+- `arbitrum` → `ETH_ARB`
+- `optimism` → `ETH_OP`
+- `avalanche` / `avax` → `AVAX`
+- `fantom` → `FTM`
+
+Native minting expects:
+
+- `TATUM_NATIVE_CONTRACT_ADDRESS`
+- `TATUM_TEST_PRIVATE_KEY` or `TATUM_SIGNATURE_ID`
+
+Keep those credentials in test-only or hackathon-only environments.
 
 ## Local Development
 
 ### Requirements
 
 - Node.js `>=20`
-- Redis access
+- Redis
 - Walrus aggregator access
-- Sui RPC access and a signing key
-- Walrus upload access through:
-  - `sdk` mode with `FLOE_WALRUS_SDK_BASE_URL`, or
-  - `cli` mode with a local `walrus` binary
+- Sui RPC access
+- `TATUM_API_KEY`
 
-### Setup
+For native Tatum minting, also set:
+
+- `TATUM_NATIVE_CONTRACT_ADDRESS`
+- `TATUM_TEST_PRIVATE_KEY` or `TATUM_SIGNATURE_ID`
+
+### Install
 
 ```bash
 git clone https://github.com/floehq/floe.git
@@ -61,105 +73,48 @@ cd floe
 npm install
 ```
 
-Minimal environment example:
-
-```dotenv
-PORT=3001
-NODE_ENV=development
-UPLOAD_TMP_DIR=/var/lib/floe/upload
-FLOE_CHUNK_STORE_MODE=s3
-FLOE_S3_BUCKET=floe-staging
-FLOE_REDIS_PROVIDER=upstash
-UPSTASH_REDIS_REST_URL=https://<your-upstash-url>.upstash.io
-UPSTASH_REDIS_REST_TOKEN=<your-upstash-token>
-WALRUS_AGGREGATOR_URL=https://walrus-testnet-aggregator.nodes.guru
-FLOE_WALRUS_STORE_MODE=sdk
-FLOE_WALRUS_SDK_BASE_URL=https://publisher.walrus-testnet.walrus.space
-FLOE_NETWORK=testnet
-SUI_PRIVATE_KEY=suiprivkey...
-SUI_PACKAGE_ID=0x<your-package-id>
-```
-
-Floe can also load a topology config file:
-
-```bash
-npm run dev -- --config ./config/floe.example.yaml --role read
-```
-
-Redis modes:
-
-- `FLOE_REDIS_PROVIDER=upstash` with `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`
-- `FLOE_REDIS_PROVIDER=native` with `REDIS_URL=redis://host:6379`
-
 ### Run
 
 ```bash
 npm run dev
 ```
 
-Examples:
+Hackathon UIs:
 
 ```bash
-npm run dev -- --role read
-npm run dev -- --role write
-npm run dev -- --config ./config/floe.example.yaml
+npm run tatum
+npm run dashboard
 ```
 
 ### Build
 
 ```bash
 npm run build --workspace=apps/api
-npm run start
 ```
 
-## Docker
+### Tests
 
 ```bash
-docker build -t floe-api:latest .
+npm run test --workspace=apps/api
 ```
 
-For container deployments:
+## API Notes
 
-- mount a persistent writable path at `UPLOAD_TMP_DIR`
-- use `/health` for health checks
-- if local MinIO runs on the host, use `host.docker.internal` instead of `127.0.0.1`
-
-## CLI
-
-Floe includes a root launcher at `./floe.sh` that delegates to `scripts/floe.sh`.
-
-```bash
-./floe.sh "path/to/file.mp4" --parallel 3 --epochs 3
-npm run upload -- "path/to/file.mp4" --parallel 3 --epochs 3
-```
-
-Resume or override the API base:
-
-```bash
-./floe.sh "path/to/file.mp4" --resume <uploadId>
-./floe.sh "path/to/file.mp4" --api http://localhost:3001/v1/uploads
-```
-
-Prepare a non-faststart MP4 before upload:
-
-```bash
-./floe.sh "path/to/file.mp4" --faststart
-```
-
-## Benchmark
-
-```bash
-npm run bench:stream -- --base http://localhost:3001 --file <fileId>
-```
-
-This writes CSV output under `tmp/stream-load/<timestamp>/`.
+- `GET /v1/search` returns the indexed file feed.
+- Tatum-backed responses include:
+  - `source`
+  - `rpcProvider`
+- Chain metadata is stored in the indexed file row and surfaced in the dashboard.
 
 ## Documentation
 
 - `docs/API.md` - API routes and response contract
-- `docs/DEPLOYMENT.md` - deployment and restart flow
 - `docs/OPERATIONS.md` - runtime model, configuration, metrics, and runbook notes
-- `docs/SECURITY.md` - auth model and security notes
+- `npm run tatum` - hackathon demo app for uploads and provenance
+
+## Credit
+
+Floe started as a Sui/Walrus file pipeline. This branch keeps that core and layers Tatum-backed chain minting and search on top for the hackathon demo.
 
 ## License
 
