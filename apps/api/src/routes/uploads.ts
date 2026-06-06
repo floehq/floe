@@ -899,7 +899,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       if (!persisted) {
         await Promise.all([
           redis.srem(uploadKeys.chunks(uploadId), String(idx)).catch(() => {}),
-          chunkStore.cleanup(uploadId).catch(() => {}),
+          chunkStore.removeChunk(uploadId, idx).catch(() => {}),
         ]);
         const status = await redis
           .hget<string>(uploadKeys.meta(uploadId), "status")

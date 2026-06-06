@@ -1,4 +1,7 @@
+import { createRequire } from "module";
 import type { FastifyBaseLogger } from "fastify";
+
+const _require = createRequire(import.meta.url);
 
 type PgPool = {
   query: (sql: string, values?: unknown[]) => Promise<{ rows: any[] }>;
@@ -43,11 +46,10 @@ export function isPostgresRequired(): boolean {
 }
 
 async function loadPgPool(connectionString: string): Promise<PgPool> {
-  const dynamicImport = new Function("s", "return import(s)") as (
-    specifier: string
-  ) => Promise<any>;
-  const pg = await dynamicImport("pg").catch(() => null);
-  if (!pg) {
+  let pg: any;
+  try {
+    pg = _require("pg");
+  } catch {
     throw new Error("Postgres driver not found. Run: npm install pg --workspace=apps/api");
   }
 
