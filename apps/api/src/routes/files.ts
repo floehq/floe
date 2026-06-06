@@ -25,6 +25,7 @@ import {
   isFileFieldsDebugEnabled,
   normalizeFileFields,
   normalizeFileIdParam,
+  type CachedFileFieldsResult,
   type FileFieldsSource,
   type PostgresReadState,
 } from "../services/files/file.read-model.js";
@@ -94,6 +95,41 @@ function sendFileAccessDenied(reply: any, authz: { code?: string; message?: stri
     authzErrorCode(authz.code),
     authz.message ?? "File access denied"
   );
+}
+
+async function resolveFileFields(id: string): Promise<CachedFileFieldsResult> {
+  let fileId = normalizeFileIdParam(id);
+  let out: CachedFileFieldsResult = { fields: null, source: null, postgresState: "disabled" };
+
+  if (fileId) {
+    try {
+      out = await getFileFieldsCached(fileId);
+    } catch (err) {
+      // Fallback
+    }
+  }
+
+  if (!out.fields) {
+    const indexed = await findFileByBlobId(id).catch(() => null);
+    if (indexed) {
+      out = {
+        fields: {
+          blob_id: indexed.blobId,
+          blob_object_id: indexed.blobObjectId,
+          checksum: indexed.checksum,
+          size_bytes: indexed.sizeBytes,
+          mime: indexed.mimeType,
+          created_at: indexed.createdAtMs,
+          owner: indexed.ownerAddress,
+          walrus_end_epoch: indexed.walrusEndEpoch,
+        },
+        source: "postgres",
+        postgresState: "healthy",
+      };
+    }
+  }
+
+  return out;
 }
 
 export type StreamReadPlan = {
@@ -575,11 +611,26 @@ export async function filesRoutes(app: FastifyInstance) {
       });
 
       // 2. Update Floe metadata on Sui
-      await renewFileMetadata({
-        fileId,
-        blobObjectId: !normalized.blobObjectId ? blobObjectId : undefined,
-        walrusEndEpoch: walrusResult.endEpoch,
-      });
+      try {
+        await renewFileMetadata({
+          fileId,
+          blobObjectId: !normalized.blobObjectId ? blobObjectId : undefined,
+          walrusEndEpoch: walrusResult.endEpoch,
+        });
+      } catch (metadataErr) {
+        const metadataMessage = (metadataErr as Error)?.message ?? "unknown";
+        if (
+          metadataMessage.includes("SUI_RENEW_SUBMIT_FAILED") &&
+          metadataMessage.includes("notExists")
+        ) {
+          req.log.warn(
+            { err: metadataErr, fileId },
+            "Skipping Sui renewal metadata update because the file object is missing"
+          );
+        } else {
+          throw metadataErr;
+        }
+      }
 
       // 3. Update local cache
       clearFileFieldsCache(fileId);
@@ -737,14 +788,16 @@ export async function filesRoutes(app: FastifyInstance) {
       }
 
       const { fileId: rawFileId } = req.params as { fileId: string };
-      const fileId = normalizeFileIdParam(rawFileId);
+      const normalizedFileId = normalizeFileIdParam(rawFileId);
+      const indexedByBlob = normalizedFileId ? null : await findFileByBlobId(rawFileId).catch(() => null);
+      const fileId = normalizedFileId ?? indexedByBlob?.fileId ?? null;
       if (!fileId) {
         req.log.warn({ fileId: rawFileId }, "Invalid file id");
         return sendApiError(
           reply,
           400,
           "INVALID_FILE_ID",
-          "fileId must be a valid Sui object id"
+          "fileId must be a valid Sui object id or blob id"
         );
       }
 
@@ -761,21 +814,10 @@ export async function filesRoutes(app: FastifyInstance) {
       let fieldsSource: FileFieldsSource | null = null;
       let postgresState: PostgresReadState = "disabled";
       const t0 = Date.now();
-      try {
-        const out = await getFileFieldsCached(fileId);
-        fields = out.fields;
-        fieldsSource = out.source;
-        postgresState = out.postgresState;
-      } catch (err) {
-        req.log.error({ err, fileId }, "Sui read failed");
-        return sendApiError(
-          reply,
-          503,
-          "SUI_UNAVAILABLE",
-          "Failed to fetch file metadata from Sui",
-          { retryable: true }
-        );
-      }
+      const out = await resolveFileFields(rawFileId);
+      fields = out.fields;
+      fieldsSource = out.source;
+      postgresState = out.postgresState;
 
       if (!fields) {
         return sendApiError(reply, 404, "FILE_NOT_FOUND", "File not found");

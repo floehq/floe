@@ -1,7 +1,11 @@
 import path from "path";
 
-if (!process.env.UPLOAD_TMP_DIR) {
-  throw new Error("Missing required env: UPLOAD_TMP_DIR");
+function requireEnv(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`Missing required env: ${name}`);
+  }
+  return value;
 }
 
 function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
@@ -15,7 +19,9 @@ function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
 }
 
 export const UploadConfig = {
-  tmpDir: path.resolve(process.env.UPLOAD_TMP_DIR),
+  get tmpDir() {
+    return path.resolve(requireEnv("UPLOAD_TMP_DIR"));
+  },
 
   maxFileSizeBytes: parsePositiveIntEnv(
     "FLOE_MAX_FILE_SIZE_BYTES",

@@ -22,22 +22,33 @@ function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
   return n;
 }
 
-if (!process.env.WALRUS_AGGREGATOR_URL) {
-  throw new Error("Missing required env: WALRUS_AGGREGATOR_URL");
+function requireEnv(name: string): string {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`Missing required env: ${name}`);
+  }
+  return value;
 }
-
-const primaryAggregator = process.env.WALRUS_AGGREGATOR_URL;
-const fallbackAggregators = parseUrlList(
-  process.env.WALRUS_AGGREGATOR_FALLBACK_URLS
-);
-
-assertHttpUrl("WALRUS_AGGREGATOR_URL", primaryAggregator);
-for (const u of fallbackAggregators) assertHttpUrl("WALRUS_AGGREGATOR_FALLBACK_URLS", u);
 
 export const WalrusEnv = {
   // Ordered list. Reader will try primary first, then fallbacks.
-  aggregatorUrls: [primaryAggregator, ...fallbackAggregators],
-  systemId: process.env.WALRUS_SYSTEM_ID || "0x388273cf320579e001804b4d79198f24458d9753e85e09f5db99c55b14197477",
+  get aggregatorUrls() {
+    const primaryAggregator = requireEnv("WALRUS_AGGREGATOR_URL");
+    const fallbackAggregators = parseUrlList(
+      process.env.WALRUS_AGGREGATOR_FALLBACK_URLS
+    );
+
+    assertHttpUrl("WALRUS_AGGREGATOR_URL", primaryAggregator);
+    for (const u of fallbackAggregators) {
+      assertHttpUrl("WALRUS_AGGREGATOR_FALLBACK_URLS", u);
+    }
+
+    return [primaryAggregator, ...fallbackAggregators];
+  },
+  get systemId() {
+    return process.env.WALRUS_SYSTEM_ID ||
+      "0x388273cf320579e001804b4d79198f24458d9753e85e09f5db99c55b14197477";
+  },
 };
 
 export function describeWalrusReaders() {
