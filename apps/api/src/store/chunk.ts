@@ -18,5 +18,7 @@ export interface ChunkStore {
 
   openChunk(uploadId: string, index: number): Readable;
 
+  removeChunk(uploadId: string, index: number): Promise<void>;
+
   cleanup(uploadId: string): Promise<void>;
 }

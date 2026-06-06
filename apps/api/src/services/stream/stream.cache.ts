@@ -8,6 +8,8 @@ import { fetchWalrusBlob } from "../walrus/read.js";
 import {
   STREAM_CACHE_FILL_CONCURRENCY,
   STREAM_CACHE_MAX_BYTES,
+  STREAM_CACHE_MIN_FREE_DISK_BYTES,
+  STREAM_CACHE_MIN_FREE_DISK_FRACTION,
   STREAM_CACHE_TTL_MS,
   shouldCacheFullObject as shouldCacheFullObjectPolicy,
 } from "./stream.cache.policy.js";
@@ -77,19 +79,52 @@ async function listCacheFiles() {
   return scanDir(STREAM_CACHE_DIR);
 }
 
+async function ensureFreeDiskSpace(): Promise<void> {
+  try {
+    const stat = await fsp.statfs(STREAM_CACHE_DIR);
+    const availableBytes = stat.bsize * stat.bavail;
+    const minFreeBytes = Math.max(
+      Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_BYTES) && STREAM_CACHE_MIN_FREE_DISK_BYTES > 0
+        ? STREAM_CACHE_MIN_FREE_DISK_BYTES
+        : 0,
+      Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_FRACTION) && STREAM_CACHE_MIN_FREE_DISK_FRACTION > 0
+        ? Math.floor(stat.blocks * stat.bsize * STREAM_CACHE_MIN_FREE_DISK_FRACTION)
+        : 0
+    );
+    if (availableBytes < minFreeBytes) {
+      await pruneStreamCacheByBytes(availableBytes - minFreeBytes);
+    }
+  } catch {
+    // statfs not available or not supported; skip disk-free check
+  }
+}
+
+async function pruneStreamCacheByBytes(targetFreeBytes: number) {
+  const files = await listCacheFiles();
+  files.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  let freed = 0;
+  for (const file of files) {
+    await fsp.rm(file.path, { force: true }).catch(() => {});
+    recordStreamCacheEviction({ reason: "size", bytes: file.size });
+    freed += file.size;
+    if (freed >= targetFreeBytes) break;
+  }
+}
+
 async function pruneStreamCacheIfNeeded() {
   if (!Number.isFinite(STREAM_CACHE_MAX_BYTES) || STREAM_CACHE_MAX_BYTES <= 0) return;
   const files = await listCacheFiles();
   let totalBytes = files.reduce((sum, file) => sum + file.size, 0);
-  if (totalBytes <= STREAM_CACHE_MAX_BYTES) return;
-
-  files.sort((a, b) => a.mtimeMs - b.mtimeMs);
-  for (const file of files) {
-    await fsp.rm(file.path, { force: true }).catch(() => {});
-    recordStreamCacheEviction({ reason: "size", bytes: file.size });
-    totalBytes -= file.size;
-    if (totalBytes <= STREAM_CACHE_MAX_BYTES) break;
+  if (totalBytes > STREAM_CACHE_MAX_BYTES) {
+    files.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    for (const file of files) {
+      await fsp.rm(file.path, { force: true }).catch(() => {});
+      recordStreamCacheEviction({ reason: "size", bytes: file.size });
+      totalBytes -= file.size;
+      if (totalBytes <= STREAM_CACHE_MAX_BYTES) break;
+    }
   }
+  await ensureFreeDiskSpace();
 }
 
 async function sweepExpiredStreamCache() {
@@ -100,6 +135,32 @@ async function sweepExpiredStreamCache() {
     if (file.mtimeMs > cutoff) continue;
     await fsp.rm(file.path, { force: true }).catch(() => {});
   }
+}
+
+const ORPHAN_TMP_GRACE_MS = 30 * 60_000;
+
+async function cleanupOrphanedTempFiles() {
+  const scanDir = async (dir: string) => {
+    const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await scanDir(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (!entry.name.endsWith('.tmp')) continue;
+      try {
+        const stat = await fsp.stat(fullPath);
+        if (Date.now() - stat.mtimeMs > ORPHAN_TMP_GRACE_MS) {
+          await fsp.rm(fullPath, { force: true }).catch(() => {});
+        }
+      } catch {
+        // ignore
+      }
+    }
+  };
+  await scanDir(STREAM_CACHE_DIR);
 }
 
 async function expireStreamCacheIfNeeded(filePath: string) {
@@ -113,6 +174,7 @@ async function expireStreamCacheIfNeeded(filePath: string) {
 
 export async function initStreamCache() {
   await ensureStreamCacheDir();
+  await cleanupOrphanedTempFiles();
   await sweepExpiredStreamCache();
   await pruneStreamCacheIfNeeded();
 }
@@ -390,6 +452,26 @@ async function reserveCacheBytes(expectedBytes: number): Promise<null | (() => v
     const currentBytes = files.reduce((sum, file) => sum + file.size, 0);
     if (currentBytes + reservedCacheBytes + expectedBytes > STREAM_CACHE_MAX_BYTES) {
       return null;
+    }
+    if (!Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_BYTES) || STREAM_CACHE_MIN_FREE_DISK_BYTES <= 0) {
+      // skip disk-free check if not configured
+    } else {
+      try {
+        const stat = await fsp.statfs(STREAM_CACHE_DIR);
+        const availableBytes = stat.bsize * stat.bavail;
+        const minFreeBytes = Math.max(
+          STREAM_CACHE_MIN_FREE_DISK_BYTES,
+          Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_FRACTION) && STREAM_CACHE_MIN_FREE_DISK_FRACTION > 0
+            ? Math.floor(stat.blocks * stat.bsize * STREAM_CACHE_MIN_FREE_DISK_FRACTION)
+            : 0
+        );
+        const needed = currentBytes + reservedCacheBytes + expectedBytes;
+        if (availableBytes < minFreeBytes || availableBytes < needed * 0.1) {
+          return null;
+        }
+      } catch {
+        // statfs not available; skip
+      }
     }
 
     reservedCacheBytes += expectedBytes;

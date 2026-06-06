@@ -8,6 +8,7 @@ const require = createRequire(import.meta.url);
 
 type AwsS3Module = {
   S3Client: new (...args: any[]) => any;
+  DeleteObjectCommand: new (...args: any[]) => any;
   DeleteObjectsCommand: new (...args: any[]) => any;
   GetObjectCommand: new (...args: any[]) => any;
   HeadObjectCommand: new (...args: any[]) => any;
@@ -301,6 +302,20 @@ export class S3ChunkStore implements ChunkStore {
     })();
 
     return pass;
+  }
+
+  async removeChunk(uploadId: string, index: number): Promise<void> {
+    const key = this.chunkKey(uploadId, index);
+    try {
+      await this.cfg.client.send(
+        new this.cfg.cmd.DeleteObjectCommand({
+          Bucket: this.cfg.bucket,
+          Key: key,
+        })
+      );
+    } catch {
+      // Best-effort; the chunk may not exist.
+    }
   }
 
   async cleanup(uploadId: string): Promise<void> {

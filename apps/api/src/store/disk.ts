@@ -183,6 +183,10 @@ export class DiskChunkStore implements ChunkStore {
     return fs.createReadStream(this.chunkPath(uploadId, index));
   }
 
+  async removeChunk(uploadId: string, index: number): Promise<void> {
+    fs.rmSync(this.chunkPath(uploadId, index), { force: true });
+  }
+
   async cleanup(uploadId: string): Promise<void> {
     fs.rmSync(this.dir(uploadId), { recursive: true, force: true });
   }
