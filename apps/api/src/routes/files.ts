@@ -9,7 +9,7 @@ import {
   getIndexedFile,
   upsertIndexedFile,
 } from "../db/files.repository.js";
-import { fetchWalrusBlob } from "../services/walrus/read.js";
+import { checkWalrusBlobExists, fetchWalrusBlob } from "../services/walrus/read.js";
 import { renewWalrusBlob } from "../services/walrus/renew.js";
 import { getCurrentWalrusEpoch } from "../services/walrus/epoch.js";
 import { renewFileMetadata } from "../sui/file.metadata.js";
@@ -918,6 +918,23 @@ export async function filesRoutes(app: FastifyInstance) {
       // HEAD requests are satisfied from metadata but should still reflect range semantics.
       if (req.method === "HEAD") {
         return reply.status(status).send();
+      }
+
+      // Pre-flight HEAD check — if all Walrus aggregators report 404, avoid an
+      // expensive streaming attempt and surface a clear error page.
+      const blobExists = await checkWalrusBlobExists({ blobId }).catch(() => ({ exists: true }));
+      if (!blobExists.exists) {
+        const html = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Blob Not Available</title></head>
+<body style="font-family:sans-serif;padding:2rem;max-width:600px;margin:auto;text-align:center">
+  <h1>503 — Blob Not Yet Available</h1>
+  <p>The blob <code>${blobId}</code> has been submitted to the Walrus network but has not
+  been fully indexed by storage aggregators yet. This is usually temporary.</p>
+  <p>Try refreshing the page in a minute.</p>
+</body>
+</html>`;
+        return reply.status(503).type("text/html").send(html);
       }
 
       const cachedPath =

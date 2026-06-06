@@ -1,6 +1,9 @@
 import { WalrusEnv, WalrusReadLimits } from "../../config/walrus.config.js";
 import { observeWalrusSegmentFetch } from "../metrics/runtime.metrics.js";
 
+const BODY_IDLE_TIMEOUT_MS = 30_000;
+const HEAD_CHECK_TIMEOUT_MS = 15_000;
+
 function normalizeBaseUrl(url: string): string {
   return url.replace(/\/$/, "");
 }
@@ -92,6 +95,44 @@ async function fetchWithTimeout(params: {
   }
 }
 
+export async function checkWalrusBlobExists(params: {
+  blobId: string;
+}): Promise<{ exists: boolean; reason?: string }> {
+  const urls = WalrusEnv.aggregatorUrls;
+  const startIdx =
+    Number.isInteger(lastGoodAggregatorIdx) &&
+    lastGoodAggregatorIdx >= 0 &&
+    lastGoodAggregatorIdx < urls.length
+      ? lastGoodAggregatorIdx
+      : 0;
+
+  for (let aggAttempt = 0; aggAttempt < urls.length; aggAttempt++) {
+    const idx = (startIdx + aggAttempt) % urls.length;
+    const base = normalizeBaseUrl(urls[idx]);
+    const url = `${base}/v1/blobs/${encodeURIComponent(params.blobId)}`;
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), HEAD_CHECK_TIMEOUT_MS);
+      try {
+        const res = await fetch(url, { method: "HEAD", signal: controller.signal });
+        if (res.status === 200 || res.status === 206) {
+          return { exists: true };
+        }
+        if (res.status !== 404) {
+          return { exists: true, reason: `unexpected_status:${res.status}` };
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch {
+      // Try next aggregator
+    }
+  }
+
+  return { exists: false, reason: "not_found_on_all_aggregators" };
+}
+
 export async function fetchWalrusBlob(params: {
   blobId: string;
   rangeHeader?: string;
@@ -162,6 +203,57 @@ export async function fetchWalrusBlob(params: {
           statusClass: "2xx",
         });
         lastGoodAggregatorIdx = idx;
+
+        const body = res.body;
+        if (body) {
+          const idleTimeoutStream = new TransformStream({
+            flush(controller) {
+              controller.terminate();
+            },
+          });
+          const writer = idleTimeoutStream.writable.getWriter();
+          let idleTimer: ReturnType<typeof setTimeout> | null = null;
+          let idleDone = false;
+
+          const resetIdle = () => {
+            if (idleTimer) clearTimeout(idleTimer);
+            if (idleDone) return;
+            idleTimer = setTimeout(() => {
+              idleDone = true;
+              writer.close().catch(() => {});
+            }, BODY_IDLE_TIMEOUT_MS);
+          };
+
+          resetIdle();
+          const reader = body.getReader();
+
+          void (async () => {
+            try {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) {
+                  if (!idleDone) {
+                    clearTimeout(idleTimer!);
+                    await writer.close();
+                  }
+                  break;
+                }
+                resetIdle();
+                await writer.write(value);
+              }
+            } catch (err) {
+              await writer.abort(err).catch(() => {});
+            }
+          })();
+
+          const wrappedRes = new Response(idleTimeoutStream.readable, {
+            status: res.status,
+            statusText: res.statusText,
+            headers: res.headers,
+          });
+          return { res: wrappedRes, aggregatorUrl: base };
+        }
+
         return { res, aggregatorUrl: base };
       } catch (err) {
         const durationMs = Date.now() - attemptStartedAt;
