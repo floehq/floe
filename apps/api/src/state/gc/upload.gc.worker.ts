@@ -4,19 +4,12 @@ import type { FastifyBaseLogger } from "fastify";
 
 import { getRedis } from "../redis.js";
 import { uploadKeys } from "../keys.js";
-import {
-  UploadConfig,
-  GcConfig,
-} from "../../config/uploads.config.js";
+import { UploadConfig, GcConfig } from "../../config/uploads.config.js";
 import { chunkStore } from "../../store/index.js";
 
 const GRACE_MS = GcConfig.grace;
 
-const GC_ELIGIBLE_STATUSES = new Set([
-  "failed",
-  "expired",
-  "canceled",
-]);
+const GC_ELIGIBLE_STATUSES = new Set(["failed", "expired", "canceled"]);
 
 export async function runUploadGc(log: FastifyBaseLogger) {
   const redis = getRedis();
@@ -50,7 +43,8 @@ export async function runUploadGc(log: FastifyBaseLogger) {
       expiresAt > 0 &&
       expiresAt <= Date.now()
     ) {
-      await redis.multi()
+      await redis
+        .multi()
         .hset(metaKey, {
           status: "expired",
           expiredAt: String(Date.now()),
@@ -62,10 +56,7 @@ export async function runUploadGc(log: FastifyBaseLogger) {
       status = "expired";
     }
 
-    if (
-      !hasSession &&
-      (status === "uploading" || status === "finalizing")
-    ) {
+    if (!hasSession && (status === "uploading" || status === "finalizing")) {
       await redis.hset(metaKey, {
         status: "expired",
         expiredAt: String(Date.now()),
@@ -101,7 +92,8 @@ export async function runUploadGc(log: FastifyBaseLogger) {
           const st = await fs.stat(dirPath);
           mtimeMs = st.mtimeMs;
         } catch {
-          await redis.multi()
+          await redis
+            .multi()
             .del(metaKey)
             .del(uploadKeys.chunks(uploadId))
             .del(sessionKey)
@@ -124,10 +116,7 @@ export async function runUploadGc(log: FastifyBaseLogger) {
       continue;
     }
 
-    log.warn(
-      { uploadId, status },
-      "GC deleting failed/expired upload artifacts"
-    );
+    log.warn({ uploadId, status }, "GC deleting failed/expired upload artifacts");
 
     await Promise.all([
       chunkStore.cleanup(uploadId).catch(() => {}),
@@ -147,6 +136,6 @@ export async function runUploadGc(log: FastifyBaseLogger) {
         .exec(),
     ]);
 
-    await new Promise(r => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
   }
 }

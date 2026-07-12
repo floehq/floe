@@ -121,7 +121,7 @@ function normalizeHgetallReply(reply: unknown): Record<string, string> {
   if (!reply) return {};
   if (typeof reply === "object" && !Array.isArray(reply)) {
     return Object.fromEntries(
-      Object.entries(reply as Record<string, unknown>).map(([k, v]) => [k, String(v)])
+      Object.entries(reply as Record<string, unknown>).map(([k, v]) => [k, String(v)]),
     );
   }
   if (Array.isArray(reply)) {
@@ -144,7 +144,11 @@ class NativeRedisMulti {
   constructor(private readonly client: NativeRedisClient) {}
 
   hset(key: string, kv: Record<string, unknown>) {
-    this.commands.push(["HSET", key, ...Object.entries(kv).flatMap(([field, value]) => [field, String(value)])]);
+    this.commands.push([
+      "HSET",
+      key,
+      ...Object.entries(kv).flatMap(([field, value]) => [field, String(value)]),
+    ]);
     return this;
   }
 
@@ -235,7 +239,7 @@ export class NativeRedisClient implements RedisClient {
     const run = this.operationChain.then(operation, operation);
     this.operationChain = run.then(
       () => undefined,
-      () => undefined
+      () => undefined,
     );
     return run;
   }
@@ -290,7 +294,13 @@ export class NativeRedisClient implements RedisClient {
   }
 
   async hset(key: string, kv: Record<string, unknown>) {
-    return Number(await this.send(["HSET", key, ...Object.entries(kv).flatMap(([field, value]) => [field, String(value)])]));
+    return Number(
+      await this.send([
+        "HSET",
+        key,
+        ...Object.entries(kv).flatMap(([field, value]) => [field, String(value)]),
+      ]),
+    );
   }
 
   async scard(key: string) {

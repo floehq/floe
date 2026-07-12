@@ -71,7 +71,7 @@ test("authorization bearer takes precedence over x-api-key", async () => {
       tier: "authenticated",
       exp: Math.floor(Date.now() / 1000) + 60,
     },
-    "identity-token-secret"
+    "identity-token-secret",
   );
 
   const app = Fastify();
@@ -109,7 +109,7 @@ test("token provider rejects expired, malformed, and bad-signature tokens as pub
       tier: "authenticated",
       exp: Math.floor(Date.now() / 1000) - 10,
     },
-    "identity-token-secret"
+    "identity-token-secret",
   );
   const badSignature = `${expired.split(".")[0]}.bad-signature`;
 
@@ -117,7 +117,11 @@ test("token provider rejects expired, malformed, and bad-signature tokens as pub
   app.get("/", async (req) => resolveRequestIdentity(req));
 
   try {
-    for (const authorization of [`Bearer ${expired}`, "Bearer not-a-valid-token", `Bearer ${badSignature}`]) {
+    for (const authorization of [
+      `Bearer ${expired}`,
+      "Bearer not-a-valid-token",
+      `Bearer ${badSignature}`,
+    ]) {
       const res = await app.inject({
         method: "GET",
         url: "/",
@@ -163,7 +167,7 @@ test("external provider verifies remote normalized auth context and caches posit
       {
         status: 200,
         headers: { "content-type": "application/json" },
-      }
+      },
     );
   };
 
@@ -220,7 +224,7 @@ test("external provider accepts SaaS-issued api keys and propagates org, project
       {
         status: 200,
         headers: { "content-type": "application/json" },
-      }
+      },
     );
   };
 
@@ -256,8 +260,26 @@ test("external provider accepts SaaS-issued api keys and propagates org, project
 
 test("external provider treats revoked and invalid SaaS verifier responses as unauthenticated", async () => {
   const responses = [
-    { valid: false, subjectType: "api_key", subjectId: "unknown", orgId: "", projectId: "", scopes: [], tier: "unknown", reason: "revoked" },
-    { valid: false, subjectType: "api_key", subjectId: "unknown", orgId: "", projectId: "", scopes: [], tier: "unknown", reason: "invalid" },
+    {
+      valid: false,
+      subjectType: "api_key",
+      subjectId: "unknown",
+      orgId: "",
+      projectId: "",
+      scopes: [],
+      tier: "unknown",
+      reason: "revoked",
+    },
+    {
+      valid: false,
+      subjectType: "api_key",
+      subjectId: "unknown",
+      orgId: "",
+      projectId: "",
+      scopes: [],
+      tier: "unknown",
+      reason: "invalid",
+    },
   ];
   let callIndex = 0;
   (AuthProviderConfig as any).kind = "external";
@@ -343,7 +365,7 @@ test("external provider does not cache credentials past verifier expiry", async 
       {
         status: 200,
         headers: { "content-type": "application/json" },
-      }
+      },
     );
   };
 
@@ -381,7 +403,7 @@ test("resolveRequestIdentity memoizes external auth on the request", async () =>
       {
         status: 200,
         headers: { "content-type": "application/json" },
-      }
+      },
     );
   };
 

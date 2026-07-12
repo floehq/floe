@@ -9,11 +9,7 @@ import {
 } from "../src/config/runtime.bootstrap.ts";
 
 test("parseRuntimeArgs reads config path and role flags", () => {
-  const parsed = parseRuntimeArgs([
-    "--config",
-    "./config/floe.yaml",
-    "--role=write",
-  ]);
+  const parsed = parseRuntimeArgs(["--config", "./config/floe.yaml", "--role=write"]);
 
   assert.equal(parsed.configPath, "./config/floe.yaml");
   assert.equal(parsed.role, "write");
@@ -83,7 +79,7 @@ test("applyRuntimeConfig projects yaml topology values into env defaults", () =>
         },
         metrics: { enabled: false },
       },
-      "write"
+      "write",
     );
 
     assert.equal(process.env.FLOE_NODE_ROLE, "write");
@@ -91,14 +87,11 @@ test("applyRuntimeConfig projects yaml topology values into env defaults", () =>
     assert.equal(process.env.FLOE_CORS_ORIGINS, "http://localhost:3000,http://localhost:5173");
     assert.equal(process.env.FLOE_TRUST_PROXY, "1");
     assert.equal(process.env.WALRUS_AGGREGATOR_URL, "https://reader-1.example.com");
-    assert.equal(
-      process.env.WALRUS_AGGREGATOR_FALLBACK_URLS,
-      "https://reader-2.example.com"
-    );
+    assert.equal(process.env.WALRUS_AGGREGATOR_FALLBACK_URLS, "https://reader-2.example.com");
     assert.equal(process.env.FLOE_WALRUS_SDK_BASE_URL, "https://writer-1.example.com");
     assert.equal(
       process.env.FLOE_WALRUS_SDK_BASE_URLS,
-      "https://writer-1.example.com,https://writer-2.example.com"
+      "https://writer-1.example.com,https://writer-2.example.com",
     );
     assert.equal(process.env.FLOE_ENABLE_METRICS, "0");
   } finally {

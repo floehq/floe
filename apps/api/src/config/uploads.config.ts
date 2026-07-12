@@ -23,10 +23,7 @@ export const UploadConfig = {
     return path.resolve(requireEnv("UPLOAD_TMP_DIR"));
   },
 
-  maxFileSizeBytes: parsePositiveIntEnv(
-    "FLOE_MAX_FILE_SIZE_BYTES",
-    15 * 1024 * 1024 * 1024
-  ),
+  maxFileSizeBytes: parsePositiveIntEnv("FLOE_MAX_FILE_SIZE_BYTES", 15 * 1024 * 1024 * 1024),
   // Defensive cap to avoid Redis/Disk blowups from absurd client requests.
   // Example: tiny chunk sizes + huge file sizes -> massive chunk counts.
   maxTotalChunks: parsePositiveIntEnv("FLOE_MAX_TOTAL_CHUNKS", 200_000),
@@ -43,7 +40,7 @@ if (chunkMinBytes > chunkMaxBytes) {
 }
 if (chunkDefaultBytes < chunkMinBytes || chunkDefaultBytes > chunkMaxBytes) {
   throw new Error(
-    "FLOE_CHUNK_DEFAULT_BYTES must be between FLOE_CHUNK_MIN_BYTES and FLOE_CHUNK_MAX_BYTES"
+    "FLOE_CHUNK_DEFAULT_BYTES must be between FLOE_CHUNK_MIN_BYTES and FLOE_CHUNK_MAX_BYTES",
   );
 }
 

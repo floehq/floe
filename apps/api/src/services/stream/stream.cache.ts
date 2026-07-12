@@ -149,7 +149,7 @@ async function cleanupOrphanedTempFiles() {
         continue;
       }
       if (!entry.isFile()) continue;
-      if (!entry.name.endsWith('.tmp')) continue;
+      if (!entry.name.endsWith(".tmp")) continue;
       try {
         const stat = await fsp.stat(fullPath);
         if (Date.now() - stat.mtimeMs > ORPHAN_TMP_GRACE_MS) {

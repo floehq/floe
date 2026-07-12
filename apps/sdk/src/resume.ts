@@ -1,8 +1,6 @@
 import type { ResumeStore } from "./types.js";
 
-export function createBrowserLocalStorageResumeStore(
-  prefix = "floe:sdk:resume:"
-): ResumeStore {
+export function createBrowserLocalStorageResumeStore(prefix = "floe:sdk:resume:"): ResumeStore {
   return {
     get(key) {
       const storage = getLocalStorageSafe();
@@ -25,7 +23,9 @@ export function createBrowserLocalStorageResumeStore(
 export async function createNodeFileResumeStore(options?: {
   filePath?: string;
 }): Promise<ResumeStore> {
-  const dynamicImport = new Function("s", "return import(s)") as <T>(specifier: string) => Promise<T>;
+  const dynamicImport = new Function("s", "return import(s)") as <T>(
+    specifier: string,
+  ) => Promise<T>;
   const fs = await dynamicImport<{
     mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
     readFile(path: string, encoding: string): Promise<string>;
@@ -38,8 +38,7 @@ export async function createNodeFileResumeStore(options?: {
   }>("node:path");
 
   const filePath =
-    options?.filePath?.trim() ||
-    path.join(os.homedir(), ".floe-sdk", "resume-store.json");
+    options?.filePath?.trim() || path.join(os.homedir(), ".floe-sdk", "resume-store.json");
 
   const ensureDir = async () => {
     await fs.mkdir(path.dirname(filePath), { recursive: true });

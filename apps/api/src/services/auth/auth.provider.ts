@@ -1,21 +1,10 @@
 import type { FastifyRequest } from "fastify";
 
-import {
-  AuthAccessPolicyConfig,
-  AuthOwnerPolicyConfig,
-} from "../../config/auth.config.js";
+import { AuthAccessPolicyConfig, AuthOwnerPolicyConfig } from "../../config/auth.config.js";
 import type { RateLimitScope } from "../../config/auth.config.js";
-import {
-  checkTieredRateLimit,
-  type RateLimitDecision,
-} from "./auth.rate-limit.js";
-import {
-  resolveRequestIdentity,
-} from "./auth.identity.js";
-import {
-  authRequiredForAction,
-  type RequestIdentity,
-} from "./auth.context.js";
+import { checkTieredRateLimit, type RateLimitDecision } from "./auth.rate-limit.js";
+import { resolveRequestIdentity } from "./auth.identity.js";
+import { authRequiredForAction, type RequestIdentity } from "./auth.context.js";
 
 export interface AuthProvider {
   resolveIdentity(req: FastifyRequest): Promise<RequestIdentity>;
@@ -54,7 +43,10 @@ class DefaultAuthProvider implements AuthProvider {
     return identity.scopes.includes(requiredScope);
   }
 
-  private requireScope(identity: RequestIdentity, requiredScope: string): { allowed: true } | { allowed: false; code: string; message: string } {
+  private requireScope(
+    identity: RequestIdentity,
+    requiredScope: string,
+  ): { allowed: true } | { allowed: false; code: string; message: string } {
     if (this.hasScope(identity, requiredScope)) {
       return { allowed: true };
     }
@@ -67,7 +59,7 @@ class DefaultAuthProvider implements AuthProvider {
 
   private requireAnyScope(
     identity: RequestIdentity,
-    requiredScopes: string[]
+    requiredScopes: string[],
   ): { allowed: true } | { allowed: false; code: string; message: string } {
     if (requiredScopes.some((scope) => this.hasScope(identity, scope))) {
       return { allowed: true };
@@ -81,7 +73,7 @@ class DefaultAuthProvider implements AuthProvider {
 
   private async requireAuthentication(
     req: FastifyRequest,
-    action: "upload" | "file_read"
+    action: "upload" | "file_read",
   ): Promise<
     { allowed: true; identity: RequestIdentity } | { allowed: false; code: string; message: string }
   > {

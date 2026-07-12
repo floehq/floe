@@ -24,14 +24,16 @@ let originalGetObject: typeof suiModule.suiClient.getObject;
 const originalFetch = globalThis.fetch;
 const walrusSamples = new Map<string, Uint8Array>();
 
-function buildFileFields(overrides?: Partial<{
-  blob_id: string;
-  size_bytes: string;
-  mime: string;
-  created_at: string;
-  owner: string;
-  walrus_end_epoch: string;
-}>) {
+function buildFileFields(
+  overrides?: Partial<{
+    blob_id: string;
+    size_bytes: string;
+    mime: string;
+    created_at: string;
+    owner: string;
+    walrus_end_epoch: string;
+  }>,
+) {
   return {
     blob_id: "blob-default",
     size_bytes: "8",
@@ -81,7 +83,7 @@ const log = {
 
 function parseRangeHeader(
   rangeHeader: string | null | undefined,
-  sizeBytes: number
+  sizeBytes: number,
 ): { start: number; end: number } | null {
   if (!rangeHeader) return null;
   const match = rangeHeader.match(/^bytes=(\d+)-(\d+)$/i);
@@ -126,7 +128,11 @@ async function createRouteApp(customAuthProvider?: any) {
     post(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
       handlers.set(`POST ${path}`, handler);
     },
-    route(definition: { method: string[]; url: string; handler: (req: any, reply: any) => Promise<unknown> | unknown }) {
+    route(definition: {
+      method: string[];
+      url: string;
+      handler: (req: any, reply: any) => Promise<unknown> | unknown;
+    }) {
       for (const method of definition.method) {
         handlers.set(`${method} ${definition.url}`, definition.handler);
       }
@@ -209,13 +215,12 @@ before(async () => {
   streamCacheModule = await import("../src/services/stream/stream.cache.ts");
   originalGetObject = suiModule.suiClient.getObject.bind(suiModule.suiClient);
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const blobId = decodeURIComponent(url.split("/").pop() ?? "");
     const body = walrusSamples.get(blobId) ?? Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7]);
     const requestHeaders =
-      input instanceof Request
-        ? input.headers
-        : new Headers(init?.headers ?? undefined);
+      input instanceof Request ? input.headers : new Headers(init?.headers ?? undefined);
     const parsedRange = parseRangeHeader(requestHeaders.get("range"), body.byteLength);
     if (!parsedRange) {
       return new Response(body, {
@@ -253,7 +258,7 @@ test("metadata route exposes degraded postgres fallback when Sui is used", async
       },
       async end() {},
     },
-    true
+    true,
   );
   (suiModule.suiClient as any).getObject = async () => ({
     data: {
@@ -310,7 +315,7 @@ test("metadata route exposes postgres source when indexed lookup succeeds", asyn
       },
       async end() {},
     },
-    true
+    true,
   );
 
   const app = await createRouteApp();
@@ -336,7 +341,7 @@ test("manifest route exposes degraded postgres fallback headers", async () => {
       },
       async end() {},
     },
-    true
+    true,
   );
   (suiModule.suiClient as any).getObject = async () => ({
     data: {
@@ -391,7 +396,7 @@ test("stream routes expose metadata source headers", async () => {
       },
       async end() {},
     },
-    true
+    true,
   );
 
   const app = await createRouteApp();
@@ -458,7 +463,12 @@ test("ensureCachedStreamRange persists exact bytes for a cached segment", async 
 
 test("getCachedStreamPath evicts truncated full-cache files before they false-hit", async () => {
   const blobId = "full-cache-invalid";
-  const manualPath = path.join(process.env.UPLOAD_TMP_DIR!, "_stream_cache", "full", `${blobId}.blob`);
+  const manualPath = path.join(
+    process.env.UPLOAD_TMP_DIR!,
+    "_stream_cache",
+    "full",
+    `${blobId}.blob`,
+  );
   await fs.mkdir(path.dirname(manualPath), { recursive: true });
   await fs.writeFile(manualPath, Buffer.from([0, 1, 2]));
 
@@ -594,11 +604,11 @@ test("metadata and manifest expose public streamUrl when configured", async () =
 
   assert.equal(
     metadataRes.json().streamUrl,
-    `https://cdn.example.com/floe/v1/files/${fileId}/stream`
+    `https://cdn.example.com/floe/v1/files/${fileId}/stream`,
   );
   assert.equal(
     manifestRes.json().streamUrl,
-    `https://cdn.example.com/floe/v1/files/${fileId}/stream`
+    `https://cdn.example.com/floe/v1/files/${fileId}/stream`,
   );
 });
 

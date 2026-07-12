@@ -173,7 +173,7 @@ test("token provider accepts signed delegated bearer tokens", async () => {
       tier: "authenticated",
       exp: Math.floor(Date.now() / 1000) + 60,
     },
-    "test-token-secret"
+    "test-token-secret",
   );
 
   const result = await provider.authorizeUploadAccess({
@@ -290,7 +290,7 @@ test("external provider fails closed for revoked SaaS api keys on protected rout
       {
         status: 200,
         headers: { "content-type": "application/json" },
-      }
+      },
     );
 
   const result = await provider.authorizeUploadAccess({
@@ -314,7 +314,7 @@ test("token provider missing scope is denied by route authorization", async () =
       tier: "authenticated",
       exp: Math.floor(Date.now() / 1000) + 60,
     },
-    "test-token-secret"
+    "test-token-secret",
   );
 
   const result = await provider.authorizeFileAccess({

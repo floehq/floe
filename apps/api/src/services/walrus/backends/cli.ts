@@ -38,11 +38,11 @@ export function describeWalrusCliBackend() {
 }
 
 export async function uploadToWalrusViaCli(
-  params: WalrusUploadParams
+  params: WalrusUploadParams,
 ): Promise<WalrusUploadResult> {
   const tmpFile = path.join(
     os.tmpdir(),
-    `floe_walrus_${Date.now()}_${Math.random().toString(16).slice(2)}.bin`
+    `floe_walrus_${Date.now()}_${Math.random().toString(16).slice(2)}.bin`,
   );
 
   const rs = params.streamFactory();

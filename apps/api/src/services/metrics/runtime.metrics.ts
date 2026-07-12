@@ -12,10 +12,7 @@ type HistogramState = Map<string, HistogramEntry>;
 
 const countersByMetric = new Map<string, CounterState>();
 const gaugesByMetric = new Map<string, GaugeState>();
-const histogramsByMetric = new Map<
-  string,
-  { buckets: number[]; entries: HistogramState }
->();
+const histogramsByMetric = new Map<string, { buckets: number[]; entries: HistogramState }>();
 
 function labelsToSortedPairs(labels?: Labels): Array<[string, string]> {
   if (!labels) return [];
@@ -33,9 +30,7 @@ function labelsToKey(labels?: Labels): string {
 function labelsToProm(labels?: Labels): string {
   const pairs = labelsToSortedPairs(labels);
   if (pairs.length === 0) return "";
-  const rendered = pairs.map(
-    ([k, v]) => `${k}="${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
-  );
+  const rendered = pairs.map(([k, v]) => `${k}="${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`);
   return `{${rendered.join(",")}}`;
 }
 
@@ -58,7 +53,7 @@ function ensureGauge(metric: string): GaugeState {
 function ensureHistogram(metric: string, buckets: number[]) {
   const existing = histogramsByMetric.get(metric);
   const sanitized = [...new Set(buckets.filter((v) => Number.isFinite(v) && v > 0))].sort(
-    (a, b) => a - b
+    (a, b) => a - b,
   );
   if (existing) return existing;
   const created = {
@@ -127,7 +122,7 @@ export function recordHttpRequest(params: {
     "floe_http_request_duration_ms",
     params.durationMs,
     HTTP_DURATION_BUCKETS_MS,
-    labels
+    labels,
   );
 }
 
@@ -166,7 +161,7 @@ export function recordFinalizeJobResult(params: {
     FINALIZE_DURATION_BUCKETS_MS,
     {
       outcome: params.outcome,
-    }
+    },
   );
 }
 
@@ -186,16 +181,12 @@ export function observeFinalizeStage(params: {
     {
       stage: params.stage,
       outcome: params.outcome,
-    }
+    },
   );
 }
 
 export function observeFinalizeQueueWait(durationMs: number) {
-  observeHistogram(
-    "floe_finalize_queue_wait_ms",
-    durationMs,
-    FINALIZE_DURATION_BUCKETS_MS
-  );
+  observeHistogram("floe_finalize_queue_wait_ms", durationMs, FINALIZE_DURATION_BUCKETS_MS);
 }
 
 export function observeWalrusPublish(params: {
@@ -216,20 +207,17 @@ export function observeWalrusPublish(params: {
     {
       outcome: params.outcome,
       mode: params.mode,
-    }
+    },
   );
 }
 
-export function observeSuiFinalize(params: {
-  durationMs: number;
-  outcome: "success" | "failure";
-}) {
+export function observeSuiFinalize(params: { durationMs: number; outcome: "success" | "failure" }) {
   incrementCounter("floe_sui_finalize_total", 1, { outcome: params.outcome });
   observeHistogram(
     "floe_sui_finalize_duration_ms",
     params.durationMs,
     UPSTREAM_DURATION_BUCKETS_MS,
-    { outcome: params.outcome }
+    { outcome: params.outcome },
   );
 }
 
@@ -251,22 +239,14 @@ export function observeMetadataLookup(params: {
     {
       endpoint: params.endpoint,
       source: params.source,
-    }
+    },
   );
 }
 
-export function observeStreamTtfb(params: {
-  range: "full" | "partial";
-  durationMs: number;
-}) {
-  observeHistogram(
-    "floe_stream_ttfb_ms",
-    params.durationMs,
-    LOOKUP_DURATION_BUCKETS_MS,
-    {
-      range: params.range,
-    }
-  );
+export function observeStreamTtfb(params: { range: "full" | "partial"; durationMs: number }) {
+  observeHistogram("floe_stream_ttfb_ms", params.durationMs, LOOKUP_DURATION_BUCKETS_MS, {
+    range: params.range,
+  });
 }
 
 export function recordStreamCacheAccess(params: {
@@ -287,14 +267,11 @@ export function observeStreamCacheFill(params: {
     "floe_stream_cache_fill_duration_ms",
     params.durationMs,
     STREAM_CACHE_FILL_BUCKETS_MS,
-    { cache_type: params.cacheType }
+    { cache_type: params.cacheType },
   );
 }
 
-export function setStreamCacheMetrics(params: {
-  activeFills: number;
-  reservedBytes: number;
-}) {
+export function setStreamCacheMetrics(params: { activeFills: number; reservedBytes: number }) {
   setGauge("floe_stream_cache_active_fills", params.activeFills);
   setGauge("floe_stream_cache_reserved_bytes", params.reservedBytes);
 }
@@ -313,12 +290,7 @@ export function recordStreamCacheEviction(params: {
 
 export function observeWalrusSegmentFetch(params: {
   outcome:
-    | "success"
-    | "not_found"
-    | "retryable_status"
-    | "network_error"
-    | "aborted"
-    | "other_error";
+    "success" | "not_found" | "retryable_status" | "network_error" | "aborted" | "other_error";
   durationMs: number;
   statusClass?: "2xx" | "4xx" | "5xx" | "none";
 }) {
@@ -333,56 +305,41 @@ export function observeWalrusSegmentFetch(params: {
     {
       outcome: params.outcome,
       statusClass: params.statusClass ?? "none",
-    }
+    },
   );
 }
 
 function renderCounter(metric: string, help: string): string[] {
-  const lines = [
-    `# HELP ${metric} ${help}`,
-    `# TYPE ${metric} counter`,
-  ];
+  const lines = [`# HELP ${metric} ${help}`, `# TYPE ${metric} counter`];
   const state = countersByMetric.get(metric);
   if (!state) return lines;
 
   for (const [key, value] of [...state.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
-    const labels = key
-      ? Object.fromEntries(key.split(",").map((kv) => kv.split("=")))
-      : undefined;
+    const labels = key ? Object.fromEntries(key.split(",").map((kv) => kv.split("="))) : undefined;
     lines.push(`${metric}${labelsToProm(labels)} ${value}`);
   }
   return lines;
 }
 
 function renderGauge(metric: string, help: string): string[] {
-  const lines = [
-    `# HELP ${metric} ${help}`,
-    `# TYPE ${metric} gauge`,
-  ];
+  const lines = [`# HELP ${metric} ${help}`, `# TYPE ${metric} gauge`];
   const state = gaugesByMetric.get(metric);
   if (!state) return lines;
 
   for (const [key, value] of [...state.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
-    const labels = key
-      ? Object.fromEntries(key.split(",").map((kv) => kv.split("=")))
-      : undefined;
+    const labels = key ? Object.fromEntries(key.split(",").map((kv) => kv.split("="))) : undefined;
     lines.push(`${metric}${labelsToProm(labels)} ${value}`);
   }
   return lines;
 }
 
 function renderHistogram(metric: string, help: string): string[] {
-  const lines = [
-    `# HELP ${metric} ${help}`,
-    `# TYPE ${metric} histogram`,
-  ];
+  const lines = [`# HELP ${metric} ${help}`, `# TYPE ${metric} histogram`];
   const hist = histogramsByMetric.get(metric);
   if (!hist) return lines;
 
   for (const [key, entry] of [...hist.entries.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
-    const baseLabels = key
-      ? Object.fromEntries(key.split(",").map((kv) => kv.split("=")))
-      : {};
+    const baseLabels = key ? Object.fromEntries(key.split(",").map((kv) => kv.split("="))) : {};
 
     for (let i = 0; i < hist.buckets.length; i++) {
       const labels = { ...baseLabels, le: hist.buckets[i] };
@@ -401,66 +358,47 @@ export function renderPrometheusMetrics(): string {
 
   lines.push(
     ...renderCounter("floe_http_requests_total", "Total HTTP requests by route and status"),
-    ...renderHistogram(
-      "floe_http_request_duration_ms",
-      "HTTP request duration in milliseconds"
-    ),
+    ...renderHistogram("floe_http_request_duration_ms", "HTTP request duration in milliseconds"),
     ...renderGauge("floe_finalize_queue_depth", "Current finalize queue depth"),
-    ...renderGauge(
-      "floe_finalize_queue_pending_unique",
-      "Unique uploads pending finalization"
-    ),
+    ...renderGauge("floe_finalize_queue_pending_unique", "Unique uploads pending finalization"),
     ...renderGauge("floe_finalize_workers_active", "Active finalize workers in this process"),
-    ...renderGauge("floe_finalize_queue_oldest_age_ms", "Oldest finalize queue age in milliseconds"),
-    ...renderCounter(
-      "floe_finalize_enqueue_total",
-      "Finalize enqueue attempts by result"
+    ...renderGauge(
+      "floe_finalize_queue_oldest_age_ms",
+      "Oldest finalize queue age in milliseconds",
     ),
+    ...renderCounter("floe_finalize_enqueue_total", "Finalize enqueue attempts by result"),
     ...renderCounter("floe_finalize_jobs_total", "Finalize job outcomes"),
-    ...renderHistogram(
-      "floe_finalize_job_duration_ms",
-      "Finalize job duration in milliseconds"
-    ),
-    ...renderCounter(
-      "floe_finalize_stage_total",
-      "Finalize stage outcomes by stage"
-    ),
+    ...renderHistogram("floe_finalize_job_duration_ms", "Finalize job duration in milliseconds"),
+    ...renderCounter("floe_finalize_stage_total", "Finalize stage outcomes by stage"),
     ...renderHistogram(
       "floe_finalize_stage_duration_ms",
-      "Finalize stage duration in milliseconds"
+      "Finalize stage duration in milliseconds",
     ),
     ...renderHistogram(
       "floe_finalize_queue_wait_ms",
-      "Finalize queue wait duration in milliseconds"
+      "Finalize queue wait duration in milliseconds",
     ),
     ...renderCounter("floe_walrus_publish_total", "Walrus publish outcomes"),
     ...renderHistogram(
       "floe_walrus_publish_duration_ms",
-      "Walrus publish duration in milliseconds"
+      "Walrus publish duration in milliseconds",
     ),
     ...renderCounter("floe_sui_finalize_total", "Sui metadata finalize outcomes"),
     ...renderHistogram(
       "floe_sui_finalize_duration_ms",
-      "Sui metadata finalize duration in milliseconds"
+      "Sui metadata finalize duration in milliseconds",
     ),
-    ...renderCounter("floe_stream_read_errors_total", "Stream read errors by reason")
-    ,
+    ...renderCounter("floe_stream_read_errors_total", "Stream read errors by reason"),
     ...renderHistogram(
       "floe_metadata_lookup_duration_ms",
-      "File metadata lookup duration by endpoint and source in milliseconds"
+      "File metadata lookup duration by endpoint and source in milliseconds",
     ),
-    ...renderHistogram(
-      "floe_stream_ttfb_ms",
-      "Stream time-to-first-byte in milliseconds"
-    ),
-    ...renderCounter(
-      "floe_walrus_segment_fetch_total",
-      "Walrus segment fetch outcomes"
-    ),
+    ...renderHistogram("floe_stream_ttfb_ms", "Stream time-to-first-byte in milliseconds"),
+    ...renderCounter("floe_walrus_segment_fetch_total", "Walrus segment fetch outcomes"),
     ...renderHistogram(
       "floe_walrus_segment_fetch_duration_ms",
-      "Walrus segment fetch duration in milliseconds"
-    )
+      "Walrus segment fetch duration in milliseconds",
+    ),
   );
 
   return `${lines.join("\n")}\n`;

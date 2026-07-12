@@ -13,11 +13,13 @@ export function startUploadGc(log: FastifyBaseLogger) {
   timer = setInterval(async () => {
     if (running) return; // prevent overlap
 
-    running = runUploadGc(log).catch(err => {
-      log.error(err, "Upload GC failed");
-    }).finally(() => {
-      running = null;
-    });
+    running = runUploadGc(log)
+      .catch((err) => {
+        log.error(err, "Upload GC failed");
+      })
+      .finally(() => {
+        running = null;
+      });
   }, GcConfig.gcInterval);
 
   timer.unref();

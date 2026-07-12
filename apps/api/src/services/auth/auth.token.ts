@@ -32,14 +32,13 @@ function base64UrlEncode(input: Buffer): string {
 
 function verifySignature(payloadPart: string, signaturePart: string, secret: string): boolean {
   const expected = crypto.createHmac("sha256", secret).update(payloadPart).digest();
-  const actual = Buffer.from(
-    signaturePart.replace(/-/g, "+").replace(/_/g, "/"),
-    "base64"
-  );
+  const actual = Buffer.from(signaturePart.replace(/-/g, "+").replace(/_/g, "/"), "base64");
   return actual.length === expected.length && crypto.timingSafeEqual(actual, expected);
 }
 
-function validateClaims(claims: DelegatedTokenClaims): claims is DelegatedTokenClaims & { sub: string } {
+function validateClaims(
+  claims: DelegatedTokenClaims,
+): claims is DelegatedTokenClaims & { sub: string } {
   if (!claims || typeof claims !== "object") return false;
   if (typeof claims.sub !== "string" || claims.sub.trim().length === 0) return false;
   if (claims.subjectType && !["user", "service", "api_key"].includes(claims.subjectType)) {
@@ -57,7 +56,10 @@ function validateClaims(claims: DelegatedTokenClaims): claims is DelegatedTokenC
   if (claims.scopes.some((scope) => typeof scope !== "string" || scope.trim().length === 0)) {
     return false;
   }
-  if (claims.orgId !== undefined && (typeof claims.orgId !== "string" || claims.orgId.trim().length === 0)) {
+  if (
+    claims.orgId !== undefined &&
+    (typeof claims.orgId !== "string" || claims.orgId.trim().length === 0)
+  ) {
     return false;
   }
   if (
@@ -102,7 +104,9 @@ export function buildTokenAuthContext(req: FastifyRequest): AuthContext | null {
     keyId: claims.keyId,
     orgId: claims.orgId,
     projectId: claims.projectId,
-    scopes: Array.isArray(claims.scopes) ? claims.scopes.filter((value) => typeof value === "string") : [],
+    scopes: Array.isArray(claims.scopes)
+      ? claims.scopes.filter((value) => typeof value === "string")
+      : [],
     ownerAddress: claims.ownerAddress,
     owner: claims.ownerAddress,
     walletAddress: claims.walletAddress,
@@ -114,11 +118,11 @@ export function buildTokenAuthContext(req: FastifyRequest): AuthContext | null {
 
 export function signDelegatedAuthTokenForTests(
   claims: DelegatedTokenClaims & { sub: string },
-  secret: string
+  secret: string,
 ): string {
   const payloadPart = base64UrlEncode(Buffer.from(JSON.stringify(claims), "utf8"));
   const signaturePart = base64UrlEncode(
-    crypto.createHmac("sha256", secret).update(payloadPart).digest()
+    crypto.createHmac("sha256", secret).update(payloadPart).digest(),
   );
   return `${payloadPart}.${signaturePart}`;
 }

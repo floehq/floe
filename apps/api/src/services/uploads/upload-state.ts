@@ -65,7 +65,8 @@ export async function createSession(input: {
   const sessionTtlSecondsValue = sessionTtlSeconds();
   const metaTtlSecondsValue = metaTtlSeconds();
 
-  const tx = redis.multi()
+  const tx = redis
+    .multi()
     .hset(uploadKeys.session(uploadId), {
       uploadId,
       filename,
@@ -188,12 +189,7 @@ export async function touchUploadActivity(params: {
   const result = await redis.eval(
     script,
     [sessionKey, metaKey, uploadKeys.gcIndex(), uploadKeys.activeIndex()],
-    [
-      params.uploadId,
-      String(sessionTtlSeconds()),
-      String(metaTtlSeconds()),
-      ...kvArgs,
-    ]
+    [params.uploadId, String(sessionTtlSeconds()), String(metaTtlSeconds()), ...kvArgs],
   );
   return Number(result) === 1;
 }

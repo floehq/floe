@@ -4,9 +4,7 @@ export type WalrusBlobState = {
   endEpoch: number | null;
 };
 
-export async function getWalrusBlobState(
-  blobObjectId: string
-): Promise<WalrusBlobState> {
+export async function getWalrusBlobState(blobObjectId: string): Promise<WalrusBlobState> {
   const updatedObj = await suiClient.getObject({
     id: blobObjectId,
     options: { showContent: true },

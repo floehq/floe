@@ -12,9 +12,7 @@ let lastGoodAggregatorIdx = 0;
 
 function isRetryableNetworkError(err: unknown): boolean {
   const msg = (err as any)?.message ? String((err as any).message) : "";
-  const causeMsg = (err as any)?.cause?.message
-    ? String((err as any).cause?.message)
-    : "";
+  const causeMsg = (err as any)?.cause?.message ? String((err as any).cause?.message) : "";
 
   return (
     msg.includes("fetch failed") ||
@@ -65,10 +63,7 @@ async function fetchWithTimeout(params: {
   signal?: AbortSignal;
 }): Promise<Response> {
   const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(),
-    WalrusReadLimits.timeoutMs
-  );
+  const timeout = setTimeout(() => controller.abort(), WalrusReadLimits.timeoutMs);
 
   const onAbort = () => controller.abort();
   if (params.signal) {
@@ -191,8 +186,7 @@ export async function fetchWalrusBlob(params: {
           try {
             await res.body?.cancel();
           } catch {}
-          const delay =
-            WalrusReadLimits.baseRetryDelayMs * Math.max(1, attempt + 1);
+          const delay = WalrusReadLimits.baseRetryDelayMs * Math.max(1, attempt + 1);
           await sleep(delay, params.signal);
           continue;
         }
@@ -282,8 +276,7 @@ export async function fetchWalrusBlob(params: {
           statusClass: "none",
         });
 
-        const delay =
-          WalrusReadLimits.baseRetryDelayMs * Math.max(1, attempt + 1);
+        const delay = WalrusReadLimits.baseRetryDelayMs * Math.max(1, attempt + 1);
         await sleep(delay, params.signal);
       }
     }

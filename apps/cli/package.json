@@ -22,7 +22,8 @@
     "node": ">=20.0.0"
   },
   "scripts": {
-    "build": "tsc"
+    "build": "tsc",
+    "lint": "eslint \"src/**/*.ts\" && prettier --check \"src/**/*.ts\""
   },
   "dependencies": {
     "@floehq/sdk": "^0.2.4"

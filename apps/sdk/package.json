@@ -30,7 +30,8 @@
   "scripts": {
     "build": "tsc",
     "smoke": "npm run build && node ./examples/smoke.mjs",
-    "test": "npm run build && node --test ./test/*.test.mjs"
+    "test": "npm run build && node --test ./test/*.test.mjs",
+    "lint": "eslint \"src/**/*.ts\" && prettier --check \"src/**/*.ts\""
   },
   "publishConfig": {
     "access": "public"

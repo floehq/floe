@@ -87,10 +87,13 @@ test("normalizeFinalizeFailure preserves retryability and reason codes", () => {
     reasonCode: "checksum_mismatch",
     retryable: false,
   });
-  assert.deepEqual(normalizeFinalizeFailure(new Error("walrus upload failed: WALRUS_UPLOAD_FAILED upstream 503")), {
-    reasonCode: "walrus_upload_failed",
-    retryable: true,
-  });
+  assert.deepEqual(
+    normalizeFinalizeFailure(new Error("walrus upload failed: WALRUS_UPLOAD_FAILED upstream 503")),
+    {
+      reasonCode: "walrus_upload_failed",
+      retryable: true,
+    },
+  );
   assert.deepEqual(normalizeFinalizeFailure(new Error("walrus_unknown: read timed out")), {
     reasonCode: "walrus_unknown",
     retryable: true,
@@ -131,7 +134,6 @@ test("classifyFinalizeJobFailure keeps stage context for retries and failures", 
   });
 });
 
-
 test("shapeFinalizeQueueStats exposes oldest queued age for operators", () => {
   assert.deepEqual(
     shapeFinalizeQueueStats({
@@ -149,7 +151,7 @@ test("shapeFinalizeQueueStats exposes oldest queued age for operators", () => {
       concurrency: 4,
       oldestQueuedAt: 1000,
       oldestQueuedAgeMs: 1500,
-    }
+    },
   );
 
   assert.deepEqual(
@@ -168,10 +170,9 @@ test("shapeFinalizeQueueStats exposes oldest queued age for operators", () => {
       concurrency: 4,
       oldestQueuedAt: null,
       oldestQueuedAgeMs: null,
-    }
+    },
   );
 });
-
 
 test("buildCompletedFinalizeResult preserves idempotent finalize output", () => {
   assert.deepEqual(
@@ -188,7 +189,7 @@ test("buildCompletedFinalizeResult preserves idempotent finalize output", () => 
         finalizeRedisMs: "100",
         finalizeCleanupMs: "90",
       },
-      7
+      7,
     ),
     {
       fileId: "0xfile",
@@ -206,24 +207,29 @@ test("buildCompletedFinalizeResult preserves idempotent finalize output", () => 
           cleanup: 90,
         },
       },
-    }
+    },
   );
 
   assert.throws(
     () => buildCompletedFinalizeResult({ status: "completed", blobId: "blob-1" }, 7),
-    /CORRUPT_COMPLETED_UPLOAD/
+    /CORRUPT_COMPLETED_UPLOAD/,
   );
 });
 
 test("classifyFinalizeRecoveryAction requeues finalizing and retryable-failed uploads on restart", () => {
   assert.equal(classifyFinalizeRecoveryAction({ status: "finalizing" }), "requeue");
-  assert.equal(classifyFinalizeRecoveryAction({ status: "failed", failedRetryable: "1" }), "requeue");
-  assert.equal(classifyFinalizeRecoveryAction({ status: "failed", finalizeAttemptState: "retryable_failure" }), "requeue");
+  assert.equal(
+    classifyFinalizeRecoveryAction({ status: "failed", failedRetryable: "1" }),
+    "requeue",
+  );
+  assert.equal(
+    classifyFinalizeRecoveryAction({ status: "failed", finalizeAttemptState: "retryable_failure" }),
+    "requeue",
+  );
   assert.equal(classifyFinalizeRecoveryAction({ status: "completed" }), "cleanup");
   assert.equal(classifyFinalizeRecoveryAction({ status: "failed" }), "cleanup");
   assert.equal(classifyFinalizeRecoveryAction({ status: undefined }), "cleanup");
 });
-
 
 test("planFinalizeRecoveryPass batches restart recovery decisions across mixed upload states", () => {
   assert.deepEqual(
@@ -239,10 +245,9 @@ test("planFinalizeRecoveryPass batches restart recovery decisions across mixed u
       cleanupIds: ["u2", "u4"],
       recovered: 3,
       cleaned: 2,
-    }
+    },
   );
 });
-
 
 test("enqueueFinalizeQueueState suppresses duplicate enqueue but force requeue still re-adds", () => {
   const first = enqueueFinalizeQueueState({
@@ -309,7 +314,6 @@ test("applyFinalizeRecoveryPassToQueueState requeues finalizing uploads and clea
   });
 });
 
-
 test("executeFinalizeRecoveryPlan runs requeues before cleanup and returns counts", async () => {
   const calls: string[] = [];
   const result = await executeFinalizeRecoveryPlan({
@@ -331,17 +335,13 @@ test("executeFinalizeRecoveryPlan runs requeues before cleanup and returns count
   assert.deepEqual(result, { recovered: 2, cleaned: 1 });
 });
 
-
 test("buildFinalizeLockRetryMeta records retry timing and retryable failure fields", () => {
-  assert.deepEqual(
-    buildFinalizeLockRetryMeta({ delayMs: 2000, nowMs: 123456 }),
-    {
-      lastFinalizeRetryAt: "123456",
-      lastFinalizeRetryDelayMs: "2000",
-      failedReasonCode: "lock_in_progress",
-      failedRetryable: "1",
-    }
-  );
+  assert.deepEqual(buildFinalizeLockRetryMeta({ delayMs: 2000, nowMs: 123456 }), {
+    lastFinalizeRetryAt: "123456",
+    lastFinalizeRetryDelayMs: "2000",
+    failedReasonCode: "lock_in_progress",
+    failedRetryable: "1",
+  });
 });
 
 test("executeFinalizeLockRetry writes retry metadata before scheduling and clearing", async () => {
@@ -379,22 +379,24 @@ test("executeFinalizeLockRetry writes retry metadata before scheduling and clear
   });
 });
 
-
 test("shouldPersistFinalizeFailure blocks failed downgrade after completed commit or lock ownership loss", () => {
   assert.equal(
     shouldPersistFinalizeFailure({ committedCompletedState: true, errorMessage: "REDIS_TIMEOUT" }),
-    false
+    false,
   );
   assert.equal(
     shouldPersistFinalizeFailure({
       committedCompletedState: false,
       errorMessage: "UPLOAD_FINALIZATION_IN_PROGRESS",
     }),
-    false
+    false,
   );
   assert.equal(
-    shouldPersistFinalizeFailure({ committedCompletedState: false, errorMessage: "WALRUS_TIMEOUT" }),
-    true
+    shouldPersistFinalizeFailure({
+      committedCompletedState: false,
+      errorMessage: "WALRUS_TIMEOUT",
+    }),
+    true,
   );
 });
 
@@ -405,26 +407,20 @@ test("buildFinalizeFollowupWarningMeta records post-commit warnings without chan
       finalizeWarning: "cleanup warning",
       finalizeWarningAt: "77",
       finalizeLastProgressAt: "77",
-    }
+    },
   );
 });
 
 test("retryable finalize failure helpers cap retries and record retry metadata", async () => {
-  assert.equal(
-    shouldRetryFinalizeFailure({ retryable: true, attempt: 1, maxAttempts: 4 }),
-    true
-  );
-  assert.equal(
-    shouldRetryFinalizeFailure({ retryable: true, attempt: 4, maxAttempts: 4 }),
-    false
-  );
+  assert.equal(shouldRetryFinalizeFailure({ retryable: true, attempt: 1, maxAttempts: 4 }), true);
+  assert.equal(shouldRetryFinalizeFailure({ retryable: true, attempt: 4, maxAttempts: 4 }), false);
   assert.equal(
     computeFinalizeRetryDelayMs({ attempt: 3, baseDelayMs: 2000, maxDelayMs: 30000 }),
-    8000
+    8000,
   );
   assert.equal(
     computeFinalizeRetryDelayMs({ attempt: 10, baseDelayMs: 2000, maxDelayMs: 30000 }),
-    30000
+    30000,
   );
 
   assert.deepEqual(
@@ -443,7 +439,7 @@ test("retryable finalize failure helpers cap retries and record retry metadata",
       finalizeAttemptState: "retryable_failure",
       finalizeLastProgressAt: "222",
       failedStage: "walrus_publish",
-    }
+    },
   );
 
   const calls: string[] = [];
@@ -486,7 +482,6 @@ test("retryable finalize failure helpers cap retries and record retry metadata",
   });
 });
 
-
 test("buildFinalizeDiagnostics exposes finalize warnings and retry timing", () => {
   assert.deepEqual(
     buildFinalizeDiagnostics({
@@ -502,7 +497,7 @@ test("buildFinalizeDiagnostics exposes finalize warnings and retry timing", () =
       lastFinalizeRetryDelayMs: 2000,
       lastFinalizeRetryAt: 44,
       finalizeAttempts: 2,
-    }
+    },
   );
 });
 
@@ -524,10 +519,9 @@ test("assessFinalizeQueueHealth marks stalled finalize backlog as degraded and n
       ready: false,
       backlogStalled: true,
       finalizeQueueWarning: "finalize queue oldest age 400000ms exceeds 300000ms",
-    }
+    },
   );
 });
-
 
 test("assessFinalizeQueueHealth keeps active-only long finalize work ready", () => {
   assert.deepEqual(
@@ -547,7 +541,7 @@ test("assessFinalizeQueueHealth keeps active-only long finalize work ready", () 
       ready: true,
       backlogStalled: false,
       finalizeQueueWarning: null,
-    }
+    },
   );
 });
 
@@ -569,7 +563,7 @@ test("decideFinalizeWorkerFailureAction distinguishes lock, retryable transient,
       reason: "lock_in_progress",
       retryable: true,
       delayMs: 1500,
-    }
+    },
   );
   assert.deepEqual(
     decideFinalizeWorkerFailureAction({
@@ -589,7 +583,7 @@ test("decideFinalizeWorkerFailureAction distinguishes lock, retryable transient,
       retryable: true,
       stage: "walrus_publish",
       delayMs: 4000,
-    }
+    },
   );
   assert.deepEqual(
     decideFinalizeWorkerFailureAction({
@@ -608,48 +602,100 @@ test("decideFinalizeWorkerFailureAction distinguishes lock, retryable transient,
       reason: "sui_unavailable",
       retryable: true,
       stage: "sui_finalize",
-    }
+    },
   );
 });
 
 test("executeFinalizeWorkerFailureAction covers retry lock, retry transient, and terminal failure flows", async () => {
   const calls: string[] = [];
   const writes: Array<Record<string, string>> = [];
-  const markFailedCalls: Array<{ uploadId: string; reason: string; retryable: boolean; stage?: string }> = [];
+  const markFailedCalls: Array<{
+    uploadId: string;
+    reason: string;
+    retryable: boolean;
+    stage?: string;
+  }> = [];
 
   const retryLock = await executeFinalizeWorkerFailureAction({
     action: { action: "retry_lock", reason: "lock_in_progress", retryable: true, delayMs: 1000 },
     uploadId: "u1",
     nowMs: 10,
-    writeMeta: async (fields) => { calls.push("writeMeta:lock"); writes.push(fields); },
-    scheduleRetry: async (uploadId, delayMs) => { calls.push(`schedule:${uploadId}:${delayMs}`); },
-    clearPending: async (uploadId) => { calls.push(`clear:${uploadId}`); },
-    markFailed: async (params) => { markFailedCalls.push(params); },
+    writeMeta: async (fields) => {
+      calls.push("writeMeta:lock");
+      writes.push(fields);
+    },
+    scheduleRetry: async (uploadId, delayMs) => {
+      calls.push(`schedule:${uploadId}:${delayMs}`);
+    },
+    clearPending: async (uploadId) => {
+      calls.push(`clear:${uploadId}`);
+    },
+    markFailed: async (params) => {
+      markFailedCalls.push(params);
+    },
   });
 
   const retryTransient = await executeFinalizeWorkerFailureAction({
-    action: { action: "retry_transient", reason: "walrus_unavailable", retryable: true, delayMs: 2000, stage: "walrus_publish" },
+    action: {
+      action: "retry_transient",
+      reason: "walrus_unavailable",
+      retryable: true,
+      delayMs: 2000,
+      stage: "walrus_publish",
+    },
     uploadId: "u2",
     nowMs: 20,
-    writeMeta: async (fields) => { calls.push("writeMeta:transient"); writes.push(fields); },
-    scheduleRetry: async (uploadId, delayMs) => { calls.push(`schedule:${uploadId}:${delayMs}`); },
-    clearPending: async (uploadId) => { calls.push(`clear:${uploadId}`); },
-    markFailed: async (params) => { markFailedCalls.push(params); },
+    writeMeta: async (fields) => {
+      calls.push("writeMeta:transient");
+      writes.push(fields);
+    },
+    scheduleRetry: async (uploadId, delayMs) => {
+      calls.push(`schedule:${uploadId}:${delayMs}`);
+    },
+    clearPending: async (uploadId) => {
+      calls.push(`clear:${uploadId}`);
+    },
+    markFailed: async (params) => {
+      markFailedCalls.push(params);
+    },
   });
 
   const terminal = await executeFinalizeWorkerFailureAction({
-    action: { action: "failed", reason: "incomplete_chunks", retryable: false, stage: "verify_chunks" },
+    action: {
+      action: "failed",
+      reason: "incomplete_chunks",
+      retryable: false,
+      stage: "verify_chunks",
+    },
     uploadId: "u3",
     nowMs: 30,
-    writeMeta: async (fields) => { writes.push(fields); },
+    writeMeta: async (fields) => {
+      writes.push(fields);
+    },
     scheduleRetry: async () => {},
-    clearPending: async (uploadId) => { calls.push(`clear:${uploadId}`); },
-    markFailed: async (params) => { markFailedCalls.push(params); },
+    clearPending: async (uploadId) => {
+      calls.push(`clear:${uploadId}`);
+    },
+    markFailed: async (params) => {
+      markFailedCalls.push(params);
+    },
   });
 
-  assert.deepEqual(retryLock, { metricsOutcome: "retry_lock", reason: "lock_in_progress", retryable: true });
-  assert.deepEqual(retryTransient, { metricsOutcome: "retry_transient", reason: "walrus_unavailable", retryable: true });
-  assert.deepEqual(terminal, { metricsOutcome: "failed", reason: "incomplete_chunks", retryable: false });
+  assert.deepEqual(retryLock, {
+    metricsOutcome: "retry_lock",
+    reason: "lock_in_progress",
+    retryable: true,
+  });
+  assert.deepEqual(retryTransient, {
+    metricsOutcome: "retry_transient",
+    reason: "walrus_unavailable",
+    retryable: true,
+  });
+  assert.deepEqual(terminal, {
+    metricsOutcome: "failed",
+    reason: "incomplete_chunks",
+    retryable: false,
+  });
   assert.deepEqual(markFailedCalls, [
     { uploadId: "u3", reason: "incomplete_chunks", retryable: false, stage: "verify_chunks" },
   ]);
@@ -664,18 +710,17 @@ test("executeFinalizeWorkerFailureAction covers retry lock, retry transient, and
   ]);
 });
 
-
 test("reserveFinalizeActiveLocal suppresses duplicate local worker execution", () => {
-  assert.deepEqual(
-    reserveFinalizeActiveLocal({ activeLocalIds: [], uploadId: "u1" }),
-    { reserved: true, activeLocalIds: ["u1"] }
-  );
-  assert.deepEqual(
-    reserveFinalizeActiveLocal({ activeLocalIds: ["u1"], uploadId: "u1" }),
-    { reserved: false, activeLocalIds: ["u1"] }
-  );
-  assert.deepEqual(
-    reserveFinalizeActiveLocal({ activeLocalIds: ["u1"], uploadId: "u2" }),
-    { reserved: true, activeLocalIds: ["u1", "u2"] }
-  );
+  assert.deepEqual(reserveFinalizeActiveLocal({ activeLocalIds: [], uploadId: "u1" }), {
+    reserved: true,
+    activeLocalIds: ["u1"],
+  });
+  assert.deepEqual(reserveFinalizeActiveLocal({ activeLocalIds: ["u1"], uploadId: "u1" }), {
+    reserved: false,
+    activeLocalIds: ["u1"],
+  });
+  assert.deepEqual(reserveFinalizeActiveLocal({ activeLocalIds: ["u1"], uploadId: "u2" }), {
+    reserved: true,
+    activeLocalIds: ["u1", "u2"],
+  });
 });

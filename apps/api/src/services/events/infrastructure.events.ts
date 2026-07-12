@@ -70,7 +70,7 @@ export function requestEventContext(req: FastifyRequest): {
 
 export function emitInfrastructureEvent(
   log: FastifyBaseLogger | Pick<Console, "info">,
-  event: Omit<InfrastructureEvent, "schemaVersion" | "timestamp">
+  event: Omit<InfrastructureEvent, "schemaVersion" | "timestamp">,
 ) {
   if (!EVENT_LOG_ENABLED) return;
   log.info({

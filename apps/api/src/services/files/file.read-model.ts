@@ -1,8 +1,5 @@
 import { suiClient } from "../../state/sui.js";
-import {
-  getIndexedFile,
-  upsertIndexedFile,
-} from "../../db/files.repository.js";
+import { getIndexedFile, upsertIndexedFile } from "../../db/files.repository.js";
 import { isPostgresConfigured, isPostgresEnabled } from "../../state/postgres.js";
 import { AuthModeConfig, AuthOwnerPolicyConfig } from "../../config/auth.config.js";
 
@@ -128,10 +125,10 @@ export function normalizeFileFields(fields: any): NormalizedFileFields | null {
 }
 
 const FILE_FIELDS_MEMORY_CACHE_TTL_MS = Number(
-  process.env.FLOE_FILE_FIELDS_MEMORY_CACHE_TTL_MS ?? 60_000
+  process.env.FLOE_FILE_FIELDS_MEMORY_CACHE_TTL_MS ?? 60_000,
 );
 const FILE_FIELDS_MEMORY_CACHE_MAX = Number(
-  process.env.FLOE_FILE_FIELDS_MEMORY_CACHE_MAX_ENTRIES ?? 5000
+  process.env.FLOE_FILE_FIELDS_MEMORY_CACHE_MAX_ENTRIES ?? 5000,
 );
 const FILE_FIELDS_DEBUG = process.env.FLOE_FILE_FIELDS_DEBUG === "1";
 
@@ -200,7 +197,7 @@ function setMemoryFileFields(fileId: string, fields: any) {
 
   let over = fileFieldsMemoryCache.size - maxEntries;
   const entries = [...fileFieldsMemoryCache.entries()].sort(
-    (a, b) => a[1].touchedAt - b[1].touchedAt
+    (a, b) => a[1].touchedAt - b[1].touchedAt,
   );
   for (const [k] of entries) {
     if (over <= 0) break;
@@ -215,7 +212,7 @@ export function clearFileFieldsCache(fileId: string) {
 
 export function applyFileLookupHeaders(
   reply: any,
-  params: { source: FileFieldsSource | null; postgresState: PostgresReadState }
+  params: { source: FileFieldsSource | null; postgresState: PostgresReadState },
 ) {
   reply.header("x-floe-metadata-source", params.source ?? "unknown");
   reply.header("x-floe-postgres-state", params.postgresState);
@@ -235,7 +232,11 @@ export async function getFileFieldsCached(fileId: string): Promise<CachedFileFie
     if (normalizedMemory && !normalizedMemory.blobObjectId) {
       const indexed = await getIndexedFile(fileId).catch(() => null);
       if (indexed?.blobObjectId) {
-        return { fields: { ...memory, blob_object_id: indexed.blobObjectId }, source: "memory", postgresState };
+        return {
+          fields: { ...memory, blob_object_id: indexed.blobObjectId },
+          source: "memory",
+          postgresState,
+        };
       }
     }
     return { fields: memory, source: "memory", postgresState };

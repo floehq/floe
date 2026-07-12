@@ -11,7 +11,9 @@ export function resolveWalrusStoreMode(): WalrusStoreMode {
   const raw = (process.env.FLOE_WALRUS_STORE_MODE ?? "publisher").trim().toLowerCase();
   if (raw === "publisher" || raw === "cli") return raw;
   if (raw === "sdk") return "publisher";
-  throw new Error("INVALID_FLOE_WALRUS_STORE_MODE (expected: publisher|cli; sdk is accepted as a legacy alias)");
+  throw new Error(
+    "INVALID_FLOE_WALRUS_STORE_MODE (expected: publisher|cli; sdk is accepted as a legacy alias)",
+  );
 }
 
 const WALRUS_STORE_MODE = resolveWalrusStoreMode();
@@ -36,7 +38,7 @@ export function describeWalrusWriters() {
 
 export async function uploadToWalrusOnce(
   streamFactory: () => import("stream").Readable,
-  epochs: number
+  epochs: number,
 ): Promise<WalrusUploadResult> {
   if (!Number.isInteger(epochs) || epochs <= 0) {
     throw new Error("INVALID_EPOCHS");

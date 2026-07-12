@@ -194,7 +194,11 @@ async function cleanupUpload(uploadId: string) {
   await fs.rm(path.join(uploadTmpDir, `${uploadId}.bin`), { force: true }).catch(() => {});
 }
 
-async function seedUpload(params?: { totalChunks?: number; chunkSize?: number; sizeBytes?: number }) {
+async function seedUpload(params?: {
+  totalChunks?: number;
+  chunkSize?: number;
+  sizeBytes?: number;
+}) {
   const uploadId = randomUUID();
   const totalChunks = params?.totalChunks ?? 2;
   const chunkSize = params?.chunkSize ?? 4;
@@ -216,7 +220,7 @@ before(async () => {
   redisProcess = spawn(
     "redis-server",
     ["--port", String(redisPort), "--save", "", "--appendonly", "no"],
-    { stdio: "ignore" }
+    { stdio: "ignore" },
   );
   await waitForRedis(redisPort);
 
@@ -383,7 +387,7 @@ afterEach(async () => {
     redis.smembers<string[]>(uploadKeys.activeIndex()),
   ]);
   await Promise.all(
-    [...new Set([...gcIds, ...activeIds])].map((uploadId) => cleanupUpload(uploadId))
+    [...new Set([...gcIds, ...activeIds])].map((uploadId) => cleanupUpload(uploadId)),
   );
 });
 
@@ -477,7 +481,9 @@ test("chunk upload does not recreate a corrupt session after cancel wins the rac
   const expectedHash = createHash("sha256").update(chunk).digest("hex");
   const redis = redisModule.getRedis();
   const { uploadKeys } = keysModule;
-  const originalWriteChunk = storeIndexModule.chunkStore.writeChunk.bind(storeIndexModule.chunkStore);
+  const originalWriteChunk = storeIndexModule.chunkStore.writeChunk.bind(
+    storeIndexModule.chunkStore,
+  );
 
   try {
     storeIndexModule.chunkStore.writeChunk = (async (...args: any[]) => {
@@ -894,7 +900,9 @@ test("cancel cleans up partial upload artifacts and session state", async () => 
 test("status returns retryable 503 when chunk store reconciliation fails", async () => {
   const uploadId = await seedUpload();
   const app = await createRouteApp();
-  const originalListChunks = storeIndexModule.chunkStore.listChunks.bind(storeIndexModule.chunkStore);
+  const originalListChunks = storeIndexModule.chunkStore.listChunks.bind(
+    storeIndexModule.chunkStore,
+  );
   try {
     storeIndexModule.chunkStore.listChunks = async () => {
       throw new Error("disk unavailable");
@@ -921,7 +929,9 @@ test("status returns retryable 503 when chunk store reconciliation fails", async
 test("complete returns retry-after on retryable chunk reconciliation failure", async () => {
   const uploadId = await seedUpload();
   const app = await createRouteApp();
-  const originalListChunks = storeIndexModule.chunkStore.listChunks.bind(storeIndexModule.chunkStore);
+  const originalListChunks = storeIndexModule.chunkStore.listChunks.bind(
+    storeIndexModule.chunkStore,
+  );
   try {
     storeIndexModule.chunkStore.listChunks = async () => {
       throw new Error("disk unavailable");
@@ -1012,7 +1022,9 @@ test("complete returns stable finalizing shape when only meta remains", async ()
 test("status authorizes before reconciling chunk store state", async () => {
   const uploadId = await seedUpload();
   let listCalls = 0;
-  const originalListChunks = storeIndexModule.chunkStore.listChunks.bind(storeIndexModule.chunkStore);
+  const originalListChunks = storeIndexModule.chunkStore.listChunks.bind(
+    storeIndexModule.chunkStore,
+  );
   const app = await createRouteApp({
     async authorizeUploadAccess() {
       return {
@@ -1024,7 +1036,9 @@ test("status authorizes before reconciling chunk store state", async () => {
   });
 
   try {
-    storeIndexModule.chunkStore.listChunks = async (...args: Parameters<typeof storeIndexModule.chunkStore.listChunks>) => {
+    storeIndexModule.chunkStore.listChunks = async (
+      ...args: Parameters<typeof storeIndexModule.chunkStore.listChunks>
+    ) => {
       listCalls += 1;
       return originalListChunks(...args);
     };

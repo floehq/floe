@@ -73,7 +73,7 @@ test("s3 chunk store streams validated chunk bodies into put object", async () =
     Readable.from(chunk),
     expectedHash,
     chunk.length,
-    false
+    false,
   );
 
   assert.deepEqual(result, { alreadyExisted: false });
@@ -94,15 +94,8 @@ test("s3 chunk store rejects hash mismatch without buffering to a final object",
 
   await assert.rejects(
     () =>
-      store.writeChunk(
-        "upload-2",
-        0,
-        Readable.from(chunk),
-        "0".repeat(64),
-        chunk.length,
-        false
-      ),
-    /HASH_MISMATCH/
+      store.writeChunk("upload-2", 0, Readable.from(chunk), "0".repeat(64), chunk.length, false),
+    /HASH_MISMATCH/,
   );
 
   assert.equal(putAttempted, true);
@@ -127,7 +120,7 @@ test("s3 chunk store validates existing chunk metadata before reusing it", async
     Readable.from(chunk),
     expectedHash,
     chunk.length,
-    false
+    false,
   );
 
   assert.deepEqual(result, { alreadyExisted: true });
@@ -147,15 +140,7 @@ test("s3 chunk store rejects existing chunk hash mismatch", async () => {
   });
 
   await assert.rejects(
-    () =>
-      store.writeChunk(
-        "upload-4",
-        0,
-        Readable.from(chunk),
-        expectedHash,
-        chunk.length,
-        false
-      ),
-    /HASH_MISMATCH/
+    () => store.writeChunk("upload-4", 0, Readable.from(chunk), expectedHash, chunk.length, false),
+    /HASH_MISMATCH/,
   );
 });

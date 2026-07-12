@@ -92,20 +92,18 @@ function requireMetricsToken(req: any, reply: any): boolean {
 
   if (!METRICS_TOKEN) {
     req.log.error("FLOE_METRICS_TOKEN is missing while ops auth is enabled");
-    sendApiError(
-      reply,
-      503,
-      "INTERNAL_ERROR",
-      "Metrics auth is not configured",
-      { retryable: true }
-    );
+    sendApiError(reply, 503, "INTERNAL_ERROR", "Metrics auth is not configured", {
+      retryable: true,
+    });
     return false;
   }
 
   const supplied =
     (typeof req.headers["x-metrics-token"] === "string"
       ? req.headers["x-metrics-token"].trim()
-      : "") || bearerTokenFromAuthHeader(req.headers.authorization) || "";
+      : "") ||
+    bearerTokenFromAuthHeader(req.headers.authorization) ||
+    "";
 
   if (!supplied || !secureEqual(supplied, METRICS_TOKEN)) {
     sendApiError(reply, 401, "UNAUTHORIZED", "Unauthorized");
@@ -118,9 +116,7 @@ function requireMetricsToken(req: any, reply: any): boolean {
 function isUuid(value: unknown): value is string {
   return (
     typeof value === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-      value
-    )
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
   );
 }
 
@@ -131,16 +127,14 @@ function parseBoolQuery(raw: unknown): boolean {
 async function buildHealthSnapshot(req: any): Promise<HealthSnapshot> {
   const timestamp = new Date().toISOString();
   const version = buildVersionInfo();
-  let finalizeQueue:
-    | {
-        depth: number;
-        pendingUnique: number;
-        activeLocal: number;
-        concurrency: number;
-        oldestQueuedAt: number | null;
-        oldestQueuedAgeMs: number | null;
-      }
-    | null = null;
+  let finalizeQueue: {
+    depth: number;
+    pendingUnique: number;
+    activeLocal: number;
+    concurrency: number;
+    oldestQueuedAt: number | null;
+    oldestQueuedAgeMs: number | null;
+  } | null = null;
   const redis = await checkRedisDependencyHealth();
   const postgres = await checkPostgresDependencyHealth();
 
@@ -167,11 +161,8 @@ async function buildHealthSnapshot(req: any): Promise<HealthSnapshot> {
     stuckAgeThresholdMs: FINALIZE_QUEUE_STUCK_AGE_MS,
   });
   const ready =
-    finalizeQueueHealth.ready &&
-    redis.status === "healthy" &&
-    postgres.status !== "unavailable";
-  const degraded =
-    finalizeQueueHealth.backlogStalled || postgres.status === "degraded";
+    finalizeQueueHealth.ready && redis.status === "healthy" && postgres.status !== "unavailable";
+  const degraded = finalizeQueueHealth.backlogStalled || postgres.status === "degraded";
   const serviceStatus = ready ? (degraded ? "DEGRADED" : "UP") : "DOWN";
   const statusCode = ready ? 200 : 503;
 
@@ -278,7 +269,7 @@ export default async function healthRoute(app: FastifyInstance) {
           reply,
           authzStatusCode(authz.code),
           authzErrorCode(authz.code),
-          authz.message ?? "Operator access denied"
+          authz.message ?? "Operator access denied",
         );
       }
 
@@ -295,7 +286,7 @@ export default async function healthRoute(app: FastifyInstance) {
           503,
           "DEPENDENCY_UNAVAILABLE",
           "Redis is unavailable, retry shortly",
-          { retryable: true, details: { dependency: "redis" } }
+          { retryable: true, details: { dependency: "redis" } },
         );
       }
 
@@ -318,7 +309,10 @@ export default async function healthRoute(app: FastifyInstance) {
 
       const queueStats = await getUploadFinalizeQueueStats().catch(() => null);
       const chunkIndexes = Array.isArray(chunkMembers)
-        ? chunkMembers.map(Number).filter(Number.isInteger).sort((a, b) => a - b)
+        ? chunkMembers
+            .map(Number)
+            .filter(Number.isInteger)
+            .sort((a, b) => a - b)
         : [];
       const includeReceivedIndexes = parseBoolQuery((req as any).query?.includeReceivedIndexes);
       const operatorSummary = buildOperatorUploadSummary({

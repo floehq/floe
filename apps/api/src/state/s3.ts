@@ -14,7 +14,7 @@ function loadAwsS3(): AwsS3Module {
     return require("@aws-sdk/client-s3") as AwsS3Module;
   } catch {
     throw new Error(
-      "S3 chunk store requires @aws-sdk/client-s3. Install it with: npm install --workspace=apps/api @aws-sdk/client-s3"
+      "S3 chunk store requires @aws-sdk/client-s3. Install it with: npm install --workspace=apps/api @aws-sdk/client-s3",
     );
   }
 }
@@ -68,13 +68,9 @@ export function isS3BucketMissingError(err: unknown): boolean {
   const statusCode = Number(candidate?.$metadata?.httpStatusCode ?? 0);
   if (statusCode === 404) return true;
 
-  const errorCode = String(
-    candidate?.Code ?? candidate?.code ?? candidate?.name ?? ""
-  ).trim();
+  const errorCode = String(candidate?.Code ?? candidate?.code ?? candidate?.name ?? "").trim();
   return (
-    errorCode === "NotFound" ||
-    errorCode === "NoSuchBucket" ||
-    errorCode === "NoSuchContainer"
+    errorCode === "NotFound" || errorCode === "NoSuchBucket" || errorCode === "NoSuchContainer"
   );
 }
 
@@ -94,7 +90,7 @@ export async function initS3IfEnabled(log: FastifyBaseLogger): Promise<void> {
     await client.send(
       new HeadBucketCommand({
         Bucket: bucket,
-      })
+      }),
     );
     log.info({ bucket }, "S3 chunk store bucket verified");
     return;
@@ -105,7 +101,7 @@ export async function initS3IfEnabled(log: FastifyBaseLogger): Promise<void> {
   await client.send(
     new CreateBucketCommand({
       Bucket: bucket,
-    })
+    }),
   );
   log.info({ bucket }, "S3 chunk store bucket created");
 }

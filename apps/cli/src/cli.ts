@@ -1314,14 +1314,14 @@ async function runFileStreamUrl(fileIdRaw: string | undefined, options: CliOptio
 
 async function runOpsHealth(options: CliOptions) {
   const client = await buildApiClient(options);
-  if (!options.json) infoLine(`checking deployment health`);
+  if (!options.json) infoLine("checking deployment health");
   const result = await client.getHealth();
   printHealthResult(result as Record<string, unknown>, options);
 }
 
 async function runOpsVersion(options: CliOptions) {
   const client = await buildClient(options);
-  if (!options.json) infoLine(`checking deployment version contract`);
+  if (!options.json) infoLine("checking deployment version contract");
   const version = await client.getVersion();
   const compatibility = await client.checkCompatibility({
     client: "cli",

@@ -9,7 +9,7 @@ export interface ChunkStore {
     stream: Readable,
     expectedHash: string,
     expectedSize: number,
-    isLastChunk: boolean
+    isLastChunk: boolean,
   ): Promise<{ alreadyExisted: boolean }>;
 
   hasChunk(uploadId: string, index: number): Promise<boolean>;
