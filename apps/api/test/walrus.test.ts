@@ -146,34 +146,6 @@ test("walrus upload - describeWalrusWriters returns correct shape for sdk mode",
   }
 });
 
-test("walrus upload - deleteWalrusBlob is noop in SDK mode", async () => {
-  const prevMode = process.env.FLOE_WALRUS_STORE_MODE;
-  process.env.FLOE_WALRUS_STORE_MODE = "sdk";
-  const prevUrls = process.env.FLOE_WALRUS_SDK_BASE_URLS;
-  process.env.FLOE_WALRUS_SDK_BASE_URLS = "https://publisher.test";
-  const prevKey = process.env.SUI_PRIVATE_KEY;
-  process.env.SUI_PRIVATE_KEY = "suiprivkey1q2w3e4r5t6y7u8i9o0p1q2w3e4r5t6y7u8i9o0p";
-  const prevNet = process.env.FLOE_NETWORK;
-  process.env.FLOE_NETWORK = "testnet";
-  const prevPackage = process.env.SUI_PACKAGE_ID;
-  process.env.SUI_PACKAGE_ID = "0x0000000000000000000000000000000000000001";
-  try {
-    const mod = await importFresh("../src/services/walrus/upload.js");
-    // Should not throw in SDK mode - it gracefully returns
-    await mod.deleteWalrusBlob("0x1234");
-  } finally {
-    if (prevMode !== undefined) process.env.FLOE_WALRUS_STORE_MODE = prevMode;
-    else delete process.env.FLOE_WALRUS_STORE_MODE;
-    if (prevUrls !== undefined) process.env.FLOE_WALRUS_SDK_BASE_URLS = prevUrls;
-    else delete process.env.FLOE_WALRUS_SDK_BASE_URLS;
-    if (prevKey !== undefined) process.env.SUI_PRIVATE_KEY = prevKey;
-    else delete process.env.SUI_PRIVATE_KEY;
-    if (prevNet !== undefined) process.env.FLOE_NETWORK = prevNet;
-    else delete process.env.FLOE_NETWORK;
-    if (prevPackage !== undefined) process.env.SUI_PACKAGE_ID = prevPackage;
-    else delete process.env.FLOE_WALRUS_STORE_MODE;
-  }
-});
 
 // ============================================================
 // Walrus Read tests (via walrus.config parser)

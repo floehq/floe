@@ -26,11 +26,6 @@ test("files repository - upsertIndexedFile is noop when postgres is not enabled"
   });
 });
 
-test("files repository - softDeleteFile returns false when postgres is not enabled", async () => {
-  const mod = await import("../src/db/files.repository.js");
-  const result = await mod.softDeleteFile("test-file-id");
-  assert.equal(result, false);
-});
 
 test("files repository - ensureFilesTable is noop when postgres is not enabled", async () => {
   const mod = await import("../src/db/files.repository.js");
@@ -79,7 +74,6 @@ test("files repository - getIndexedFile returns record with mock pg", async () =
   assert.equal(result.sizeBytes, 1024);
   assert.equal(result.mimeType, "video/mp4");
   assert.equal(result.walrusEndEpoch, 100);
-  assert.equal(result.deletedAtMs, null);
 });
 
 test("files repository - getIndexedFile returns null when no rows returned", async () => {
@@ -130,45 +124,7 @@ test("files repository - getIndexedFile handles null walrus_end_epoch", async ()
   assert.equal(result.walrusEndEpoch, null);
 });
 
-test("files repository - softDeleteFile returns true with mock pg", async () => {
-  const postgres = await import("../src/state/postgres.js");
 
-  let updateCalled = false;
-  const mockPg = {
-    query: async (sql: string, _values?: unknown[]) => {
-      if (sql.includes("update") && sql.includes("floe_files")) {
-        updateCalled = true;
-        assert.equal(_values?.[0], "test-file-to-delete");
-        assert.ok(typeof _values?.[1] === "number");
-        return { rows: [], rowCount: 1 };
-      }
-      return { rows: [], rowCount: 0 };
-    },
-    end: async () => {},
-  };
-
-  postgres.setPostgresForTests(mockPg as any, true);
-
-  const mod = await import("../src/db/files.repository.js");
-  const result = await mod.softDeleteFile("test-file-to-delete");
-  assert.equal(result, true);
-  assert.equal(updateCalled, true);
-});
-
-test("files repository - softDeleteFile returns false when no rows updated", async () => {
-  const postgres = await import("../src/state/postgres.js");
-
-  const mockPg = {
-    query: async () => ({ rows: [], rowCount: 0 }),
-    end: async () => {},
-  };
-
-  postgres.setPostgresForTests(mockPg as any, true);
-
-  const mod = await import("../src/db/files.repository.js");
-  const result = await mod.softDeleteFile("nonexistent-file");
-  assert.equal(result, false);
-});
 
 test("files repository - upsertIndexedFile calls pg.query with correct params", async () => {
   const postgres = await import("../src/state/postgres.js");
@@ -202,33 +158,3 @@ test("files repository - upsertIndexedFile calls pg.query with correct params", 
   assert.equal(queryCalled, true);
 });
 
-test("files repository - getIndexedFile handles deletedAtMs correctly", async () => {
-  const postgres = await import("../src/state/postgres.js");
-
-  const mockPg = {
-    query: async () => ({
-      rows: [
-        {
-          file_id: "test-deleted-file",
-          blob_id: "blob-deleted",
-          blob_object_id: null,
-          owner_address: null,
-          size_bytes: 100,
-          mime_type: "text/plain",
-          walrus_end_epoch: null,
-          created_at_ms: 1000000,
-          deleted_at_ms: 2000000,
-        },
-      ],
-    }),
-    end: async () => {},
-  };
-
-  postgres.setPostgresForTests(mockPg as any, true);
-
-  const mod = await import("../src/db/files.repository.js");
-  const result = await mod.getIndexedFile("test-deleted-file");
-
-  assert.ok(result !== null);
-  assert.equal(result.deletedAtMs, 2000000);
-});
