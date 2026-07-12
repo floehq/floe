@@ -402,12 +402,18 @@ async function readStoredConfig(): Promise<StoredConfig> {
 async function writeStoredConfig(config: StoredConfig): Promise<void> {
   const configPath = getConfigPath();
   await fs.mkdir(path.dirname(configPath), { recursive: true });
-  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, {
-    mode: 0o600,
-    encoding: "utf8",
-  });
-  // Ensure 0600 even if the file already existed with looser permissions.
-  await fs.chmod(configPath, 0o600).catch(() => {});
+  // Open with 0o600 so the file is never world-readable, even if the write
+  // takes observable time. chmod afterward ensures the mode is exact regardless
+  // of umask, and also fixes existing files that may have loose permissions.
+  const handle = await fs.open(configPath, "w", 0o600);
+  try {
+    await handle.chmod(0o600);
+    await handle.writeFile(`${JSON.stringify(config, null, 2)}\n`, {
+      encoding: "utf8",
+    });
+  } finally {
+    await handle.close();
+  }
 }
 
 function applyStoredConfig(options: CliOptions, config: StoredConfig) {
@@ -1370,7 +1376,7 @@ async function runOpsVersion(options: CliOptions) {
 
 async function runDoctor(options: CliOptions) {
   const configPath = getConfigPath();
-  let configPresent = false;
+  let configPresent: boolean;
   try {
     await fs.access(configPath);
     configPresent = true;

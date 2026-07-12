@@ -1,4 +1,4 @@
-import test, { beforeEach, afterEach } from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
@@ -215,7 +215,6 @@ test("gc reconcile - recovers orphan chunk dir", async () => {
 });
 
 test("gc reconcile - recovers orphan final bin", async () => {
-  const redis = mockRedis();
   const uploadId = "aaaaaaaa-bbbb-cccc-dddd-ffffffffffff";
   await fs.writeFile(path.join(testTmpDir, `${uploadId}.bin`), "test");
 

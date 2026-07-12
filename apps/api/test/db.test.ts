@@ -1,4 +1,4 @@
-import test, { beforeEach, afterEach } from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
 
 // ============================================================
@@ -43,7 +43,7 @@ test("files repository - getIndexedFile returns record with mock pg", async () =
 
   // Create a mock pg pool
   const mockPg = {
-    query: async (sql: string, values?: unknown[]) => {
+    query: async (sql: string, _values?: unknown[]) => {
       if (sql.includes("select") && sql.includes("from floe_files")) {
         return {
           rows: [
@@ -135,7 +135,7 @@ test("files repository - softDeleteFile returns true with mock pg", async () => 
 
   let updateCalled = false;
   const mockPg = {
-    query: async (sql: string, values?: unknown[]) => {
+    query: async (sql: string, _values?: unknown[]) => {
       if (sql.includes("update") && sql.includes("floe_files")) {
         updateCalled = true;
         assert.equal(values?.[0], "test-file-to-delete");
@@ -175,7 +175,7 @@ test("files repository - upsertIndexedFile calls pg.query with correct params", 
 
   let queryCalled = false;
   const mockPg = {
-    query: async (sql: string, values?: unknown[]) => {
+    query: async (sql: string, _values?: unknown[]) => {
       queryCalled = true;
       assert.ok(sql.includes("insert into floe_files"));
       assert.equal(values?.[0], "test-upsert-file");

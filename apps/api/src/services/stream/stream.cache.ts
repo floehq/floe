@@ -49,7 +49,7 @@ function streamRangeCachePath(params: { blobId: string; start: number; end: numb
   return path.join(
     STREAM_CACHE_RANGE_DIR,
     sanitizeBlobId(params.blobId),
-    `${params.start}-${params.end}.part`
+    `${params.start}-${params.end}.part`,
   );
 }
 
@@ -87,9 +87,10 @@ async function ensureFreeDiskSpace(): Promise<void> {
       Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_BYTES) && STREAM_CACHE_MIN_FREE_DISK_BYTES > 0
         ? STREAM_CACHE_MIN_FREE_DISK_BYTES
         : 0,
-      Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_FRACTION) && STREAM_CACHE_MIN_FREE_DISK_FRACTION > 0
+      Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_FRACTION) &&
+        STREAM_CACHE_MIN_FREE_DISK_FRACTION > 0
         ? Math.floor(stat.blocks * stat.bsize * STREAM_CACHE_MIN_FREE_DISK_FRACTION)
-        : 0
+        : 0,
     );
     if (availableBytes < minFreeBytes) {
       await pruneStreamCacheByBytes(availableBytes - minFreeBytes);
@@ -181,7 +182,7 @@ export async function initStreamCache() {
 
 export async function getCachedStreamPath(
   blobId: string,
-  expectedSize?: number
+  expectedSize?: number,
 ): Promise<string | null> {
   await ensureStreamCacheDir();
   const filePath = streamCachePath(blobId);
@@ -264,7 +265,9 @@ export async function ensureCachedStreamBlob(params: {
 
       if (res.status !== 200 && res.status !== 206) {
         const body = await res.text().catch(() => "");
-        throw new Error(`WALRUS_CACHE_FILL_FAILED status=${res.status}${body ? ` body=${body.slice(0, 120)}` : ""}`);
+        throw new Error(
+          `WALRUS_CACHE_FILL_FAILED status=${res.status}${body ? ` body=${body.slice(0, 120)}` : ""}`,
+        );
       }
 
       const body = res.body;
@@ -289,7 +292,7 @@ export async function ensureCachedStreamBlob(params: {
       if (bytesWritten !== params.sizeBytes) {
         await fsp.rm(tempPath, { force: true }).catch(() => {});
         throw new Error(
-          `STREAM_CACHE_FULL_TRUNCATED expected=${params.sizeBytes} read=${bytesWritten}`
+          `STREAM_CACHE_FULL_TRUNCATED expected=${params.sizeBytes} read=${bytesWritten}`,
         );
       }
 
@@ -353,7 +356,9 @@ export async function ensureCachedStreamRange(params: {
 
       if (res.status !== 206 && !(res.status === 200 && params.start === 0)) {
         const body = await res.text().catch(() => "");
-        throw new Error(`WALRUS_CACHE_FILL_FAILED status=${res.status}${body ? ` body=${body.slice(0, 120)}` : ""}`);
+        throw new Error(
+          `WALRUS_CACHE_FILL_FAILED status=${res.status}${body ? ` body=${body.slice(0, 120)}` : ""}`,
+        );
       }
 
       const body = res.body;
@@ -377,7 +382,9 @@ export async function ensureCachedStreamRange(params: {
 
       if (bytesWritten !== expectedSize) {
         await fsp.rm(tempPath, { force: true }).catch(() => {});
-        throw new Error(`STREAM_CACHE_RANGE_TRUNCATED expected=${expectedSize} read=${bytesWritten}`);
+        throw new Error(
+          `STREAM_CACHE_RANGE_TRUNCATED expected=${expectedSize} read=${bytesWritten}`,
+        );
       }
 
       await fsp.rename(tempPath, cachePath).catch(async (err) => {
@@ -403,11 +410,7 @@ export async function ensureCachedStreamRange(params: {
   return fillPromise;
 }
 
-export function createCachedReadStream(params: {
-  filePath: string;
-  start: number;
-  end: number;
-}) {
+export function createCachedReadStream(params: { filePath: string; start: number; end: number }) {
   return fs.createReadStream(params.filePath, {
     start: params.start,
     end: params.end,
@@ -415,10 +418,7 @@ export function createCachedReadStream(params: {
 }
 
 async function acquireCacheFillSlot(): Promise<() => void> {
-  if (
-    !Number.isFinite(STREAM_CACHE_FILL_CONCURRENCY) ||
-    STREAM_CACHE_FILL_CONCURRENCY <= 0
-  ) {
+  if (!Number.isFinite(STREAM_CACHE_FILL_CONCURRENCY) || STREAM_CACHE_FILL_CONCURRENCY <= 0) {
     return () => {};
   }
 
@@ -453,7 +453,10 @@ async function reserveCacheBytes(expectedBytes: number): Promise<null | (() => v
     if (currentBytes + reservedCacheBytes + expectedBytes > STREAM_CACHE_MAX_BYTES) {
       return null;
     }
-    if (!Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_BYTES) || STREAM_CACHE_MIN_FREE_DISK_BYTES <= 0) {
+    if (
+      !Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_BYTES) ||
+      STREAM_CACHE_MIN_FREE_DISK_BYTES <= 0
+    ) {
       // skip disk-free check if not configured
     } else {
       try {
@@ -461,9 +464,10 @@ async function reserveCacheBytes(expectedBytes: number): Promise<null | (() => v
         const availableBytes = stat.bsize * stat.bavail;
         const minFreeBytes = Math.max(
           STREAM_CACHE_MIN_FREE_DISK_BYTES,
-          Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_FRACTION) && STREAM_CACHE_MIN_FREE_DISK_FRACTION > 0
+          Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_FRACTION) &&
+            STREAM_CACHE_MIN_FREE_DISK_FRACTION > 0
             ? Math.floor(stat.blocks * stat.bsize * STREAM_CACHE_MIN_FREE_DISK_FRACTION)
-            : 0
+            : 0,
         );
         const needed = currentBytes + reservedCacheBytes + expectedBytes;
         if (availableBytes < minFreeBytes || availableBytes < needed * 0.1) {

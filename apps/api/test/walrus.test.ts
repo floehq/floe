@@ -1,6 +1,5 @@
-import test, { beforeEach, afterEach } from "node:test";
+import test from "node:test";
 import assert from "node:assert/strict";
-import { strict as assertStrict } from "node:assert";
 
 // Helper to import a module with cache busting so env var changes take effect.
 // Without this, Node.js ESM caches modules keyed by URL.
