@@ -118,12 +118,9 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
     origin:
       corsOrigins.length === 0
         ? false
-        : (origin: string, cb: (err: Error | null, allow?: boolean) => void) => {
-            if (!origin) {
-              cb(null, true);
-              return;
-            }
-            cb(null, corsOrigins.includes(origin));
+        : async (origin: string | undefined) => {
+            if (!origin) return true;
+            return corsOrigins.includes(origin);
           },
     methods: ["GET", "HEAD", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: [
