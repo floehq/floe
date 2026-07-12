@@ -96,6 +96,14 @@ let _suiRpcUrl: string | null = null;
 let _suiClient: SuiClient | null = null;
 let _suiSigner: Ed25519Keypair | null = null;
 
+/** @internal test-only hook — resets lazy singleton state so tests can re-parse env vars. */
+export function resetSuiStateForTests(): void {
+  _suiNetwork = null;
+  _suiRpcUrl = null;
+  _suiClient = null;
+  _suiSigner = null;
+}
+
 export function getSuiNetwork(): "mainnet" | "testnet" {
   if (!_suiNetwork) _suiNetwork = parseSuiNetwork();
   return _suiNetwork;

@@ -259,14 +259,13 @@ test("redis - setRedisForTests allows overriding the client", async () => {
 // ============================================================
 // Sui state tests
 // ============================================================
-test("sui - parseSuiNetwork throws when FLOE_NETWORK is not set", async () => {
+test("sui - getSuiNetwork throws when FLOE_NETWORK is not set", async () => {
   const prev = process.env.FLOE_NETWORK;
+  const mod = await import("../src/state/sui.js");
+  mod.resetSuiStateForTests();
   delete process.env.FLOE_NETWORK;
   try {
-    await import("../src/state/sui.js");
-    assert.fail("Should have thrown");
-  } catch (err: any) {
-    assert.ok(err.message.includes("FLOE_NETWORK"));
+    assert.throws(() => mod.getSuiNetwork(), /FLOE_NETWORK/);
   } finally {
     if (prev !== undefined) process.env.FLOE_NETWORK = prev;
     else delete process.env.FLOE_NETWORK;
