@@ -16,6 +16,9 @@ RUN npm prune --omit=dev --workspaces
 
 FROM node:20-bookworm-slim AS runtime
 
+# Fix OS-level CVEs in final image
+RUN apt-get update && apt-get upgrade -y libcap2 libgnutls30 && rm -rf /var/lib/apt/lists/*
+
 ENV NODE_ENV=production
 ENV PORT=3001
 ENV UPLOAD_TMP_DIR=/var/lib/floe/upload

@@ -2,6 +2,7 @@ import { FastifyInstance } from "fastify";
 import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
+import { Readable } from "node:stream";
 
 import { sendApiError } from "../utils/apiError.js";
 import { ChunkConfig, UploadConfig } from "../config/uploads.config.js";
@@ -837,7 +838,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
 
     let part;
     try {
-      part = await req.file();
+      part = await (req as unknown as { file: () => Promise<{ type: string; file: Readable } | undefined> }).file();
     } catch {
       return sendApiError(reply, 400, "CHUNK_STREAM_ERROR", "Failed to read chunk stream", {
         retryable: true,
