@@ -7,7 +7,6 @@ import type { WalrusUploadParams, WalrusUploadResult } from "./types.js";
 
 const FETCH_TIMEOUT_MS = WalrusUploadLimits.timeoutMs;
 const MIN_BALANCE_MIST = 1_000_000_000n;
-const IS_MAINNET = getSuiNetwork() === "mainnet";
 const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
 let lastGoodWriterIdx = 0;
 
@@ -151,7 +150,7 @@ export async function uploadToWalrusViaPublisher(
       "Content-Type": "application/octet-stream",
     };
 
-    if (IS_MAINNET) {
+    if (getSuiNetwork() === "mainnet") {
       const keypair = getSuiSigner();
       await checkBalanceOnce(keypair.getPublicKey().toSuiAddress());
       Object.assign(headers, await createAuthHeaders(keypair, baseUrl));
