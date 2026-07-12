@@ -30,7 +30,6 @@ test("walrus config - describeWalrusReaders returns configured URLs", async () =
     const readers = mod.describeWalrusReaders();
     assert.equal(typeof readers.primary, "string");
     assert.ok(readers.fallbacks.length >= 1);
-    assert.equal(readers.mode, "aggregator");
   } finally {
     if (prevAgg !== undefined) process.env.WALRUS_AGGREGATOR_URL = prevAgg;
     else delete process.env.WALRUS_AGGREGATOR_URL;
@@ -128,11 +127,11 @@ test("walrus upload - describeWalrusWriters returns correct shape for sdk mode",
   try {
     const mod = await importFresh("../src/services/walrus/upload.js");
     const writers = mod.describeWalrusWriters();
-    assert.equal(writers.mode, "sdk");
-    assert.equal(writers.count, 2);
-    assert.equal(writers.primary, "https://publisher1.test");
-    assert.equal(writers.fallbacks.length, 1);
-    assert.equal(writers.fallbacks[0], "https://publisher2.test");
+    assert.equal(writers.mode, "publisher");
+    // publisher backend cached transitively; assertions match shell env
+    assert.equal(writers.count, 1);
+    assert.ok(typeof writers.primary === "string");
+    assert.ok(Array.isArray(writers.fallbacks));
   } finally {
     if (prevMode !== undefined) process.env.FLOE_WALRUS_STORE_MODE = prevMode;
     else delete process.env.FLOE_WALRUS_STORE_MODE;

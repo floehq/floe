@@ -138,8 +138,8 @@ test("files repository - softDeleteFile returns true with mock pg", async () => 
     query: async (sql: string, _values?: unknown[]) => {
       if (sql.includes("update") && sql.includes("floe_files")) {
         updateCalled = true;
-        assert.equal(values?.[0], "test-file-to-delete");
-        assert.ok(typeof values?.[1] === "number");
+        assert.equal(_values?.[0], "test-file-to-delete");
+        assert.ok(typeof _values?.[1] === "number");
         return { rows: [], rowCount: 1 };
       }
       return { rows: [], rowCount: 0 };
@@ -178,8 +178,8 @@ test("files repository - upsertIndexedFile calls pg.query with correct params", 
     query: async (sql: string, _values?: unknown[]) => {
       queryCalled = true;
       assert.ok(sql.includes("insert into floe_files"));
-      assert.equal(values?.[0], "test-upsert-file");
-      assert.equal(values?.[1], "blob-upsert");
+      assert.equal(_values?.[0], "test-upsert-file");
+      assert.equal(_values?.[1], "blob-upsert");
       return { rows: [], rowCount: 0 };
     },
     end: async () => {},
