@@ -105,7 +105,9 @@ function section(title: string): string {
 
 function valueLine(label: string, value: unknown): string {
   const rendered =
-    value === null || value === undefined || value === "" ? paint("none", ANSI.gray) : String(value);
+    value === null || value === undefined || value === ""
+      ? paint("none", ANSI.gray)
+      : String(value);
   return `  ${paint(label.padEnd(16), ANSI.dim)} ${rendered}`;
 }
 
@@ -400,7 +402,12 @@ async function readStoredConfig(): Promise<StoredConfig> {
 async function writeStoredConfig(config: StoredConfig): Promise<void> {
   const configPath = getConfigPath();
   await fs.mkdir(path.dirname(configPath), { recursive: true });
-  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, {
+    mode: 0o600,
+    encoding: "utf8",
+  });
+  // Ensure 0600 even if the file already existed with looser permissions.
+  await fs.chmod(configPath, 0o600).catch(() => {});
 }
 
 function applyStoredConfig(options: CliOptions, config: StoredConfig) {
@@ -680,7 +687,7 @@ function printUploadResult(
     walrusDebug?: { source?: string; objectId?: string };
     blobId?: string;
   },
-  options: CliOptions
+  options: CliOptions,
 ) {
   if (options.json) {
     printResult(value, true);
@@ -710,7 +717,7 @@ function printUploadResult(
 function printSimpleActionResult(
   title: string,
   value: Record<string, unknown>,
-  options: CliOptions
+  options: CliOptions,
 ) {
   if (options.json) {
     printResult(value, true);
@@ -735,7 +742,10 @@ function printUploadStatusResult(value: Record<string, unknown>, options: CliOpt
     valueLine("status", statusBadge(String(value.status ?? "unknown"))),
     valueLine("uploadId", value.uploadId),
     valueLine("fileId", value.fileId),
-    valueLine("uploaded", formatBytes(typeof value.uploadedBytes === "number" ? value.uploadedBytes : null)),
+    valueLine(
+      "uploaded",
+      formatBytes(typeof value.uploadedBytes === "number" ? value.uploadedBytes : null),
+    ),
     valueLine("total", formatBytes(typeof value.sizeBytes === "number" ? value.sizeBytes : null)),
     valueLine("chunks", value.totalChunks),
   ];
@@ -763,7 +773,10 @@ function printManifestResult(value: Record<string, unknown>, options: CliOptions
     valueLine("manifestVersion", value.manifestVersion),
     valueLine("container", value.container),
     valueLine("tracks", Array.isArray(value.tracks) ? value.tracks.length : value.tracks),
-    valueLine("segmentCount", Array.isArray(value.segments) ? value.segments.length : value.segments),
+    valueLine(
+      "segmentCount",
+      Array.isArray(value.segments) ? value.segments.length : value.segments,
+    ),
   ];
   pushOptionalLine(lines, "walrusEndEpoch", value.walrusEndEpoch);
   if (options.includeBlobId) {
@@ -791,15 +804,20 @@ function printFileMetadataResult(value: Record<string, unknown>, options: CliOpt
     pushOptionalLine(lines, "blobId", value.blobId);
     pushOptionalLine(lines, "blobObjectId", value.blobObjectId);
   }
-  
+
   const expiry = value.expiryStatus as Record<string, unknown> | undefined;
   if (expiry) {
     lines.push(section("Storage Expiry"));
     lines.push(valueLine("status", statusBadge(expiry.isExpired ? "expired" : "healthy")));
-    lines.push(valueLine("remaining", `${expiry.epochsRemaining} epochs (~${expiry.estimatedDaysRemaining} days)`));
+    lines.push(
+      valueLine(
+        "remaining",
+        `${expiry.epochsRemaining} epochs (~${expiry.estimatedDaysRemaining} days)`,
+      ),
+    );
     lines.push(valueLine("endEpoch", expiry.endEpoch));
   }
-  
+
   writeLines(lines);
 }
 
@@ -824,11 +842,7 @@ function printStreamUrlResult(fileId: string, streamUrl: string, options: CliOpt
     return;
   }
 
-  writeLines([
-    headline("Stream URL"),
-    valueLine("fileId", fileId),
-    valueLine("url", streamUrl),
-  ]);
+  writeLines([headline("Stream URL"), valueLine("fileId", fileId), valueLine("url", streamUrl)]);
 }
 
 function printFileHeadResult(value: Record<string, unknown>, options: CliOptions) {
@@ -846,7 +860,7 @@ function printFileHeadResult(value: Record<string, unknown>, options: CliOptions
       "contentLength",
       typeof value.contentLength === "number"
         ? formatByteDetail(value.contentLength)
-        : value.contentLength
+        : value.contentLength,
     ),
     valueLine("contentRange", value.contentRange),
     valueLine("acceptRanges", value.acceptRanges),
@@ -868,7 +882,9 @@ function printDownloadResult(value: Record<string, unknown>, options: CliOptions
     valueLine("path", value.path),
     valueLine(
       "bytesWritten",
-      typeof value.bytesWritten === "number" ? formatByteDetail(value.bytesWritten) : value.bytesWritten
+      typeof value.bytesWritten === "number"
+        ? formatByteDetail(value.bytesWritten)
+        : value.bytesWritten,
     ),
     valueLine("status", value.status),
     valueLine("contentType", value.contentType),
@@ -922,7 +938,7 @@ function printOpsVersionResult(
     cliCompatible: boolean;
     compatibilityReason?: string;
   },
-  options: CliOptions
+  options: CliOptions,
 ) {
   if (options.json) {
     printResult(value, true);
@@ -951,7 +967,7 @@ function printConfigResult(
     auth: Record<string, unknown>;
     upload: Record<string, unknown>;
   },
-  options: CliOptions
+  options: CliOptions,
 ) {
   if (options.json) {
     printResult(value, true);
@@ -1006,7 +1022,7 @@ function printDoctorResult(
     compatibilityReason?: string | null;
     versionCheckError?: string | null;
   },
-  options: CliOptions
+  options: CliOptions,
 ) {
   if (options.json) {
     printResult(value, true);
@@ -1049,7 +1065,11 @@ async function runConfigPath(options: CliOptions) {
   writeLines([headline("CLI Config Path"), valueLine("path", configPath)]);
 }
 
-async function runConfigSet(keyRaw: string | undefined, valueRaw: string | undefined, options: CliOptions) {
+async function runConfigSet(
+  keyRaw: string | undefined,
+  valueRaw: string | undefined,
+  options: CliOptions,
+) {
   const key = requireConfigKey(keyRaw);
   const value = requireValue(valueRaw, "config value");
   const config = await readStoredConfig();
@@ -1058,8 +1078,12 @@ async function runConfigSet(keyRaw: string | undefined, valueRaw: string | undef
   if (!options.json) infoLine(`saved ${key} in ${getConfigPath()}`);
   printSimpleActionResult(
     "Config Updated",
-    { key, value: key.includes("key") || key === "bearer" ? "[configured]" : value, path: getConfigPath() },
-    options
+    {
+      key,
+      value: key.includes("key") || key === "bearer" ? "[configured]" : value,
+      path: getConfigPath(),
+    },
+    options,
   );
 }
 
@@ -1105,7 +1129,7 @@ async function buildClient(options: CliOptions): Promise<FloeClient> {
 
 async function buildApiClient(
   options: CliOptions,
-  opts: { skipCompatCheck?: boolean } = {}
+  opts: { skipCompatCheck?: boolean } = {},
 ): Promise<FloeClient> {
   const client = await buildClient(options);
   if (opts.skipCompatCheck || options.noCompatCheck) {
@@ -1119,7 +1143,7 @@ async function buildApiClient(
 
   if (!result.compatible) {
     throw new Error(
-      `CLI ${CLI_VERSION} is incompatible with ${result.service} ${result.serverVersion}; server supports ${result.supportedRange} for cli. Use --no-compat-check to bypass.`
+      `CLI ${CLI_VERSION} is incompatible with ${result.service} ${result.serverVersion}; server supports ${result.supportedRange} for cli. Use --no-compat-check to bypass.`,
     );
   }
 
@@ -1263,7 +1287,7 @@ async function runFileManifest(fileIdRaw: string | undefined, options: CliOption
 async function runFileDownload(
   fileIdRaw: string | undefined,
   outputPathRaw: string | undefined,
-  options: CliOptions
+  options: CliOptions,
 ) {
   const fileId = requireValue(fileIdRaw, "fileId");
   const outputPath = requireValue(outputPathRaw, "output path");
@@ -1276,18 +1300,22 @@ async function runFileDownload(
 async function runFileStream(fileIdRaw: string | undefined, options: CliOptions) {
   const fileId = requireValue(fileIdRaw, "fileId");
   if (options.json) {
-    throw new Error("--json is not supported with `floe file stream`; this command writes raw bytes to stdout");
+    throw new Error(
+      "--json is not supported with `floe file stream`; this command writes raw bytes to stdout",
+    );
   }
   if (process.stdout.isTTY) {
-    throw new Error("Refusing to write binary data to an interactive terminal; redirect stdout to a file or pipe");
+    throw new Error(
+      "Refusing to write binary data to an interactive terminal; redirect stdout to a file or pipe",
+    );
   }
 
-  const dynamicImport = new Function("s", "return import(s)") as <T>(specifier: string) => Promise<T>;
+  const dynamicImport = new Function("s", "return import(s)") as <T>(
+    specifier: string,
+  ) => Promise<T>;
   const stream = await dynamicImport<{
     Readable: {
-      fromWeb(
-        stream: ReadableStream<Uint8Array>
-      ): {
+      fromWeb(stream: ReadableStream<Uint8Array>): {
         pipe(destination: NodeJS.WritableStream): NodeJS.WritableStream;
       };
     };
@@ -1336,7 +1364,7 @@ async function runOpsVersion(options: CliOptions) {
       cliCompatible: compatibility.compatible,
       ...(compatibility.reason ? { compatibilityReason: compatibility.reason } : {}),
     },
-    options
+    options,
   );
 }
 
@@ -1353,8 +1381,7 @@ async function runDoctor(options: CliOptions) {
   const localBinPath = path.join(resolveHomeDir(), ".local", "bin");
   const pathEntries = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
   const walrusLookup = spawnSync("which", ["walrus"], { encoding: "utf8" });
-  const walrusPath =
-    walrusLookup.status === 0 ? walrusLookup.stdout.trim() || null : null;
+  const walrusPath = walrusLookup.status === 0 ? walrusLookup.stdout.trim() || null : null;
 
   let serverReachable = false;
   let service: string | null = null;
@@ -1409,7 +1436,7 @@ async function runDoctor(options: CliOptions) {
       compatibilityReason,
       versionCheckError,
     },
-    options
+    options,
   );
 }
 
@@ -1437,7 +1464,7 @@ async function runConfigShow(options: CliOptions) {
         maxWaitMs: options.maxWaitMs ?? null,
       },
     },
-    options
+    options,
   );
 }
 
@@ -1523,9 +1550,15 @@ main().catch((err) => {
   if (err instanceof FloeApiError) {
     process.stderr.write(`${paint("Request Failed", ANSI.bold, ANSI.red)}\n`);
     process.stderr.write(`  ${paint("message".padEnd(16), ANSI.dim)} ${err.message}\n`);
-    process.stderr.write(`  ${paint("status".padEnd(16), ANSI.dim)} ${String(err.status ?? "unknown")}\n`);
-    process.stderr.write(`  ${paint("code".padEnd(16), ANSI.dim)} ${String(err.code ?? "unknown")}\n`);
-    process.stderr.write(`  ${paint("retryable".padEnd(16), ANSI.dim)} ${String(Boolean(err.retryable))}\n`);
+    process.stderr.write(
+      `  ${paint("status".padEnd(16), ANSI.dim)} ${String(err.status ?? "unknown")}\n`,
+    );
+    process.stderr.write(
+      `  ${paint("code".padEnd(16), ANSI.dim)} ${String(err.code ?? "unknown")}\n`,
+    );
+    process.stderr.write(
+      `  ${paint("retryable".padEnd(16), ANSI.dim)} ${String(Boolean(err.retryable))}\n`,
+    );
     if (err.requestId) {
       process.stderr.write(`  ${paint("requestId".padEnd(16), ANSI.dim)} ${err.requestId}\n`);
     }
@@ -1536,6 +1569,8 @@ main().catch((err) => {
     return;
   }
 
-  process.stderr.write(`${paint("Error", ANSI.bold, ANSI.red)} ${String(err instanceof Error ? err.message : err)}\n`);
+  process.stderr.write(
+    `${paint("Error", ANSI.bold, ANSI.red)} ${String(err instanceof Error ? err.message : err)}\n`,
+  );
   process.exitCode = 1;
 });
