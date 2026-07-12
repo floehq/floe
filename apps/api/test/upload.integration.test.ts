@@ -830,7 +830,7 @@ test("cancel returns retry-after when finalization is in progress", async () => 
     const body = res.json();
 
     assert.equal(res.statusCode, 409);
-    assert.equal(res.headers["retry-after"], "2");
+    assert.equal(res.headers["retry-after"], "5");
     assert.equal(body.error.code, "UPLOAD_FINALIZATION_IN_PROGRESS");
     assert.equal(body.error.retryable, false);
   } finally {
@@ -859,7 +859,7 @@ test("cancel returns retry-after when finalization is queued before lock acquisi
     const body = res.json();
 
     assert.equal(res.statusCode, 409);
-    assert.equal(res.headers["retry-after"], "2");
+    assert.equal(res.headers["retry-after"], "5");
     assert.equal(body.error.code, "UPLOAD_FINALIZATION_IN_PROGRESS");
     assert.equal(await redis.exists(uploadKeys.session(uploadId)), 1);
     assert.equal(await redis.sismember(uploadKeys.finalizePending(), uploadId), 1);
