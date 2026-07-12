@@ -20,7 +20,8 @@ let filesRouteModule: FilesRouteModule;
 let postgresModule: PostgresModule;
 let suiModule: SuiModule;
 let streamCacheModule: StreamCacheModule;
-let originalGetObject: typeof suiModule.suiClient.getObject;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let originalGetObject: any;
 const walrusSamples = new Map<string, Uint8Array>();
 
 function buildFileFields(
@@ -45,7 +46,7 @@ function buildFileFields(
 }
 
 async function mockSuiFile(fields?: Parameters<typeof buildFileFields>[0]) {
-  (suiModule.suiClient as any).getObject = async () => ({
+  suiModule.getSuiClient().getObject = async () => ({
     data: {
       type: "0x2::file::FileMeta",
       content: {
@@ -212,7 +213,8 @@ before(async () => {
   postgresModule = await import("../src/state/postgres.ts");
   suiModule = await import("../src/state/sui.ts");
   streamCacheModule = await import("../src/services/stream/stream.cache.ts");
-  originalGetObject = suiModule.suiClient.getObject.bind(suiModule.suiClient);
+  const client = suiModule.getSuiClient();
+  originalGetObject = client.getObject.bind(client);
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url =
       typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -243,7 +245,7 @@ afterEach(() => {
   delete process.env.DATABASE_URL;
   delete process.env.FLOE_PUBLIC_STREAM_BASE_URL;
   postgresModule.setPostgresForTests(null, false);
-  (suiModule.suiClient as any).getObject = originalGetObject;
+  suiModule.getSuiClient().getObject = originalGetObject;
   walrusSamples.clear();
   return fs.rm(process.env.UPLOAD_TMP_DIR!, { recursive: true, force: true });
 });
@@ -259,7 +261,7 @@ test("metadata route exposes degraded postgres fallback when Sui is used", async
     },
     true,
   );
-  (suiModule.suiClient as any).getObject = async () => ({
+  suiModule.getSuiClient().getObject = async () => ({
     data: {
       type: "0x2::file::FileMeta",
       content: {
@@ -342,7 +344,7 @@ test("manifest route exposes degraded postgres fallback headers", async () => {
     },
     true,
   );
-  (suiModule.suiClient as any).getObject = async () => ({
+  suiModule.getSuiClient().getObject = async () => ({
     data: {
       type: "0x2::file::FileMeta",
       content: {
@@ -569,7 +571,7 @@ test("head stream route reflects valid range headers without streaming a body", 
 
 test("metadata and manifest expose public streamUrl when configured", async () => {
   process.env.FLOE_PUBLIC_STREAM_BASE_URL = "https://cdn.example.com/floe/";
-  (suiModule.suiClient as any).getObject = async () => ({
+  suiModule.getSuiClient().getObject = async () => ({
     data: {
       type: "0x2::file::FileMeta",
       content: {
@@ -638,7 +640,7 @@ test("metadata rejects authenticated keys missing files:read scope", async () =>
 
 test("metadata auth precheck rejects before file lookup", async () => {
   let suiLookups = 0;
-  (suiModule.suiClient as any).getObject = async () => {
+  suiModule.getSuiClient().getObject = async () => {
     suiLookups += 1;
     return {
       data: {
@@ -725,7 +727,7 @@ test("metadata invalid metadata does not inherit public cache headers", async ()
 });
 
 test("metadata rejects move objects outside the trusted file package", async () => {
-  (suiModule.suiClient as any).getObject = async () => ({
+  suiModule.getSuiClient().getObject = async () => ({
     data: {
       type: "0x2::other::FileMeta",
       content: {

@@ -1,5 +1,5 @@
 import { Transaction } from "@mysten/sui/transactions";
-import { suiClient, suiSigner } from "../state/sui.js";
+import { getSuiClient, getSuiSigner } from "../state/sui.js";
 
 const SUI_PACKAGE_ID = process.env.SUI_PACKAGE_ID;
 
@@ -44,9 +44,9 @@ export async function finalizeFileMetadata(input: FinalizeFileInput): Promise<Fi
 
   let result;
   try {
-    result = await suiClient.signAndExecuteTransaction({
+    result = await getSuiClient().signAndExecuteTransaction({
       transaction: tx,
-      signer: suiSigner,
+      signer: getSuiSigner(),
       options: {
         showObjectChanges: true,
       },
@@ -90,9 +90,9 @@ export async function renewFileMetadata(params: {
   }
 
   try {
-    await suiClient.signAndExecuteTransaction({
+    await getSuiClient().signAndExecuteTransaction({
       transaction: tx,
-      signer: suiSigner,
+      signer: getSuiSigner(),
     });
   } catch (err) {
     throw new Error(`SUI_RENEW_SUBMIT_FAILED:${(err as Error)?.message ?? "unknown"}`);

@@ -88,10 +88,33 @@ function createSignerFromEnv(key: string): Ed25519Keypair {
   throw new Error("Unrecognized SUI_PRIVATE_KEY format");
 }
 
-export const suiNetwork = parseSuiNetwork();
-export const suiRpcUrl = parseSuiRpcUrl(suiNetwork);
-const suiPrivateKey = parseSuiPrivateKey();
+// Lazy-initialized state — these are set on first access, not at module import time.
+// This avoids throwing when the module is imported before FLOE_NETWORK or
+// SUI_PRIVATE_KEY are ready (e.g. in test environments that set env vars after imports).
+let _suiNetwork: "mainnet" | "testnet" | null = null;
+let _suiRpcUrl: string | null = null;
+let _suiClient: SuiClient | null = null;
+let _suiSigner: Ed25519Keypair | null = null;
 
-export const suiClient = new SuiClient({ url: suiRpcUrl });
+export function getSuiNetwork(): "mainnet" | "testnet" {
+  if (!_suiNetwork) _suiNetwork = parseSuiNetwork();
+  return _suiNetwork;
+}
 
-export const suiSigner = createSignerFromEnv(suiPrivateKey);
+export function getSuiRpcUrl(): string {
+  if (!_suiRpcUrl) _suiRpcUrl = parseSuiRpcUrl(getSuiNetwork());
+  return _suiRpcUrl;
+}
+
+export function getSuiClient(): SuiClient {
+  if (!_suiClient) _suiClient = new SuiClient({ url: getSuiRpcUrl() });
+  return _suiClient;
+}
+
+export function getSuiSigner(): Ed25519Keypair {
+  if (!_suiSigner) {
+    const key = parseSuiPrivateKey();
+    _suiSigner = createSignerFromEnv(key);
+  }
+  return _suiSigner;
+}

@@ -1,13 +1,13 @@
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { toB64 } from "@mysten/sui/utils";
 import { nodeToWeb } from "../../../utils/nodeToWeb.js";
-import { suiClient, suiNetwork, suiSigner } from "../../../state/sui.js";
+import { getSuiClient, getSuiNetwork, getSuiSigner } from "../../../state/sui.js";
 import { WalrusUploadLimits } from "../../../config/walrus.config.js";
 import type { WalrusUploadParams, WalrusUploadResult } from "./types.js";
 
 const FETCH_TIMEOUT_MS = WalrusUploadLimits.timeoutMs;
 const MIN_BALANCE_MIST = 1_000_000_000n;
-const IS_MAINNET = suiNetwork === "mainnet";
+const IS_MAINNET = getSuiNetwork() === "mainnet";
 const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
 let lastGoodWriterIdx = 0;
 
@@ -79,7 +79,7 @@ async function checkBalanceOnce(clientAddress: string) {
   const now = Date.now();
   if (now - lastBalanceCheck < 60_000) return;
 
-  const bal = await suiClient.getBalance({ owner: clientAddress });
+  const bal = await getSuiClient().getBalance({ owner: clientAddress });
   if (BigInt(bal.totalBalance) < MIN_BALANCE_MIST) {
     throw new Error("INSUFFICIENT_BALANCE");
   }
@@ -152,7 +152,7 @@ export async function uploadToWalrusViaPublisher(
     };
 
     if (IS_MAINNET) {
-      const keypair = suiSigner;
+      const keypair = getSuiSigner();
       await checkBalanceOnce(keypair.getPublicKey().toSuiAddress());
       Object.assign(headers, await createAuthHeaders(keypair, baseUrl));
     }
