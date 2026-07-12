@@ -21,9 +21,9 @@ test("walrus limiter - queue is created with config", async () => {
 // ============================================================
 test("walrus config - describeWalrusReaders returns configured URLs", async () => {
   const prevAgg = process.env.WALRUS_AGGREGATOR_URL;
-  const prevFallback = process.env.FLOE_WALRUS_FALLBACK_AGGREGATOR_URLS;
+  const prevFallback = process.env.WALRUS_AGGREGATOR_FALLBACK_URLS;
   process.env.WALRUS_AGGREGATOR_URL = "https://aggregator.walrus.testnet.sui.io:443";
-  process.env.FLOE_WALRUS_FALLBACK_AGGREGATOR_URLS =
+  process.env.WALRUS_AGGREGATOR_FALLBACK_URLS =
     "https://fallback1.test,https://fallback2.test";
   try {
     const mod = await importFresh("../src/config/walrus.config.js");
@@ -33,8 +33,8 @@ test("walrus config - describeWalrusReaders returns configured URLs", async () =
   } finally {
     if (prevAgg !== undefined) process.env.WALRUS_AGGREGATOR_URL = prevAgg;
     else delete process.env.WALRUS_AGGREGATOR_URL;
-    if (prevFallback !== undefined) process.env.FLOE_WALRUS_FALLBACK_AGGREGATOR_URLS = prevFallback;
-    else delete process.env.FLOE_WALRUS_FALLBACK_AGGREGATOR_URLS;
+    if (prevFallback !== undefined) process.env.WALRUS_AGGREGATOR_FALLBACK_URLS = prevFallback;
+    else delete process.env.WALRUS_AGGREGATOR_FALLBACK_URLS;
   }
 });
 
