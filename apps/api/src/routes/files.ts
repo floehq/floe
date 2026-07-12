@@ -45,6 +45,17 @@ import {
   getCachedStreamPath,
 } from "../services/stream/stream.cache.js";
 
+/**
+ * Normalize a client-provided ETag (possibly quoted or weak) and compare
+ * it against the server's raw blobId ETag value.
+ */
+function matchesETag(clientETag: string | undefined, serverBlobId: string): boolean {
+  if (!clientETag) return false;
+  // Strip optional weakness prefix W/ and surrounding quotes
+  const clean = clientETag.replace(/^(W\/)?"/, "").replace(/"$/, "");
+  return clean === serverBlobId;
+}
+
 function inferContainerFromMime(mimeType: string): string | null {
   const m = (mimeType ?? "").toLowerCase();
   if (m.includes("mp4")) return "mp4";
@@ -841,6 +852,8 @@ export async function filesRoutes(app: FastifyInstance) {
       reply.header("ETag", blobId);
 
       const rangeHeader = (req.headers as any)?.range as string | undefined;
+      const ifNoneMatch = (req.headers as any)?.["if-none-match"] as string | undefined;
+      const ifRange = (req.headers as any)?.["if-range"] as string | undefined;
 
       let start = 0;
       let end = sizeBytes - 1;
@@ -860,6 +873,31 @@ export async function filesRoutes(app: FastifyInstance) {
         start = parsedOrErr.range.start;
         end = parsedOrErr.range.end;
         status = 206;
+      }
+
+      // ============================================================
+      // Conditional request handling (RFC 7232, RFC 7233)
+      // Ordered so If-Range (resume semantics) takes priority over
+      // If-None-Match (cache revalidation).
+      // ============================================================
+
+      // 1. If-Range: client resuming a partial download.
+      //    - If the ETag matches, proceed with normal range handling (206).
+      //    - If it doesn't match, ignore Range and serve full 200.
+      if (ifRange && rangeHeader) {
+        if (matchesETag(ifRange, blobId)) {
+          // If-Range matches → proceed with 206 as already parsed.
+        } else {
+          // If-Range stale → ignore Range, serve full entity.
+          start = 0;
+          end = sizeBytes - 1;
+          status = 200;
+        }
+      } else if (ifNoneMatch && matchesETag(ifNoneMatch, blobId)) {
+        // 2. If-None-Match: cache revalidation. Matching ETag → 304.
+        // applyFileReadCacheHeaders was already called above, setting
+        // the correct Cache-Control per public/private mode.
+        return reply.status(304).send();
       }
 
       const abortController = new AbortController();
@@ -885,6 +923,7 @@ export async function filesRoutes(app: FastifyInstance) {
       }
 
       // HEAD requests are satisfied from metadata but should still reflect range semantics.
+      // Cache-Control was already set by applyFileReadCacheHeaders above.
       if (req.method === "HEAD") {
         return reply.status(status).send();
       }
