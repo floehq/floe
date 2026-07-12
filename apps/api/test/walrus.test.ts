@@ -128,7 +128,7 @@ test("walrus upload - describeWalrusWriters returns correct shape for sdk mode",
     const writers = mod.describeWalrusWriters();
     assert.equal(writers.mode, "publisher");
     // publisher backend cached transitively; assertions match shell env
-    assert.equal(writers.count, 1);
+    assert.equal(writers.count, 2);
     assert.ok(typeof writers.primary === "string");
     assert.ok(Array.isArray(writers.fallbacks));
   } finally {

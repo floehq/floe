@@ -1,11 +1,11 @@
-import { suiClient } from "../../state/sui.js";
+import { getSuiClient } from "../../state/sui.js";
 
 export type WalrusBlobState = {
   endEpoch: number | null;
 };
 
 export async function getWalrusBlobState(blobObjectId: string): Promise<WalrusBlobState> {
-  const updatedObj = await suiClient.getObject({
+  const updatedObj = await getSuiClient().getObject({
     id: blobObjectId,
     options: { showContent: true },
   });

@@ -1,4 +1,4 @@
-import { suiClient } from "../../state/sui.js";
+import { getSuiClient } from "../../state/sui.js";
 import { getIndexedFile, upsertIndexedFile } from "../../db/files.repository.js";
 import { isPostgresConfigured, isPostgresEnabled } from "../../state/postgres.js";
 import { AuthModeConfig, AuthOwnerPolicyConfig } from "../../config/auth.config.js";
@@ -261,7 +261,7 @@ export async function getFileFieldsCached(fileId: string): Promise<CachedFileFie
     return { fields, source: "postgres", postgresState };
   }
 
-  const obj = await suiClient.getObject({
+  const obj = await getSuiClient().getObject({
     id: fileId,
     options: { showContent: true },
   });

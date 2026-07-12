@@ -1,13 +1,12 @@
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { toB64 } from "@mysten/sui/utils";
 import { nodeToWeb } from "../../../utils/nodeToWeb.js";
-import { suiClient, suiNetwork, suiSigner } from "../../../state/sui.js";
+import { getSuiClient, getSuiNetwork, getSuiSigner } from "../../../state/sui.js";
 import { WalrusUploadLimits } from "../../../config/walrus.config.js";
 import type { WalrusUploadParams, WalrusUploadResult } from "./types.js";
 
 const FETCH_TIMEOUT_MS = WalrusUploadLimits.timeoutMs;
 const MIN_BALANCE_MIST = 1_000_000_000n;
-const IS_MAINNET = suiNetwork === "mainnet";
 const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
 let lastGoodWriterIdx = 0;
 
@@ -63,14 +62,25 @@ function parseOptionalSuiAddressEnv(name: string): string | undefined {
   return `0x${raw.replace(/^0x/i, "").toLowerCase()}`;
 }
 
-const WALRUS_PUBLISHER_BASE_URLS = parseSdkBaseUrls();
-const WALRUS_SEND_OBJECT_TO = parseOptionalSuiAddressEnv("WALRUS_SEND_OBJECT_TO");
+let _publisherBaseUrls: string[] | null = null;
+function getPublisherBaseUrls(): string[] {
+  if (!_publisherBaseUrls) _publisherBaseUrls = parseSdkBaseUrls();
+  return _publisherBaseUrls;
+}
+
+let _sendObjectTo: string | undefined;
+function getSendObjectTo(): string | undefined {
+  if (_sendObjectTo === undefined)
+    _sendObjectTo = parseOptionalSuiAddressEnv("WALRUS_SEND_OBJECT_TO");
+  return _sendObjectTo;
+}
 
 export function describeWalrusPublisherBackend() {
+  const urls = getPublisherBaseUrls();
   return {
-    primary: WALRUS_PUBLISHER_BASE_URLS[0] ?? null,
-    fallbacks: WALRUS_PUBLISHER_BASE_URLS.slice(1),
-    count: WALRUS_PUBLISHER_BASE_URLS.length,
+    primary: urls[0] ?? null,
+    fallbacks: urls.slice(1),
+    count: urls.length,
   };
 }
 
@@ -79,7 +89,7 @@ async function checkBalanceOnce(clientAddress: string) {
   const now = Date.now();
   if (now - lastBalanceCheck < 60_000) return;
 
-  const bal = await suiClient.getBalance({ owner: clientAddress });
+  const bal = await getSuiClient().getBalance({ owner: clientAddress });
   if (BigInt(bal.totalBalance) < MIN_BALANCE_MIST) {
     throw new Error("INSUFFICIENT_BALANCE");
   }
@@ -115,12 +125,13 @@ async function safeReadText(res: Response): Promise<string> {
 export async function uploadToWalrusViaPublisher(
   params: WalrusUploadParams,
 ): Promise<WalrusUploadResult> {
-  if (WALRUS_PUBLISHER_BASE_URLS.length === 0) {
+  const urls = getPublisherBaseUrls();
+  if (urls.length === 0) {
     throw new Error(
       "FLOE_WALRUS_PUBLISHER_BASE_URL or FLOE_WALRUS_PUBLISHER_BASE_URLS must be set to http(s) URL when FLOE_WALRUS_STORE_MODE=publisher",
     );
   }
-  for (const baseUrl of WALRUS_PUBLISHER_BASE_URLS) {
+  for (const baseUrl of urls) {
     if (!/^https?:\/\//.test(baseUrl)) {
       throw new Error(
         "FLOE_WALRUS_PUBLISHER_BASE_URLS entries must start with http:// or https://",
@@ -129,30 +140,25 @@ export async function uploadToWalrusViaPublisher(
   }
 
   const startIdx =
-    Number.isInteger(lastGoodWriterIdx) &&
-    lastGoodWriterIdx >= 0 &&
-    lastGoodWriterIdx < WALRUS_PUBLISHER_BASE_URLS.length
+    Number.isInteger(lastGoodWriterIdx) && lastGoodWriterIdx >= 0 && lastGoodWriterIdx < urls.length
       ? lastGoodWriterIdx
       : 0;
 
   let lastError: unknown = null;
-  for (
-    let writerAttempt = 0;
-    writerAttempt < WALRUS_PUBLISHER_BASE_URLS.length;
-    writerAttempt += 1
-  ) {
-    const idx = (startIdx + writerAttempt) % WALRUS_PUBLISHER_BASE_URLS.length;
-    const baseUrl = WALRUS_PUBLISHER_BASE_URLS[idx];
+  for (let writerAttempt = 0; writerAttempt < urls.length; writerAttempt += 1) {
+    const idx = (startIdx + writerAttempt) % urls.length;
+    const baseUrl = urls[idx];
     const paramsQs = new URLSearchParams({ epochs: String(params.epochs) });
-    if (WALRUS_SEND_OBJECT_TO) {
-      paramsQs.set("send_object_to", WALRUS_SEND_OBJECT_TO);
+    const sendObjectTo = getSendObjectTo();
+    if (sendObjectTo) {
+      paramsQs.set("send_object_to", sendObjectTo);
     }
     const headers: Record<string, string> = {
       "Content-Type": "application/octet-stream",
     };
 
-    if (IS_MAINNET) {
-      const keypair = suiSigner;
+    if (getSuiNetwork() === "mainnet") {
+      const keypair = getSuiSigner();
       await checkBalanceOnce(keypair.getPublicKey().toSuiAddress());
       Object.assign(headers, await createAuthHeaders(keypair, baseUrl));
     }
@@ -270,7 +276,7 @@ export async function uploadToWalrusViaPublisher(
         message.includes("ECONNRESET") ||
         message.includes("WALRUS_UPLOAD_FAILED:429") ||
         /WALRUS_UPLOAD_FAILED:5\d{2}/.test(message);
-      if (!retryable || writerAttempt === WALRUS_PUBLISHER_BASE_URLS.length - 1) {
+      if (!retryable || writerAttempt === urls.length - 1) {
         throw err;
       }
     } finally {
