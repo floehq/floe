@@ -71,6 +71,7 @@ export type RateLimitTier = keyof (typeof LIMIT_DEFAULTS)["upload_control"];
 export type AuthMode = "public" | "hybrid" | "private";
 export type AccessPolicy = AuthMode;
 export type AuthProviderKind = "none" | "local" | "external" | "token";
+export type ApiKeyStoreBackend = "env" | "postgres";
 
 export interface StaticApiKeyConfig {
   id: string;
@@ -113,6 +114,15 @@ function assertTierOrder(limits: Record<RateLimitScope, Record<RateLimitTier, nu
       );
     }
   }
+}
+
+function parseApiKeyStoreBackend(): ApiKeyStoreBackend {
+  const raw = process.env.FLOE_API_KEY_STORE?.trim().toLowerCase();
+  if (!raw) return "env";
+  if (raw === "env" || raw === "postgres") {
+    return raw;
+  }
+  throw new Error("FLOE_API_KEY_STORE must be one of: env, postgres");
 }
 
 function parseAccessPolicy(): AccessPolicy {
@@ -225,6 +235,14 @@ assertTierOrder(builtLimits);
 const localLeaseSize = buildLocalLeaseSize();
 const parsedApiKeys = parseApiKeys();
 const parsedAccessPolicy = parseAccessPolicy();
+const parsedApiKeyStoreBackend = parseApiKeyStoreBackend();
+
+if (parsedApiKeyStoreBackend === "postgres" && !process.env.DATABASE_URL?.trim()) {
+  throw new Error(
+    "FLOE_API_KEY_STORE=postgres requires DATABASE_URL to be configured"
+  );
+}
+
 const parsedAuthProviderKind = parseAuthProviderKind({
   accessPolicy: parsedAccessPolicy,
   localKeyCount: parsedApiKeys.length,
@@ -278,6 +296,10 @@ export const AuthProviderConfig = {
 
 export const AuthApiKeyConfig = {
   keys: parsedApiKeys,
+};
+
+export const AuthApiKeyStoreConfig = {
+  backend: parsedApiKeyStoreBackend,
 };
 
 export const AuthTokenConfig = {
