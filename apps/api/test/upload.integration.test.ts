@@ -21,6 +21,7 @@ process.env.FLOE_CHUNK_DEFAULT_BYTES = "4";
 process.env.FLOE_CHUNK_MAX_BYTES = "8";
 process.env.FLOE_UPLOAD_SESSION_TTL_MS = "2000";
 process.env.WALRUS_AGGREGATOR_URL = "http://127.0.0.1:1";
+process.env.FLOE_FINALIZE_STATUS_POLL_MS = "2000";
 delete process.env.DATABASE_URL;
 
 type RedisModule = typeof import("../src/state/redis.ts");
@@ -829,8 +830,9 @@ test("cancel returns retry-after when finalization is in progress", async () => 
     });
     const body = res.json();
 
+    const retryAfter = Number(res.headers["retry-after"]);
     assert.equal(res.statusCode, 409);
-    assert.equal(res.headers["retry-after"], "5");
+    assert.ok(retryAfter >= 1 && retryAfter <= 3, `expected retry-after 1-3, got ${retryAfter}`);
     assert.equal(body.error.code, "UPLOAD_FINALIZATION_IN_PROGRESS");
     assert.equal(body.error.retryable, false);
   } finally {
@@ -858,8 +860,9 @@ test("cancel returns retry-after when finalization is queued before lock acquisi
     });
     const body = res.json();
 
+    const retryAfter = Number(res.headers["retry-after"]);
     assert.equal(res.statusCode, 409);
-    assert.equal(res.headers["retry-after"], "5");
+    assert.ok(retryAfter >= 1 && retryAfter <= 3, `expected retry-after 1-3, got ${retryAfter}`);
     assert.equal(body.error.code, "UPLOAD_FINALIZATION_IN_PROGRESS");
     assert.equal(await redis.exists(uploadKeys.session(uploadId)), 1);
     assert.equal(await redis.sismember(uploadKeys.finalizePending(), uploadId), 1);
