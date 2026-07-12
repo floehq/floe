@@ -99,6 +99,8 @@ test("gc worker - expires uploading session past expiresAt", async () => {
     status: "uploading",
     expiresAt: String(Date.now() - 1000),
   });
+  // Create a directory so the grace-period skip is safe
+  await fs.mkdir(path.join(testTmpDir, uploadId), { recursive: true });
 
   const mod = await import("../src/state/gc/upload.gc.worker.js");
   await mod.runUploadGc(log);
@@ -116,6 +118,8 @@ test("gc worker - expires finalizing session past expiresAt", async () => {
     status: "finalizing",
     expiresAt: String(Date.now() - 1000),
   });
+  // Create a directory so the grace-period skip is safe
+  await fs.mkdir(path.join(testTmpDir, uploadId), { recursive: true });
 
   const mod = await import("../src/state/gc/upload.gc.worker.js");
   await mod.runUploadGc(log);
@@ -202,7 +206,7 @@ test("gc reconcile - no-op when tmp dir is empty", async () => {
 
 test("gc reconcile - recovers orphan chunk dir", async () => {
   const redis = mockRedis();
-  const uploadId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const uploadId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
   await fs.mkdir(path.join(testTmpDir, uploadId), { recursive: true });
 
   const mod = await import("../src/state/gc/upload.gc.reconcile.js");
@@ -215,7 +219,7 @@ test("gc reconcile - recovers orphan chunk dir", async () => {
 });
 
 test("gc reconcile - recovers orphan final bin", async () => {
-  const uploadId = "aaaaaaaa-bbbb-cccc-dddd-ffffffffffff";
+  const uploadId = "aaaaaaaa-bbbb-4ccc-8ddd-ffffffffffff";
   await fs.writeFile(path.join(testTmpDir, `${uploadId}.bin`), "test");
 
   const mod = await import("../src/state/gc/upload.gc.reconcile.js");
@@ -227,7 +231,7 @@ test("gc reconcile - recovers orphan final bin", async () => {
 
 test("gc reconcile - skips already tracked uploads", async () => {
   const redis = mockRedis();
-  const uploadId = "aaaaaaaa-bbbb-cccc-dddd-aaaaaaaaaaaa";
+  const uploadId = "aaaaaaaa-bbbb-4ccc-8ddd-aaaaaaaaaaaa";
   await fs.mkdir(path.join(testTmpDir, uploadId), { recursive: true });
   await redis.sadd(keys().gcIndex(), uploadId);
 
