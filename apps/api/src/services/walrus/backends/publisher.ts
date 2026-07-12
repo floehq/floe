@@ -70,7 +70,8 @@ function getPublisherBaseUrls(): string[] {
 
 let _sendObjectTo: string | undefined;
 function getSendObjectTo(): string | undefined {
-  if (_sendObjectTo === undefined) _sendObjectTo = parseOptionalSuiAddressEnv("WALRUS_SEND_OBJECT_TO");
+  if (_sendObjectTo === undefined)
+    _sendObjectTo = parseOptionalSuiAddressEnv("WALRUS_SEND_OBJECT_TO");
   return _sendObjectTo;
 }
 
@@ -139,18 +140,12 @@ export async function uploadToWalrusViaPublisher(
   }
 
   const startIdx =
-    Number.isInteger(lastGoodWriterIdx) &&
-    lastGoodWriterIdx >= 0 &&
-    lastGoodWriterIdx < urls.length
+    Number.isInteger(lastGoodWriterIdx) && lastGoodWriterIdx >= 0 && lastGoodWriterIdx < urls.length
       ? lastGoodWriterIdx
       : 0;
 
   let lastError: unknown = null;
-  for (
-    let writerAttempt = 0;
-    writerAttempt < urls.length;
-    writerAttempt += 1
-  ) {
+  for (let writerAttempt = 0; writerAttempt < urls.length; writerAttempt += 1) {
     const idx = (startIdx + writerAttempt) % urls.length;
     const baseUrl = urls[idx];
     const paramsQs = new URLSearchParams({ epochs: String(params.epochs) });
