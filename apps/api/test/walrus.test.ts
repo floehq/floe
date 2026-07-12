@@ -23,8 +23,7 @@ test("walrus config - describeWalrusReaders returns configured URLs", async () =
   const prevAgg = process.env.WALRUS_AGGREGATOR_URL;
   const prevFallback = process.env.WALRUS_AGGREGATOR_FALLBACK_URLS;
   process.env.WALRUS_AGGREGATOR_URL = "https://aggregator.walrus.testnet.sui.io:443";
-  process.env.WALRUS_AGGREGATOR_FALLBACK_URLS =
-    "https://fallback1.test,https://fallback2.test";
+  process.env.WALRUS_AGGREGATOR_FALLBACK_URLS = "https://fallback1.test,https://fallback2.test";
   try {
     const mod = await importFresh("../src/config/walrus.config.js");
     const readers = mod.describeWalrusReaders();
