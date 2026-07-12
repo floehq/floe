@@ -9,7 +9,6 @@ import {
   STREAM_CACHE_FILL_CONCURRENCY,
   STREAM_CACHE_MAX_BYTES,
   STREAM_CACHE_MIN_FREE_DISK_BYTES,
-  STREAM_CACHE_MIN_FREE_DISK_FRACTION,
   STREAM_CACHE_TTL_MS,
   shouldCacheFullObject as shouldCacheFullObjectPolicy,
 } from "./stream.cache.policy.js";
@@ -83,17 +82,12 @@ async function ensureFreeDiskSpace(): Promise<void> {
   try {
     const stat = await fsp.statfs(STREAM_CACHE_DIR);
     const availableBytes = stat.bsize * stat.bavail;
-    const minFreeBytes = Math.max(
-      Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_BYTES) && STREAM_CACHE_MIN_FREE_DISK_BYTES > 0
-        ? STREAM_CACHE_MIN_FREE_DISK_BYTES
-        : 0,
-      Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_FRACTION) &&
-        STREAM_CACHE_MIN_FREE_DISK_FRACTION > 0
-        ? Math.floor(stat.blocks * stat.bsize * STREAM_CACHE_MIN_FREE_DISK_FRACTION)
-        : 0,
-    );
-    if (availableBytes < minFreeBytes) {
-      await pruneStreamCacheByBytes(availableBytes - minFreeBytes);
+    if (
+      Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_BYTES) &&
+      STREAM_CACHE_MIN_FREE_DISK_BYTES > 0 &&
+      availableBytes < STREAM_CACHE_MIN_FREE_DISK_BYTES
+    ) {
+      await pruneStreamCacheByBytes(STREAM_CACHE_MIN_FREE_DISK_BYTES - availableBytes);
     }
   } catch {
     // statfs not available or not supported; skip disk-free check
@@ -453,24 +447,12 @@ async function reserveCacheBytes(expectedBytes: number): Promise<null | (() => v
     if (currentBytes + reservedCacheBytes + expectedBytes > STREAM_CACHE_MAX_BYTES) {
       return null;
     }
-    if (
-      !Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_BYTES) ||
-      STREAM_CACHE_MIN_FREE_DISK_BYTES <= 0
-    ) {
-      // skip disk-free check if not configured
-    } else {
+    if (Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_BYTES) && STREAM_CACHE_MIN_FREE_DISK_BYTES > 0) {
       try {
         const stat = await fsp.statfs(STREAM_CACHE_DIR);
         const availableBytes = stat.bsize * stat.bavail;
-        const minFreeBytes = Math.max(
-          STREAM_CACHE_MIN_FREE_DISK_BYTES,
-          Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_FRACTION) &&
-            STREAM_CACHE_MIN_FREE_DISK_FRACTION > 0
-            ? Math.floor(stat.blocks * stat.bsize * STREAM_CACHE_MIN_FREE_DISK_FRACTION)
-            : 0,
-        );
         const needed = currentBytes + reservedCacheBytes + expectedBytes;
-        if (availableBytes < minFreeBytes || availableBytes < needed * 0.1) {
+        if (availableBytes < STREAM_CACHE_MIN_FREE_DISK_BYTES || availableBytes < needed * 0.1) {
           return null;
         }
       } catch {

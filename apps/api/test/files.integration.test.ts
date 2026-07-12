@@ -462,6 +462,31 @@ test("ensureCachedStreamRange persists exact bytes for a cached segment", async 
   assert.deepEqual([...bytes], [2, 3, 4, 5, 6]);
 });
 
+test("STREAM_CACHE_MIN_FREE_DISK_FRACTION is removed (only fixed byte floor remains)", async () => {
+  // Verifies that the fraction-based disk check is gone.
+  // The old code computed minFreeBytes = max(fixedBytes, totalDisk * 0.1)
+  // which failed on large volumes with modest free space.
+  // The new code only checks the fixed STREAM_CACHE_MIN_FREE_DISK_BYTES floor.
+  const policyModule = await import("../src/services/stream/stream.cache.policy.js");
+  assert.equal(
+    (policyModule as any).STREAM_CACHE_MIN_FREE_DISK_FRACTION,
+    undefined,
+    "STREAM_CACHE_MIN_FREE_DISK_FRACTION must be removed from policy exports",
+  );
+  // Confirm the source also has no reference to the fraction by checking
+  // that ensureCachedStreamRange works when real statfs reports free space
+  // well above STREAM_CACHE_MIN_FREE_DISK_BYTES (default 1 GB).
+  const blobId = "disk-fraction-regression";
+  walrusSamples.set(blobId, Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+  const cachedPath = await streamCacheModule.ensureCachedStreamRange({
+    blobId,
+    start: 0,
+    end: 3,
+  });
+  const bytes = await fs.readFile(cachedPath);
+  assert.deepEqual([...bytes], [0, 1, 2, 3]);
+});
+
 test("getCachedStreamPath evicts truncated full-cache files before they false-hit", async () => {
   const blobId = "full-cache-invalid";
   const manualPath = path.join(
