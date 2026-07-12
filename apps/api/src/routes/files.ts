@@ -1061,11 +1061,13 @@ export async function filesRoutes(app: FastifyInstance) {
           // cache_hit: serve from the now-cached file
           const stat = await fs.stat(teeResult.cachePath).catch(() => null);
           if (stat?.isFile() && stat.size >= end + 1) {
-            return reply.status(status).send(createCachedReadStream({
-              filePath: teeResult.cachePath,
-              start,
-              end,
-            }));
+            return reply.status(status).send(
+              createCachedReadStream({
+                filePath: teeResult.cachePath,
+                start,
+                end,
+              }),
+            );
           }
         }
       }

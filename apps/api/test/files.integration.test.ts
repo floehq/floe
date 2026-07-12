@@ -407,10 +407,7 @@ test("stream routes expose metadata source headers", async () => {
   const fileId = "0x6666666666666666666666666666666666666666666666666666666666666666";
 
   // Set up matching walrus sample so the tee cache fill doesn't truncate
-  walrusSamples.set(
-    "blob-4",
-    Uint8Array.from(new Array(256).fill(0).map((_, i) => i & 0xff)),
-  );
+  walrusSamples.set("blob-4", Uint8Array.from(new Array(256).fill(0).map((_, i) => i & 0xff)));
 
   const getRes = await app.inject({
     method: "GET",
@@ -934,10 +931,7 @@ test("stream conditional GET with Range + matching If-Range returns 206", async 
     blob_id: "blob-ifrange-match",
     size_bytes: "10",
   });
-  walrusSamples.set(
-    "blob-ifrange-match",
-    Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
-  );
+  walrusSamples.set("blob-ifrange-match", Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
 
   const app = await createRouteApp();
   const fileId = "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
@@ -963,10 +957,7 @@ test("stream conditional GET with Range + stale If-Range falls through to full 2
     blob_id: "blob-ifrange-stale",
     size_bytes: "10",
   });
-  walrusSamples.set(
-    "blob-ifrange-stale",
-    Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
-  );
+  walrusSamples.set("blob-ifrange-stale", Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
 
   const app = await createRouteApp();
   const fileId = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
@@ -993,10 +984,7 @@ test("stream conditional GET with non-matching If-None-Match falls through to no
     blob_id: "blob-304-miss",
     size_bytes: "10",
   });
-  walrusSamples.set(
-    "blob-304-miss",
-    Uint8Array.from([10, 11, 12, 13, 14, 15, 16, 17, 18, 19]),
-  );
+  walrusSamples.set("blob-304-miss", Uint8Array.from([10, 11, 12, 13, 14, 15, 16, 17, 18, 19]));
 
   const app = await createRouteApp();
   const fileId = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";

@@ -27,8 +27,7 @@ const STREAM_CACHE_FULL_DIR = path.join(STREAM_CACHE_DIR, "full");
 const STREAM_CACHE_RANGE_DIR = path.join(STREAM_CACHE_DIR, "ranges");
 
 export type StreamFillResult =
-  | { kind: "cache_hit"; cachePath: string }
-  | { kind: "tee"; cachePath: string; stream: Readable };
+  { kind: "cache_hit"; cachePath: string } | { kind: "tee"; cachePath: string; stream: Readable };
 
 interface InFlightTeeEntry {
   cachePath: string;
