@@ -100,8 +100,14 @@ function authzErrorCode(code?: string): "AUTH_REQUIRED" | "OWNER_MISMATCH" | "IN
   return "OWNER_MISMATCH";
 }
 
+function jitteredPollMs(): number {
+  const range = Math.round(FINALIZE_POLL_AFTER_MS * 0.2); // ±20%
+  const jitter = Math.round((Math.random() * 2 - 1) * range);
+  return Math.max(1000, FINALIZE_POLL_AFTER_MS + jitter);
+}
+
 function finalizePollRetryAfterSeconds(): string {
-  return String(Math.max(1, Math.ceil(FINALIZE_POLL_AFTER_MS / 1000)));
+  return String(Math.max(1, Math.ceil(jitteredPollMs() / 1000)));
 }
 
 function readExpiresAt(
@@ -1038,7 +1044,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         receivedChunkCount: receivedChunks.length,
         expiresAt: currentMeta?.expiresAt ? Number(currentMeta.expiresAt) : null,
         status,
-        ...(status === "finalizing" ? { pollAfterMs: FINALIZE_POLL_AFTER_MS } : {}),
+        ...(status === "finalizing" ? { pollAfterMs: jitteredPollMs() } : {}),
         ...(currentMeta?.fileId ? { fileId: currentMeta.fileId } : {}),
         ...(exposeBlobId && currentMeta?.blobId ? { blobId: currentMeta.blobId } : {}),
         ...(currentMeta?.walrusEndEpoch
@@ -1098,7 +1104,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       expiresAt: session.expiresAt,
       status: currentMeta?.status ?? session.status,
       ...((currentMeta?.status ?? session.status) === "finalizing"
-        ? { pollAfterMs: FINALIZE_POLL_AFTER_MS }
+        ? { pollAfterMs: jitteredPollMs() }
         : {}),
       ...(currentMeta?.fileId ? { fileId: currentMeta.fileId } : {}),
       ...(exposeBlobId && currentMeta?.blobId ? { blobId: currentMeta.blobId } : {}),
@@ -1211,11 +1217,12 @@ export default async function uploadRoutes(app: FastifyInstance) {
     }
 
     if (metaStatus === "finalizing") {
-      const retryAfter = finalizePollRetryAfterSeconds();
+      const currentPollMs = jitteredPollMs();
+      const retryAfter = String(Math.max(1, Math.ceil(currentPollMs / 1000)));
       const responseBody = {
         uploadId,
         status: "finalizing",
-        pollAfterMs: FINALIZE_POLL_AFTER_MS,
+        pollAfterMs: currentPollMs,
         enqueued: false,
         ...(isUploadFinalizeQueued(uploadId) ? { inProgress: true } : {}),
         ...buildFinalizeDiagnostics(currentMeta),
@@ -1367,7 +1374,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
     const responseBody = {
       uploadId,
       status: "finalizing",
-      pollAfterMs: FINALIZE_POLL_AFTER_MS,
+      pollAfterMs: jitteredPollMs(),
       enqueued: queued.enqueued,
       ...(isUploadFinalizeQueued(uploadId) ? { inProgress: true } : {}),
       ...buildFinalizeDiagnostics(currentMeta),

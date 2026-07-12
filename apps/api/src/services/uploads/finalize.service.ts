@@ -14,7 +14,11 @@ import { renewWalrusBlob } from "../walrus/renew.js";
 import { getCurrentWalrusEpoch } from "../walrus/epoch.js";
 import { getWalrusBlobState } from "../walrus/blob.js";
 import { finalizeFileMetadata } from "../../sui/file.metadata.js";
-import { observeFinalizeStage, observeSuiFinalize } from "../metrics/runtime.metrics.js";
+import {
+  observeFinalizeStage,
+  observeSuiFinalize,
+  recordUploadTotalDuration,
+} from "../metrics/runtime.metrics.js";
 import {
   findFileByChecksum,
   getBlobObjectIdByBlobId,
@@ -541,6 +545,14 @@ export async function finalizeUpload(
       },
       "Upload finalize completed",
     );
+    const uploadDurationMs = Date.now() - Number(pre?.createdAt ?? startedAt);
+    if (Number.isFinite(uploadDurationMs) && uploadDurationMs > 0) {
+      recordUploadTotalDuration({
+        durationMs: uploadDurationMs,
+        outcome: "succeeded",
+      });
+    }
+
     emitInfrastructureEvent(context.log ?? console, {
       event: "finalize_succeeded",
       uploadId,
@@ -617,6 +629,14 @@ export async function finalizeUpload(
       },
       "Upload finalize failed",
     );
+    const failUploadDurationMs = Date.now() - Number(pre?.createdAt ?? startedAt);
+    if (Number.isFinite(failUploadDurationMs) && failUploadDurationMs > 0) {
+      recordUploadTotalDuration({
+        durationMs: failUploadDurationMs,
+        outcome: "failed",
+      });
+    }
+
     emitInfrastructureEvent(context.log ?? console, {
       event: "finalize_failed",
       uploadId,

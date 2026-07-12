@@ -105,6 +105,9 @@ const FINALIZE_DURATION_BUCKETS_MS = [
 const UPSTREAM_DURATION_BUCKETS_MS = [50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000];
 const LOOKUP_DURATION_BUCKETS_MS = [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500];
 const STREAM_CACHE_FILL_BUCKETS_MS = [10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000, 30000];
+const UPLOAD_DURATION_BUCKETS_MS = [
+  1000, 5000, 10000, 30000, 60000, 120000, 300000, 600000, 1800000, 3600000, 7200000,
+];
 
 export function recordHttpRequest(params: {
   method: string;
@@ -288,6 +291,18 @@ export function recordStreamCacheEviction(params: {
   });
 }
 
+export function recordUploadTotalDuration(params: {
+  durationMs: number;
+  outcome: "succeeded" | "failed";
+}) {
+  observeHistogram(
+    "floe_upload_total_duration_ms",
+    params.durationMs,
+    UPLOAD_DURATION_BUCKETS_MS,
+    { outcome: params.outcome },
+  );
+}
+
 export function observeWalrusSegmentFetch(params: {
   outcome:
     "success" | "not_found" | "retryable_status" | "network_error" | "aborted" | "other_error";
@@ -398,6 +413,10 @@ export function renderPrometheusMetrics(): string {
     ...renderHistogram(
       "floe_walrus_segment_fetch_duration_ms",
       "Walrus segment fetch duration in milliseconds",
+    ),
+    ...renderHistogram(
+      "floe_upload_total_duration_ms",
+      "Total upload duration from creation to finalization in milliseconds",
     ),
   );
 
