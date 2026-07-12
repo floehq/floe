@@ -21,7 +21,6 @@ let postgresModule: PostgresModule;
 let suiModule: SuiModule;
 let streamCacheModule: StreamCacheModule;
 let originalGetObject: typeof suiModule.suiClient.getObject;
-const originalFetch = globalThis.fetch;
 const walrusSamples = new Map<string, Uint8Array>();
 
 function buildFileFields(

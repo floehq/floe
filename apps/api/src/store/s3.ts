@@ -19,7 +19,7 @@ type AwsS3Module = {
 function loadAwsS3(): AwsS3Module {
   try {
     return require("@aws-sdk/client-s3") as AwsS3Module;
-  } catch (err) {
+  } catch {
     throw new Error(
       "S3 chunk store requires @aws-sdk/client-s3. Install it with: npm install --workspace=apps/api @aws-sdk/client-s3",
     );

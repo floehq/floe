@@ -104,7 +104,7 @@ async function resolveFileFields(id: string): Promise<CachedFileFieldsResult> {
   if (fileId) {
     try {
       out = await getFileFieldsCached(fileId);
-    } catch (err) {
+    } catch {
       // Fallback
     }
   }
@@ -261,6 +261,7 @@ async function* walrusByteStream(params: {
       const isFullObjectAttempt = params.start === 0 && offset === 0 && segEnd === params.end;
 
       if (upstream.status === 200 && isFullObjectAttempt) {
+        // Full-object 200 response is valid even without 206
       } else if (upstream.status !== 206) {
         const text = await upstream.text().catch(() => "");
         throw makeWalrusReadError(upstream.status, text);
@@ -434,17 +435,17 @@ export async function filesRoutes(app: FastifyInstance) {
       return sendFileAccessDenied(res, authzPrecheck);
     }
 
-    let fields: any | null = null;
-    let fieldsSource: FileFieldsSource | null = null;
-    let postgresState: PostgresReadState = "disabled";
     const t0 = Date.now();
+    let fields: any | null;
+    let fieldsSource: FileFieldsSource | null;
+    let postgresState: PostgresReadState;
     try {
       const out = await getFileFieldsCached(fileId);
       fields = out.fields;
       fieldsSource = out.source;
       postgresState = out.postgresState;
-    } catch (err) {
-      req.log.error({ err, fileId }, "Sui read failed");
+    } catch (_err) {
+      req.log.error({ err: _err, fileId }, "Sui read failed");
       return sendApiError(res, 503, "SUI_UNAVAILABLE", "Failed to fetch file metadata from Sui", {
         retryable: true,
       });
@@ -675,17 +676,17 @@ export async function filesRoutes(app: FastifyInstance) {
       return sendFileAccessDenied(res, authzPrecheck);
     }
 
-    let fields: any | null = null;
-    let fieldsSource: FileFieldsSource | null = null;
-    let postgresState: PostgresReadState = "disabled";
     const t0 = Date.now();
+    let fields: any | null;
+    let fieldsSource: FileFieldsSource | null;
+    let postgresState: PostgresReadState;
     try {
       const out = await getFileFieldsCached(fileId);
       fields = out.fields;
       fieldsSource = out.source;
       postgresState = out.postgresState;
-    } catch (err) {
-      req.log.error({ err, fileId }, "Sui read failed");
+    } catch (_err) {
+      req.log.error({ err: _err, fileId }, "Sui read failed");
       return sendApiError(res, 503, "SUI_UNAVAILABLE", "Failed to fetch file metadata from Sui", {
         retryable: true,
       });
@@ -791,14 +792,11 @@ export async function filesRoutes(app: FastifyInstance) {
         return sendFileAccessDenied(reply, authzPrecheck);
       }
 
-      let fields: any | null = null;
-      let fieldsSource: FileFieldsSource | null = null;
-      let postgresState: PostgresReadState = "disabled";
+      const fieldsResult = await resolveFileFields(rawFileId);
+      const fields = fieldsResult.fields;
+      const fieldsSource = fieldsResult.source;
+      const postgresState: PostgresReadState = fieldsResult.postgresState;
       const t0 = Date.now();
-      const out = await resolveFileFields(rawFileId);
-      fields = out.fields;
-      fieldsSource = out.source;
-      postgresState = out.postgresState;
 
       if (!fields) {
         return sendApiError(reply, 404, "FILE_NOT_FOUND", "File not found");

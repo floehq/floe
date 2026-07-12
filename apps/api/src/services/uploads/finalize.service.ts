@@ -26,7 +26,6 @@ import {
   buildFinalizeFollowupWarningMeta,
   normalizeFinalizeFailure,
   shouldPersistFinalizeFailure,
-  type FinalizeFailureCode,
 } from "./finalize.shared.js";
 import { emitInfrastructureEvent } from "../events/infrastructure.events.js";
 

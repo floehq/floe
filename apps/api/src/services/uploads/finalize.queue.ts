@@ -155,7 +155,7 @@ async function markUploadFailed(params: {
   }
 }
 
-async function enqueueUploadId(uploadId: string): Promise<boolean> {
+async function _enqueueUploadId(uploadId: string): Promise<boolean> {
   const redis = getRedis();
   const queuedAt = Date.now();
   const script = `

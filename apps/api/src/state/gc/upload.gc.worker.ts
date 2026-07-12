@@ -82,7 +82,7 @@ export async function runUploadGc(log: FastifyBaseLogger) {
     const dirPath = path.join(baseDir, uploadId);
     const binPath = path.join(baseDir, `${uploadId}.bin`);
 
-    let mtimeMs = 0;
+    let mtimeMs;
     if (isDiskBackend) {
       try {
         const st = await fs.stat(binPath);

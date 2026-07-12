@@ -145,16 +145,16 @@ export class DiskChunkStore implements ChunkStore {
 
       try {
         fs.utimesSync(dir, new Date(), new Date());
-      } catch {}
+      } catch { /* empty */ }
       return { alreadyExisted: false };
     } catch (err) {
       try {
         fs.rmSync(tempPath, { force: true });
-      } catch {}
+      } catch { /* empty */ }
 
       try {
         stream.destroy();
-      } catch {}
+      } catch { /* empty */ }
 
       throw err;
     }

@@ -49,7 +49,7 @@ async function sleep(ms: number, signal?: AbortSignal) {
       clearTimeout(t);
       try {
         signal.removeEventListener("abort", onAbort);
-      } catch {}
+      } catch { /* ignore */ }
     };
 
     if (signal.aborted) return onAbort();
@@ -85,7 +85,7 @@ async function fetchWithTimeout(params: {
     if (params.signal) {
       try {
         params.signal.removeEventListener("abort", onAbort);
-      } catch {}
+      } catch { /* ignore */ }
     }
   }
 }
@@ -172,7 +172,7 @@ export async function fetchWalrusBlob(params: {
           lastStatus = res.status;
           try {
             await res.body?.cancel();
-          } catch {}
+          } catch { /* ignore */ }
           break;
         }
 
@@ -185,7 +185,7 @@ export async function fetchWalrusBlob(params: {
           lastStatus = res.status;
           try {
             await res.body?.cancel();
-          } catch {}
+          } catch { /* ignore */ }
           const delay = WalrusReadLimits.baseRetryDelayMs * Math.max(1, attempt + 1);
           await sleep(delay, params.signal);
           continue;

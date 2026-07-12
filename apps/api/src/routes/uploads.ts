@@ -199,7 +199,7 @@ async function reconcileReceivedChunks(uploadId: string): Promise<number[]> {
     ? redisMembers.map(Number).filter(Number.isInteger)
     : [];
 
-  let storeChunks: number[] = [];
+  let storeChunks: number[];
   try {
     storeChunks = await chunkStore.listChunks(uploadId);
   } catch (err) {
