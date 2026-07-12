@@ -22,6 +22,7 @@ let suiModule: SuiModule;
 let streamCacheModule: StreamCacheModule;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let originalGetObject: any;
+let walrusFetchCallCount = 0;
 const walrusSamples = new Map<string, Uint8Array>();
 
 function buildFileFields(
@@ -215,7 +216,9 @@ before(async () => {
   streamCacheModule = await import("../src/services/stream/stream.cache.ts");
   const client = suiModule.getSuiClient();
   originalGetObject = client.getObject.bind(client);
+  walrusFetchCallCount = 0;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    walrusFetchCallCount += 1;
     const url =
       typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const blobId = decodeURIComponent(url.split("/").pop() ?? "");
@@ -776,4 +779,116 @@ test("stream auth denial does not inherit public cache headers", async () => {
   assert.equal(res.statusCode, 401);
   assert.equal(body.error.code, "AUTH_REQUIRED");
   assert.equal(res.headers["cache-control"], undefined);
+});
+
+// ============================================================
+// HTTP caching / conditional request tests
+// ============================================================
+
+test("stream conditional GET with matching If-None-Match returns 304 without Walrus fetch", async () => {
+  await mockSuiFile({ blob_id: "blob-304-match" });
+  const app = await createRouteApp();
+  const fileId = "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+  const preCount = walrusFetchCallCount;
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+    headers: { "if-none-match": "blob-304-match" },
+  });
+
+  assert.equal(res.statusCode, 304);
+  // No body for 304
+  const bodyBytes = await readPayloadBytes(res.payload);
+  assert.equal(bodyBytes.length, 0);
+  // Zero new fetch calls means checkWalrusBlobExists was never invoked
+  assert.equal(walrusFetchCallCount - preCount, 0);
+});
+
+test("stream conditional GET with Range + matching If-Range returns 206", async () => {
+  await mockSuiFile({
+    blob_id: "blob-ifrange-match",
+    size_bytes: "10",
+  });
+  walrusSamples.set(
+    "blob-ifrange-match",
+    Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+  );
+
+  const app = await createRouteApp();
+  const fileId = "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+    headers: {
+      range: "bytes=2-5",
+      "if-range": "blob-ifrange-match",
+    },
+  });
+
+  assert.equal(res.statusCode, 206);
+  assert.equal(res.headers["content-range"], "bytes 2-5/10");
+  assert.equal(res.headers["content-length"], "4");
+  assert.deepEqual(await readPayloadBytes(res.payload), [2, 3, 4, 5]);
+});
+
+test("stream conditional GET with Range + stale If-Range falls through to full 200", async () => {
+  await mockSuiFile({
+    blob_id: "blob-ifrange-stale",
+    size_bytes: "10",
+  });
+  walrusSamples.set(
+    "blob-ifrange-stale",
+    Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+  );
+
+  const app = await createRouteApp();
+  const fileId = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+    headers: {
+      range: "bytes=2-5",
+      "if-range": "stale-etag-value",
+    },
+  });
+
+  // Stale If-Range → ignore Range, serve full 200
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.headers["content-length"], "10");
+  const bytes = await readPayloadBytes(res.payload);
+  assert.equal(bytes.length, 10);
+});
+
+test("stream conditional GET with non-matching If-None-Match falls through to normal 200", async () => {
+  await mockSuiFile({
+    blob_id: "blob-304-miss",
+    size_bytes: "10",
+  });
+  walrusSamples.set(
+    "blob-304-miss",
+    Uint8Array.from([10, 11, 12, 13, 14, 15, 16, 17, 18, 19]),
+  );
+
+  const app = await createRouteApp();
+  const fileId = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+    headers: { "if-none-match": "non-matching-etag" },
+  });
+
+  // Non-matching If-None-Match → normal 200
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.headers["content-length"], "10");
+  const bytes = await readPayloadBytes(res.payload);
+  assert.equal(bytes.length, 10);
 });
