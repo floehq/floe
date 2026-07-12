@@ -406,6 +406,12 @@ test("stream routes expose metadata source headers", async () => {
   const app = await createRouteApp();
   const fileId = "0x6666666666666666666666666666666666666666666666666666666666666666";
 
+  // Set up matching walrus sample so the tee cache fill doesn't truncate
+  walrusSamples.set(
+    "blob-4",
+    Uint8Array.from(new Array(256).fill(0).map((_, i) => i & 0xff)),
+  );
+
   const getRes = await app.inject({
     method: "GET",
     url: `/v1/files/${fileId}/stream`,
@@ -415,6 +421,14 @@ test("stream routes expose metadata source headers", async () => {
   assert.equal(getRes.statusCode, 200);
   assert.equal(getRes.headers["x-floe-metadata-source"], "postgres");
   assert.equal(getRes.headers["x-floe-postgres-state"], "healthy");
+
+  // Drain the tee stream (if any) so the background cache write completes
+  // before afterEach removes the tmp directory.
+  if (getRes.payload instanceof Readable) {
+    for await (const _ of getRes.payload) {
+      // drain
+    }
+  }
 
   const headRes = await app.inject({
     method: "HEAD",
@@ -779,6 +793,114 @@ test("stream auth denial does not inherit public cache headers", async () => {
   assert.equal(res.statusCode, 401);
   assert.equal(body.error.code, "AUTH_REQUIRED");
   assert.equal(res.headers["cache-control"], undefined);
+});
+
+// ============================================================
+// Tee cache fill tests
+// ============================================================
+
+test("teeCachedStreamBlob serves two concurrent consumers with one Walrus fetch", async () => {
+  const blobId = "tee-concurrent-1";
+  const sizeBytes = 100;
+  const data = Uint8Array.from(new Array(sizeBytes).fill(0).map((_, i) => i & 0xff));
+  walrusSamples.set(blobId, data);
+
+  const preCount = walrusFetchCallCount;
+
+  // Both consumers call teeCachedStreamBlob concurrently
+  const [resultA, resultB] = await Promise.all([
+    streamCacheModule.teeCachedStreamBlob({ blobId, sizeBytes }),
+    streamCacheModule.teeCachedStreamBlob({ blobId, sizeBytes }),
+  ]);
+
+  // Both results should be "tee" (cache miss, concurrent session)
+  assert.ok(resultA);
+  assert.ok(resultB);
+  assert.equal(resultA!.kind, "tee");
+  assert.equal(resultB!.kind, "tee");
+
+  // Both streams should yield the same correct data.
+  // Draining the streams also implicitly waits for the background write
+  // (cs.end() only fires after the write completes).
+  const bytesA: number[] = [];
+  for await (const chunk of (resultA as { kind: "tee"; stream: Readable }).stream) {
+    bytesA.push(...(chunk as Uint8Array));
+  }
+  const bytesB: number[] = [];
+  for await (const chunk of (resultB as { kind: "tee"; stream: Readable }).stream) {
+    bytesB.push(...(chunk as Uint8Array));
+  }
+
+  // Exactly one Walrus fetch across both concurrent consumers
+  assert.equal(walrusFetchCallCount - preCount, 1);
+
+  assert.equal(bytesA.length, sizeBytes);
+  assert.equal(bytesB.length, sizeBytes);
+  assert.deepEqual(bytesA, bytesB);
+  // Both should contain the correct data
+  assert.equal(bytesA[0], 0);
+  assert.equal(bytesA[sizeBytes - 1], (sizeBytes - 1) & 0xff);
+});
+
+test("teeCachedStreamBlob errors consumer on truncated Walrus response", async () => {
+  const blobId = "tee-truncated";
+  // Provide only 10 bytes but request 100
+  walrusSamples.set(blobId, Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+
+  const result = await streamCacheModule.teeCachedStreamBlob({
+    blobId,
+    sizeBytes: 100,
+  });
+  assert.ok(result);
+  assert.equal(result!.kind, "tee");
+
+  const stream = (result as { kind: "tee"; stream: Readable }).stream;
+  const chunks: Uint8Array[] = [];
+  let caughtError: Error | null = null;
+
+  try {
+    for await (const chunk of stream) {
+      chunks.push(chunk as Uint8Array);
+    }
+  } catch (err) {
+    caughtError = err instanceof Error ? err : new Error(String(err));
+  }
+
+  // The stream should have received the truncated data (10 bytes) but then
+  // errored when the write detected truncation (expected 100, got 10).
+  const totalBytes = chunks.reduce((sum, c) => sum + c.byteLength, 0);
+  assert.equal(totalBytes, 10);
+  assert.ok(caughtError, "Stream should have errored due to truncation");
+  assert.ok(
+    caughtError!.message.includes("STREAM_CACHE_FULL_TRUNCATED"),
+    `Expected truncation error, got: ${caughtError!.message}`,
+  );
+});
+
+test("teeCachedStreamBlob returns cache_hit after tee completes", async () => {
+  const blobId = "tee-then-cache";
+  const sizeBytes = 50;
+  const data = Uint8Array.from(new Array(sizeBytes).fill(0).map((_, i) => i & 0xff));
+  walrusSamples.set(blobId, data);
+
+  // First call: tee
+  const first = await streamCacheModule.teeCachedStreamBlob({ blobId, sizeBytes });
+  assert.ok(first);
+  assert.equal(first!.kind, "tee");
+
+  // Drain the tee stream to allow the write to complete
+  const bytes: number[] = [];
+  for await (const chunk of (first as { kind: "tee"; stream: Readable }).stream) {
+    bytes.push(...(chunk as Uint8Array));
+  }
+  assert.equal(bytes.length, sizeBytes);
+
+  // Second call: should be cache_hit (cache already filled)
+  const second = await streamCacheModule.teeCachedStreamBlob({ blobId, sizeBytes });
+  assert.ok(second);
+  assert.equal(second!.kind, "cache_hit");
+  // The cache path should be the blob's stream cache file
+  assert.ok((second as { kind: "cache_hit"; cachePath: string }).cachePath.includes(blobId));
 });
 
 // ============================================================

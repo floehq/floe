@@ -40,9 +40,9 @@ import {
 } from "../services/events/infrastructure.events.js";
 import {
   createCachedReadStream,
-  ensureCachedStreamBlob,
-  ensureCachedStreamRange,
   getCachedStreamPath,
+  teeCachedStreamBlob,
+  teeCachedStreamRange,
 } from "../services/stream/stream.cache.js";
 
 /**
@@ -334,29 +334,43 @@ async function* cachedSegmentByteStream(params: {
     const segmentEnd = Math.min(params.end, offset + preferredSegmentBytes - 1);
     const expected = segmentEnd - offset + 1;
     try {
-      const cachePath = await ensureCachedStreamRange({
+      const fillResult = await teeCachedStreamRange({
         blobId: params.blobId,
         start: offset,
         end: segmentEnd,
         signal: params.signal,
       });
 
-      const rs = createCachedReadStream({
-        filePath: cachePath,
-        start: 0,
-        end: segmentEnd - offset,
-      });
+      if (fillResult.kind === "tee") {
+        // Stream bytes directly from the tee stream while they're being cached.
+        let read = 0;
+        for await (const chunk of fillResult.stream) {
+          if (params.signal.aborted) return;
+          const buf = chunk as Uint8Array;
+          read += buf.byteLength;
+          yield buf;
+        }
+        if (read !== expected) {
+          throw new Error(`STREAM_CACHE_RANGE_TRUNCATED expected=${expected} read=${read}`);
+        }
+      } else {
+        const rs = createCachedReadStream({
+          filePath: fillResult.cachePath,
+          start: 0,
+          end: segmentEnd - offset,
+        });
 
-      let read = 0;
-      for await (const chunk of rs) {
-        if (params.signal.aborted) return;
-        const buf = chunk as Uint8Array;
-        read += buf.byteLength;
-        yield buf;
-      }
+        let read = 0;
+        for await (const chunk of rs) {
+          if (params.signal.aborted) return;
+          const buf = chunk as Uint8Array;
+          read += buf.byteLength;
+          yield buf;
+        }
 
-      if (read !== expected) {
-        throw new Error(`STREAM_CACHE_RANGE_TRUNCATED expected=${expected} read=${read}`);
+        if (read !== expected) {
+          throw new Error(`STREAM_CACHE_RANGE_TRUNCATED expected=${expected} read=${read}`);
+        }
       }
     } catch (err) {
       if ((err as Error)?.message !== "STREAM_CACHE_CAPACITY_EXCEEDED") {
@@ -945,16 +959,24 @@ export async function filesRoutes(app: FastifyInstance) {
         return reply.status(503).type("text/html").send(html);
       }
 
-      const cachedPath =
-        (await getCachedStreamPath(blobId, sizeBytes)) ??
+      const fillResult =
+        (await getCachedStreamPath(blobId, sizeBytes).then(
+          (p) => (p ? ({ kind: "cache_hit", cachePath: p } as const) : null),
+        )) ??
         (status === 200
-          ? await ensureCachedStreamBlob({
+          ? await teeCachedStreamBlob({
               blobId,
               sizeBytes,
             }).catch(() => null)
           : null);
 
-      if (cachedPath) {
+      if (fillResult) {
+        if (fillResult.kind === "tee") {
+          // Tee stream: pipe directly to the client while it writes to disk.
+          return reply.status(status).send(fillResult.stream);
+        }
+
+        const cachedPath = fillResult.cachePath;
         const stat = await fs.stat(cachedPath).catch(() => null);
         if (stat?.isFile() && stat.size >= end + 1) {
           emitInfrastructureEvent(req.log, {
