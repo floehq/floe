@@ -8,7 +8,7 @@ const testTmpDir = path.join(os.tmpdir(), `floe-gc-test-${process.pid}-${Date.no
 
 process.env.FLOE_CHUNK_STORE_MODE = "disk";
 process.env.UPLOAD_TMP_DIR = testTmpDir;
-process.env.FLOE_GC_GRACE_MS = "10";
+process.env.FLOE_GC_GRACE_MS = "10000";
 process.env.FLOE_GC_INTERVAL_MS = "100";
 
 // The .env file sets FLOE_FINALIZE_STATUS_POLL_MS=5000; override to avoid integration bleed
