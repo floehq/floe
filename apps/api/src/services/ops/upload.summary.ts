@@ -32,8 +32,7 @@ export function buildOperatorUploadSummary(params: {
 }) {
   const nowMs = params.nowMs ?? Date.now();
   const status = params.meta?.status ?? params.session?.status ?? "unknown";
-  const totalChunks =
-    params.session?.totalChunks ?? (Number(params.meta?.totalChunks ?? 0) || 0);
+  const totalChunks = params.session?.totalChunks ?? (Number(params.meta?.totalChunks ?? 0) || 0);
   const receivedCount = params.receivedChunkIndexes.length;
   const missingChunkCount = Math.max(0, totalChunks - receivedCount);
   const uploadComplete = totalChunks > 0 && missingChunkCount === 0;
@@ -44,8 +43,7 @@ export function buildOperatorUploadSummary(params: {
     typeof finalize.failedReasonCode === "string" ? finalize.failedReasonCode : null;
   const failedRetryable =
     typeof finalize.failedRetryable === "boolean" ? finalize.failedRetryable : null;
-  const failedStage =
-    typeof finalize.failedStage === "string" ? finalize.failedStage : null;
+  const failedStage = typeof finalize.failedStage === "string" ? finalize.failedStage : null;
   const finalizeWarning =
     typeof finalize.finalizeWarning === "string" ? finalize.finalizeWarning : null;
   const finalizeWarningAt =
@@ -53,7 +51,9 @@ export function buildOperatorUploadSummary(params: {
   const lastFinalizeRetryAt =
     typeof finalize.lastFinalizeRetryAt === "number" ? finalize.lastFinalizeRetryAt : null;
   const lastFinalizeRetryDelayMs =
-    typeof finalize.lastFinalizeRetryDelayMs === "number" ? finalize.lastFinalizeRetryDelayMs : null;
+    typeof finalize.lastFinalizeRetryDelayMs === "number"
+      ? finalize.lastFinalizeRetryDelayMs
+      : null;
   const finalizingQueuedAt =
     typeof finalize.finalizingQueuedAt === "number" ? finalize.finalizingQueuedAt : null;
   const finalizeLastProgressAt =
@@ -69,21 +69,22 @@ export function buildOperatorUploadSummary(params: {
           : null;
   const queueBacklogStalled = Boolean(
     params.finalizeQueue &&
-      params.finalizeQueue.oldestQueuedAgeMs !== null &&
-      params.finalizeQueue.pendingUnique > params.finalizeQueue.activeLocal &&
-      params.finalizeQueue.oldestQueuedAgeMs >= finalizeStuckAgeThresholdMs
+    params.finalizeQueue.oldestQueuedAgeMs !== null &&
+    params.finalizeQueue.pendingUnique > params.finalizeQueue.activeLocal &&
+    params.finalizeQueue.oldestQueuedAgeMs >= finalizeStuckAgeThresholdMs,
   );
-  const expired = params.session ? params.session.expiresAt <= nowMs && status === "uploading" : false;
+  const expired = params.session
+    ? params.session.expiresAt <= nowMs && status === "uploading"
+    : false;
   const expiresInMs = params.session ? Math.max(0, params.session.expiresAt - nowMs) : null;
-  const queuedAgeMs =
-    finalizingQueuedAt !== null ? Math.max(0, nowMs - finalizingQueuedAt) : null;
+  const queuedAgeMs = finalizingQueuedAt !== null ? Math.max(0, nowMs - finalizingQueuedAt) : null;
   const lastProgressAgeMs =
     finalizeLastProgressAt !== null ? Math.max(0, nowMs - finalizeLastProgressAt) : null;
   const finalizeStalled = Boolean(
     status === "finalizing" &&
-      lastProgressAgeMs !== null &&
-      lastProgressAgeMs >= finalizeStuckAgeThresholdMs &&
-      !params.finalizeActiveLock
+    lastProgressAgeMs !== null &&
+    lastProgressAgeMs >= finalizeStuckAgeThresholdMs &&
+    !params.finalizeActiveLock,
   );
 
   let phase:

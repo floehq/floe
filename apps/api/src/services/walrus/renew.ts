@@ -36,9 +36,7 @@ function defaultWalrusCliConfigPath(): string | undefined {
  * Use the Walrus CLI so coin selection and network-specific package wiring stay aligned
  * with the installed Walrus client configuration.
  */
-export async function renewWalrusBlob(
-  params: WalrusRenewParams
-): Promise<WalrusRenewResult> {
+export async function renewWalrusBlob(params: WalrusRenewParams): Promise<WalrusRenewResult> {
   const args = [
     "extend",
     "--blob-obj-id",
@@ -64,8 +62,6 @@ export async function renewWalrusBlob(
     return { endEpoch: Number(endEpoch) };
   } catch (err: any) {
     const detail = err?.stderr || err?.stdout || err?.message || "unknown";
-    throw new Error(
-      `WALRUS_RENEW_FAILED:${String(detail).slice(0, 1000)}`
-    );
+    throw new Error(`WALRUS_RENEW_FAILED:${String(detail).slice(0, 1000)}`);
   }
 }

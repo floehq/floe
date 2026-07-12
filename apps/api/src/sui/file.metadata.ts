@@ -21,9 +21,7 @@ export interface FinalizeFileResult {
   fileId: string;
 }
 
-export async function finalizeFileMetadata(
-  input: FinalizeFileInput
-): Promise<FinalizeFileResult> {
+export async function finalizeFileMetadata(input: FinalizeFileInput): Promise<FinalizeFileResult> {
   const tx = new Transaction();
 
   tx.moveCall({
@@ -35,12 +33,8 @@ export async function finalizeFileMetadata(
         : tx.pure.option("address", null),
       tx.pure.u64(input.sizeBytes),
       tx.pure.string(input.mimeType),
-      input.checksum
-        ? tx.pure.option("string", input.checksum)
-        : tx.pure.option("string", null),
-      input.owner 
-        ? tx.pure.option("address", input.owner)
-        : tx.pure.option("address", null),
+      input.checksum ? tx.pure.option("string", input.checksum) : tx.pure.option("string", null),
+      input.owner ? tx.pure.option("address", input.owner) : tx.pure.option("address", null),
       input.walrusEndEpoch !== undefined
         ? tx.pure.option("u64", input.walrusEndEpoch)
         : tx.pure.option("u64", null),
@@ -58,13 +52,11 @@ export async function finalizeFileMetadata(
       },
     });
   } catch (err) {
-    throw new Error(
-      `SUI_FINALIZE_SUBMIT_FAILED:${(err as Error)?.message ?? "unknown"}`
-    );
+    throw new Error(`SUI_FINALIZE_SUBMIT_FAILED:${(err as Error)?.message ?? "unknown"}`);
   }
 
   const created = result.objectChanges?.find(
-    (c: any) => c.type === "created" && c.objectType?.includes("::file::FileMeta")
+    (c: any) => c.type === "created" && c.objectType?.includes("::file::FileMeta"),
   );
 
   if (!created || !("objectId" in created)) {
@@ -93,10 +85,7 @@ export async function renewFileMetadata(params: {
   } else {
     tx.moveCall({
       target: `${SUI_PACKAGE_ID}::file::update_expiry`,
-      arguments: [
-        tx.object(params.fileId),
-        tx.pure.u64(params.walrusEndEpoch),
-      ],
+      arguments: [tx.object(params.fileId), tx.pure.u64(params.walrusEndEpoch)],
     });
   }
 
@@ -106,8 +95,6 @@ export async function renewFileMetadata(params: {
       signer: suiSigner,
     });
   } catch (err) {
-    throw new Error(
-      `SUI_RENEW_SUBMIT_FAILED:${(err as Error)?.message ?? "unknown"}`
-    );
+    throw new Error(`SUI_RENEW_SUBMIT_FAILED:${(err as Error)?.message ?? "unknown"}`);
   }
 }

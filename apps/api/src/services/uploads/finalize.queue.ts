@@ -83,44 +83,29 @@ function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
 }
 
 const FINALIZE_CONCURRENCY = parsePositiveIntEnv("FLOE_FINALIZE_CONCURRENCY", 4);
-const FINALIZE_TIMEOUT_MS = parsePositiveIntEnv(
-  "FLOE_FINALIZE_TIMEOUT_MS",
-  30 * 60_000,
-  1000
-);
-const FINALIZE_IN_PROGRESS_RETRY_MS = parsePositiveIntEnv(
-  "FLOE_FINALIZE_RETRY_MS",
-  2000,
-  200
-);
+const FINALIZE_TIMEOUT_MS = parsePositiveIntEnv("FLOE_FINALIZE_TIMEOUT_MS", 30 * 60_000, 1000);
+const FINALIZE_IN_PROGRESS_RETRY_MS = parsePositiveIntEnv("FLOE_FINALIZE_RETRY_MS", 2000, 200);
 const FINALIZE_IN_PROGRESS_RETRY_MAX_MS = parsePositiveIntEnv(
   "FLOE_FINALIZE_RETRY_MAX_MS",
   30_000,
-  1000
+  1000,
 );
 const FINALIZE_RETRYABLE_FAILURE_BASE_MS = parsePositiveIntEnv(
   "FLOE_FINALIZE_RETRYABLE_FAILURE_BASE_MS",
   2000,
-  200
+  200,
 );
 const FINALIZE_RETRYABLE_FAILURE_MAX_MS = parsePositiveIntEnv(
   "FLOE_FINALIZE_RETRYABLE_FAILURE_MAX_MS",
   30_000,
-  1000
+  1000,
 );
 const FINALIZE_RETRYABLE_FAILURE_MAX_ATTEMPTS = parsePositiveIntEnv(
   "FLOE_FINALIZE_RETRYABLE_FAILURE_MAX_ATTEMPTS",
-  4
+  4,
 );
-const FINALIZE_DRAIN_INTERVAL_MS = parsePositiveIntEnv(
-  "FLOE_FINALIZE_DRAIN_INTERVAL_MS",
-  500,
-  100
-);
-let finalizeQueueMaxDepth = parsePositiveIntEnv(
-  "FLOE_FINALIZE_QUEUE_MAX_DEPTH",
-  5000
-);
+const FINALIZE_DRAIN_INTERVAL_MS = parsePositiveIntEnv("FLOE_FINALIZE_DRAIN_INTERVAL_MS", 500, 100);
+let finalizeQueueMaxDepth = parsePositiveIntEnv("FLOE_FINALIZE_QUEUE_MAX_DEPTH", 5000);
 
 const finalizeWorkers = new LocalAsyncQueue({
   concurrency: FINALIZE_CONCURRENCY,
@@ -170,7 +155,7 @@ async function markUploadFailed(params: {
   }
 }
 
-async function enqueueUploadId(uploadId: string): Promise<boolean> {
+async function _enqueueUploadId(uploadId: string): Promise<boolean> {
   const redis = getRedis();
   const queuedAt = Date.now();
   const script = `
@@ -191,12 +176,14 @@ async function enqueueUploadId(uploadId: string): Promise<boolean> {
   const added = await redis.eval(
     script,
     [pendingKey(), queueKey(), uploadKeys.finalizePendingSince()],
-    [uploadId, String(queuedAt)]
+    [uploadId, String(queuedAt)],
   );
   return Number(added) === 1;
 }
 
-async function admitUploadFinalize(uploadId: string): Promise<"enqueued" | "duplicate" | "rejected_backpressure"> {
+async function admitUploadFinalize(
+  uploadId: string,
+): Promise<"enqueued" | "duplicate" | "rejected_backpressure"> {
   const redis = getRedis();
   const queuedAt = Date.now();
   const script = `
@@ -227,14 +214,9 @@ async function admitUploadFinalize(uploadId: string): Promise<"enqueued" | "dupl
   const result = Number(
     await redis.eval(
       script,
-      [
-        uploadKeys.meta(uploadId),
-        pendingKey(),
-        queueKey(),
-        uploadKeys.finalizePendingSince(),
-      ],
-      [uploadId, String(queuedAt), String(finalizeQueueMaxDepth)]
-    )
+      [uploadKeys.meta(uploadId), pendingKey(), queueKey(), uploadKeys.finalizePendingSince()],
+      [uploadId, String(queuedAt), String(finalizeQueueMaxDepth)],
+    ),
   );
   if (result === 1) return "enqueued";
   if (result === 0) return "duplicate";
@@ -253,7 +235,7 @@ async function enqueueUploadIdForce(uploadId: string): Promise<void> {
   await redis.eval(
     script,
     [pendingKey(), queueKey(), uploadKeys.finalizePendingSince()],
-    [uploadId, String(queuedAt)]
+    [uploadId, String(queuedAt)],
   );
 }
 
@@ -281,9 +263,7 @@ async function processFinalize(params: {
   const session = await getSession(params.uploadId);
   if (!session) {
     const redis = getRedis();
-    const meta = await redis.hgetall<Record<string, string>>(
-      uploadKeys.meta(params.uploadId)
-    );
+    const meta = await redis.hgetall<Record<string, string>>(uploadKeys.meta(params.uploadId));
     if (meta?.status === "completed") return;
     throw new Error("UPLOAD_NOT_FOUND");
   }
@@ -305,7 +285,7 @@ async function lockRetryDelayMs(uploadId: string): Promise<number> {
 
   return Math.max(
     FINALIZE_IN_PROGRESS_RETRY_MS,
-    Math.min(ttlSeconds * 1000, FINALIZE_IN_PROGRESS_RETRY_MAX_MS)
+    Math.min(ttlSeconds * 1000, FINALIZE_IN_PROGRESS_RETRY_MAX_MS),
   );
 }
 
@@ -365,7 +345,7 @@ async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
       },
       () => {
         activeFinalizeProcesses.delete(processPromise);
-      }
+      },
     );
     void processPromise.then(
       () => {
@@ -377,7 +357,7 @@ async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
         if (timedOut) {
           log.warn({ uploadId, err: lateErr }, "Upload finalize rejected after timeout recovery");
         }
-      }
+      },
     );
 
     const timeoutPromise = new Promise<never>((_, reject) => {
@@ -389,7 +369,7 @@ async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
             elapsedMs: Date.now() - startedAt,
             timeoutMs: FINALIZE_TIMEOUT_MS,
           },
-          "Upload finalize worker exceeded timeout; forcing retry recovery"
+          "Upload finalize worker exceeded timeout; forcing retry recovery",
         );
         const timeoutErr = new Error("UPLOAD_FINALIZE_TIMEOUT") as Error & {
           finalizeStage?: string;
@@ -417,9 +397,7 @@ async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
       reason: failure.reason,
       retryable: failure.retryable,
       stage: failure.stage,
-      lockRetryDelayMs: await lockRetryDelayMs(uploadId).catch(
-        () => FINALIZE_IN_PROGRESS_RETRY_MS
-      ),
+      lockRetryDelayMs: await lockRetryDelayMs(uploadId).catch(() => FINALIZE_IN_PROGRESS_RETRY_MS),
       retryableBaseDelayMs: FINALIZE_RETRYABLE_FAILURE_BASE_MS,
       retryableMaxDelayMs: FINALIZE_RETRYABLE_FAILURE_MAX_MS,
       retryableMaxAttempts: FINALIZE_RETRYABLE_FAILURE_MAX_ATTEMPTS,
@@ -463,7 +441,7 @@ async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
         },
         actionResult.metricsOutcome === "retry_lock"
           ? "Upload finalize worker requeued due to lock contention"
-          : "Upload finalize worker scheduled retry for transient failure"
+          : "Upload finalize worker scheduled retry for transient failure",
       );
       recordFinalizeJobResult({
         outcome: actionResult.metricsOutcome,
@@ -487,7 +465,7 @@ async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
       },
       timedOut
         ? "Upload finalize worker failed after exceeding timeout"
-        : "Upload finalize worker failed"
+        : "Upload finalize worker failed",
     );
     recordFinalizeJobResult({
       outcome: "failed",
@@ -541,7 +519,7 @@ async function recoverFinalizingUploads(log: FastifyBaseLogger): Promise<{
         failedRetryable: meta?.failedRetryable,
         finalizeAttemptState: meta?.finalizeAttemptState,
       };
-    })
+    }),
   );
   const recoveryPlan = planFinalizeRecoveryPass(entries);
 
@@ -562,7 +540,7 @@ async function recoverFinalizingUploads(log: FastifyBaseLogger): Promise<{
   });
   log.info(
     { count: activeIds.length, recovered, cleaned },
-    "Finalize queue recovery scan completed"
+    "Finalize queue recovery scan completed",
   );
   return {
     scanned: activeIds.length,
@@ -611,8 +589,7 @@ export const finalizeQueueTestHooks = {
     return retryTimers.size;
   },
   setQueueMaxDepth(value?: number) {
-    finalizeQueueMaxDepth =
-      value ?? parsePositiveIntEnv("FLOE_FINALIZE_QUEUE_MAX_DEPTH", 5000);
+    finalizeQueueMaxDepth = value ?? parsePositiveIntEnv("FLOE_FINALIZE_QUEUE_MAX_DEPTH", 5000);
   },
   setAutoDrain(enabled?: boolean) {
     autoDrainEnabled = enabled ?? true;
@@ -699,7 +676,7 @@ export async function getUploadFinalizeQueueStats(): Promise<{
   const result = await redis.eval(
     script,
     [queueKey(), pendingKey(), uploadKeys.finalizePendingSince()],
-    []
+    [],
   );
   const [depth, pendingUnique, oldestQueuedAt] = Array.isArray(result) ? result : [0, 0, null];
   return shapeFinalizeQueueStats({

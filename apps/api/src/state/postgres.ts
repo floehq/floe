@@ -63,7 +63,7 @@ async function loadPgPool(connectionString: string): Promise<PgPool> {
   const connectionTimeoutMillis = parsePositiveIntEnv(
     "FLOE_POSTGRES_CONNECT_TIMEOUT_MS",
     10_000,
-    1000
+    1000,
   );
 
   return new PoolCtor({

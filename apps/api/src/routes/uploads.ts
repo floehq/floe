@@ -8,11 +8,7 @@ import { ChunkConfig, UploadConfig } from "../config/uploads.config.js";
 import { WalrusEpochLimits } from "../config/walrus.config.js";
 import { AuthUploadPolicyConfig } from "../config/auth.config.js";
 
-import {
-  createSession,
-  getSession,
-  touchUploadActivity,
-} from "../services/uploads/session.js";
+import { createSession, getSession, touchUploadActivity } from "../services/uploads/session.js";
 import { buildFinalizeDiagnostics } from "../services/uploads/finalize.shared.js";
 import {
   enqueueUploadFinalize,
@@ -32,9 +28,7 @@ import { uploadKeys } from "../state/keys.js";
 function isUuid(value: unknown): value is string {
   return (
     typeof value === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-      value
-    )
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
   );
 }
 
@@ -111,7 +105,10 @@ function finalizePollRetryAfterSeconds(): string {
   return String(Math.max(1, Math.ceil(FINALIZE_POLL_AFTER_MS / 1000)));
 }
 
-function readExpiresAt(meta?: Record<string, string> | null, session?: { expiresAt: number } | null): number | null {
+function readExpiresAt(
+  meta?: Record<string, string> | null,
+  session?: { expiresAt: number } | null,
+): number | null {
   if (session?.expiresAt && Number.isFinite(session.expiresAt)) {
     return session.expiresAt;
   }
@@ -140,7 +137,8 @@ async function expireUploadIfNeeded(params: {
   }
 
   const redis = getRedis();
-  await redis.multi()
+  await redis
+    .multi()
     .hset(uploadKeys.meta(params.uploadId), {
       status: "expired",
       expiredAt: String(Date.now()),
@@ -188,7 +186,7 @@ async function tryReserveUploadCapacity(params: {
   const reserved = await redis.eval(
     script,
     [uploadKeys.activeIndex()],
-    [String(params.maxActiveUploads), params.uploadId, String(Date.now())]
+    [String(params.maxActiveUploads), params.uploadId, String(Date.now())],
   );
 
   return Number(reserved) === 1;
@@ -201,7 +199,7 @@ async function reconcileReceivedChunks(uploadId: string): Promise<number[]> {
     ? redisMembers.map(Number).filter(Number.isInteger)
     : [];
 
-  let storeChunks: number[] = [];
+  let storeChunks: number[];
   try {
     storeChunks = await chunkStore.listChunks(uploadId);
   } catch (err) {
@@ -214,7 +212,7 @@ async function reconcileReceivedChunks(uploadId: string): Promise<number[]> {
   const missingInRedis = merged.filter((idx) => !redisChunks.includes(idx));
   if (missingInRedis.length > 0) {
     await Promise.all(
-      missingInRedis.map((idx) => redis.sadd(uploadKeys.chunks(uploadId), String(idx)))
+      missingInRedis.map((idx) => redis.sadd(uploadKeys.chunks(uploadId), String(idx))),
     );
   }
 
@@ -246,23 +244,17 @@ function isRedisDependencyError(err: unknown): boolean {
 
 function sendRedisUnavailable(reply: any) {
   reply.header("Retry-After", String(RETRYABLE_RETRY_AFTER_SECONDS));
-  return sendApiError(
-    reply,
-    503,
-    "DEPENDENCY_UNAVAILABLE",
-    "Redis is unavailable, retry shortly",
-    {
-      retryable: true,
-      details: {
-        dependency: "redis",
-      },
-    }
-  );
+  return sendApiError(reply, 503, "DEPENDENCY_UNAVAILABLE", "Redis is unavailable, retry shortly", {
+    retryable: true,
+    details: {
+      dependency: "redis",
+    },
+  });
 }
 
 async function guardRedisDependency<T>(
   reply: any,
-  op: () => Promise<T>
+  op: () => Promise<T>,
 ): Promise<T | typeof REDIS_DEPENDENCY_UNAVAILABLE> {
   try {
     return await op();
@@ -302,15 +294,12 @@ function buildCreateUploadFingerprint(input: {
   chunkSize: number;
   epochs: number;
 }): string {
-  return crypto
-    .createHash("sha256")
-    .update(JSON.stringify(input))
-    .digest("hex");
+  return crypto.createHash("sha256").update(JSON.stringify(input)).digest("hex");
 }
 
 async function readCreateIdempotencyRecord(
   redis: RedisClient,
-  key: string
+  key: string,
 ): Promise<CreateUploadIdempotencyRecord | null> {
   const data = await redis.hgetall<Record<string, string>>(key);
   if (!data || Object.keys(data).length === 0) return null;
@@ -353,7 +342,7 @@ async function sendCreateIdempotencyReplay(params: {
       params.reply,
       409,
       "IDEMPOTENCY_KEY_REUSED",
-      "Idempotency key was already used with a different create payload"
+      "Idempotency key was already used with a different create payload",
     );
     return "conflict";
   }
@@ -375,7 +364,7 @@ function buildUploadActionFingerprint(input: Record<string, unknown>): string {
 
 async function readUploadActionIdempotencyRecord(
   redis: RedisClient,
-  key: string
+  key: string,
 ): Promise<UploadActionIdempotencyRecord | null> {
   const data = await redis.hgetall<Record<string, string>>(key);
   if (!data || Object.keys(data).length === 0) return null;
@@ -401,7 +390,10 @@ async function readUploadActionIdempotencyRecord(
     fingerprint: data.fingerprint,
     statusCode,
     responseBody,
-    retryAfter: typeof data.retryAfter === "string" && data.retryAfter.length > 0 ? data.retryAfter : undefined,
+    retryAfter:
+      typeof data.retryAfter === "string" && data.retryAfter.length > 0
+        ? data.retryAfter
+        : undefined,
   };
 }
 
@@ -415,12 +407,7 @@ async function sendUploadActionIdempotencyReplay(params: {
   const record = await readUploadActionIdempotencyRecord(params.redis, params.key);
   if (!record) return "missing";
   if (record.fingerprint !== params.fingerprint) {
-    sendApiError(
-      params.reply,
-      409,
-      "IDEMPOTENCY_KEY_REUSED",
-      params.conflictMessage
-    );
+    sendApiError(params.reply, 409, "IDEMPOTENCY_KEY_REUSED", params.conflictMessage);
     return "conflict";
   }
   if (record.retryAfter) {
@@ -443,7 +430,10 @@ async function persistUploadActionIdempotencyRecord(params: {
   uploadId: string;
 }) {
   if (!params.key || !params.fingerprint) return;
-  const ttlSeconds = Math.max(1, Math.ceil(Math.max(0, params.ttlMs ?? UploadConfig.sessionTtlMs) / 1000));
+  const ttlSeconds = Math.max(
+    1,
+    Math.ceil(Math.max(0, params.ttlMs ?? UploadConfig.sessionTtlMs) / 1000),
+  );
   await params.redis
     .multi()
     .hset(params.key, {
@@ -455,7 +445,10 @@ async function persistUploadActionIdempotencyRecord(params: {
     .expire(params.key, ttlSeconds)
     .exec()
     .catch((err) => {
-      params.log.warn({ err, uploadId: params.uploadId }, "Failed to persist upload action idempotency record");
+      params.log.warn(
+        { err, uploadId: params.uploadId },
+        "Failed to persist upload action idempotency record",
+      );
     });
 }
 
@@ -490,52 +483,37 @@ export default async function uploadRoutes(app: FastifyInstance) {
         reply,
         authzStatusCode(authzCreate.code),
         authzErrorCode(authzCreate.code),
-        authzCreate.message ?? "Upload access denied"
+        authzCreate.message ?? "Upload access denied",
       );
     }
 
     if (!body || typeof body !== "object") {
-      return sendApiError(
-        reply,
-        400,
-        "INVALID_REQUEST_BODY",
-        "Request body must be JSON"
-      );
+      return sendApiError(reply, 400, "INVALID_REQUEST_BODY", "Request body must be JSON");
     }
 
     const { filename, contentType, sizeBytes, chunkSize, epochs, checksum } = body;
 
     if (!filename || !contentType || !sizeBytes) {
-      return sendApiError(
-        reply,
-        400,
-        "INVALID_CREATE_UPLOAD_REQUEST",
-        "Missing required fields"
-      );
+      return sendApiError(reply, 400, "INVALID_CREATE_UPLOAD_REQUEST", "Missing required fields");
     }
 
     if (typeof filename !== "string" || filename.length > 512) {
-      return sendApiError(
-        reply,
-        400,
-        "INVALID_FILENAME",
-        "filename must be <= 512 chars"
-      );
+      return sendApiError(reply, 400, "INVALID_FILENAME", "filename must be <= 512 chars");
     }
 
     if (typeof contentType !== "string" || contentType.length > 128) {
-      return sendApiError(
-        reply,
-        400,
-        "INVALID_CONTENT_TYPE",
-        "contentType must be <= 128 chars"
-      );
+      return sendApiError(reply, 400, "INVALID_CONTENT_TYPE", "contentType must be <= 128 chars");
     }
 
     let checksumValue: string | undefined;
     if (checksum !== undefined) {
       if (typeof checksum !== "string" || !/^[a-f0-9]{64}$/i.test(checksum)) {
-        return sendApiError(reply, 400, "INVALID_CHECKSUM", "checksum must be a 64-char hex sha256");
+        return sendApiError(
+          reply,
+          400,
+          "INVALID_CHECKSUM",
+          "checksum must be a 64-char hex sha256",
+        );
       }
       checksumValue = checksum.toLowerCase();
     }
@@ -548,17 +526,14 @@ export default async function uploadRoutes(app: FastifyInstance) {
     const tierMaxFileSizeBytes = createLimit.identity.authenticated
       ? AuthUploadPolicyConfig.maxFileSizeBytes.authenticated
       : AuthUploadPolicyConfig.maxFileSizeBytes.public;
-    const effectiveMaxFileSizeBytes = Math.min(
-      UploadConfig.maxFileSizeBytes,
-      tierMaxFileSizeBytes
-    );
+    const effectiveMaxFileSizeBytes = Math.min(UploadConfig.maxFileSizeBytes, tierMaxFileSizeBytes);
 
     if (fileSizeNum > effectiveMaxFileSizeBytes) {
       return sendApiError(
         reply,
         413,
         "FILE_TOO_LARGE",
-        `File exceeds maxFileSizeBytes (${effectiveMaxFileSizeBytes})`
+        `File exceeds maxFileSizeBytes (${effectiveMaxFileSizeBytes})`,
       );
     }
 
@@ -570,7 +545,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           reply,
           400,
           "INVALID_CHUNK_SIZE",
-          "chunkSize must be a positive number"
+          "chunkSize must be a positive number",
         );
       }
     }
@@ -585,18 +560,23 @@ export default async function uploadRoutes(app: FastifyInstance) {
 
     const resolvedChunkSize = Math.min(
       ChunkConfig.maxBytes,
-      Math.max(ChunkConfig.minBytes, chunkSizeNum ?? ChunkConfig.defaultBytes)
+      Math.max(ChunkConfig.minBytes, chunkSizeNum ?? ChunkConfig.defaultBytes),
     );
 
     const resolvedEpochs = Math.min(
       WalrusEpochLimits.max,
-      Math.max(WalrusEpochLimits.min, epochsNum ?? WalrusEpochLimits.default)
+      Math.max(WalrusEpochLimits.min, epochsNum ?? WalrusEpochLimits.default),
     );
 
     const totalChunks = Math.ceil(fileSizeNum / resolvedChunkSize);
 
     if (!Number.isFinite(totalChunks) || totalChunks <= 0) {
-      return sendApiError(reply, 400, "INVALID_TOTAL_CHUNKS", "Invalid totalChunks derived from inputs");
+      return sendApiError(
+        reply,
+        400,
+        "INVALID_TOTAL_CHUNKS",
+        "Invalid totalChunks derived from inputs",
+      );
     }
 
     if (totalChunks > UploadConfig.maxTotalChunks) {
@@ -604,7 +584,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         reply,
         413,
         "TOO_MANY_CHUNKS",
-        `totalChunks exceeds maxTotalChunks (${UploadConfig.maxTotalChunks})`
+        `totalChunks exceeds maxTotalChunks (${UploadConfig.maxTotalChunks})`,
       );
     }
 
@@ -636,7 +616,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           redis,
           key: idempotencyRedisKey,
           fingerprint: idempotencyFingerprint,
-        })
+        }),
       );
       if (replay === REDIS_DEPENDENCY_UNAVAILABLE) return;
       if (replay === "replayed" || replay === "conflict") return;
@@ -645,7 +625,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         redis.set(idempotencyLockKey!, idempotencyFingerprint, {
           nx: true,
           ex: IDEMPOTENCY_LOCK_TTL_SECONDS,
-        })
+        }),
       );
       if (claimed === REDIS_DEPENDENCY_UNAVAILABLE) return;
       if (claimed !== "OK") {
@@ -655,7 +635,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
             redis,
             key: idempotencyRedisKey,
             fingerprint: idempotencyFingerprint,
-          })
+          }),
         );
         if (pendingReplay === REDIS_DEPENDENCY_UNAVAILABLE) return;
         if (pendingReplay === "replayed" || pendingReplay === "conflict") return;
@@ -664,7 +644,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           409,
           "IDEMPOTENCY_REQUEST_IN_PROGRESS",
           "A create request with this idempotency key is already in progress",
-          { retryable: true }
+          { retryable: true },
         );
       }
       createIdempotencyLockClaimed = true;
@@ -675,7 +655,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       tryReserveUploadCapacity({
         maxActiveUploads: UploadConfig.maxActiveUploads,
         uploadId,
-      })
+      }),
     );
     if (capacityReserved === REDIS_DEPENDENCY_UNAVAILABLE) return;
 
@@ -708,7 +688,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       if (idempotencyRedisKey && idempotencyFingerprint) {
         const idempotencyTtlSeconds = Math.max(
           1,
-          Math.ceil(Math.max(0, session.expiresAt - Date.now()) / 1000)
+          Math.ceil(Math.max(0, session.expiresAt - Date.now()) / 1000),
         );
         await redis
           .multi()
@@ -757,15 +737,9 @@ export default async function uploadRoutes(app: FastifyInstance) {
         return sendRedisUnavailable(reply);
       }
       log.error({ err }, "Session creation failed");
-      return sendApiError(
-        reply,
-        500,
-        "SESSION_CREATE_FAILED",
-        "Failed to create upload session",
-        {
-          retryable: true,
-        }
-      );
+      return sendApiError(reply, 500, "SESSION_CREATE_FAILED", "Failed to create upload session", {
+        retryable: true,
+      });
     } finally {
       if (createIdempotencyLockClaimed && idempotencyLockKey) {
         await redis.del(idempotencyLockKey).catch(() => {});
@@ -816,12 +790,12 @@ export default async function uploadRoutes(app: FastifyInstance) {
       Promise.all([
         getSession(uploadId),
         redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId)),
-      ] as const)
+      ] as const),
     );
     if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
     const [session, meta] = loaded;
     const expired = await guardRedisDependency(reply, () =>
-      expireUploadIfNeeded({ uploadId, session, meta })
+      expireUploadIfNeeded({ uploadId, session, meta }),
     );
     if (expired === REDIS_DEPENDENCY_UNAVAILABLE) return;
     if (expired) {
@@ -841,7 +815,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         reply,
         authzStatusCode(authzChunk.code),
         authzErrorCode(authzChunk.code),
-        authzChunk.message ?? "Upload access denied"
+        authzChunk.message ?? "Upload access denied",
       );
     }
 
@@ -889,7 +863,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         part.file,
         expectedHash,
         expectedSize,
-        isLastChunk
+        isLastChunk,
       );
       const persisted = await guardRedisDependency(reply, async () => {
         await redis.sadd(uploadKeys.chunks(uploadId), String(idx));
@@ -941,7 +915,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           409,
           "CHUNK_IN_PROGRESS",
           "Chunk upload already in progress, retry shortly",
-          { retryable: true }
+          { retryable: true },
         );
       }
 
@@ -961,13 +935,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       }
 
       log.warn({ uploadId, idx, err }, "Chunk upload failed");
-      return sendApiError(
-        reply,
-        500,
-        "CHUNK_UPLOAD_FAILED",
-        message,
-        { retryable: true }
-      );
+      return sendApiError(reply, 500, "CHUNK_UPLOAD_FAILED", message, { retryable: true });
     }
   });
 
@@ -983,7 +951,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
     const redis = await requireRedis(reply);
     if (!redis) return;
     const statusProbe = await guardRedisDependency(reply, () =>
-      redis.hget<string>(uploadKeys.meta(uploadId), "status")
+      redis.hget<string>(uploadKeys.meta(uploadId), "status"),
     );
     if (statusProbe === REDIS_DEPENDENCY_UNAVAILABLE) return;
     const statusScope = statusProbe === "finalizing" ? "file_meta_read" : "upload_control";
@@ -1010,17 +978,17 @@ export default async function uploadRoutes(app: FastifyInstance) {
       Promise.all([
         getSession(uploadId),
         redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId)),
-      ] as const)
+      ] as const),
     );
     if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
     const [session, meta] = loaded;
     const expired = await guardRedisDependency(reply, () =>
-      expireUploadIfNeeded({ uploadId, session, meta })
+      expireUploadIfNeeded({ uploadId, session, meta }),
     );
     if (expired === REDIS_DEPENDENCY_UNAVAILABLE) return;
     const refreshedMeta = expired
       ? await guardRedisDependency(reply, () =>
-          redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId))
+          redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId)),
         )
       : meta;
     if (refreshedMeta === REDIS_DEPENDENCY_UNAVAILABLE) return;
@@ -1041,7 +1009,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           reply,
           authzStatusCode(authzStatus.code),
           authzErrorCode(authzStatus.code),
-          authzStatus.message ?? "Upload access denied"
+          authzStatus.message ?? "Upload access denied",
         );
       }
 
@@ -1059,7 +1027,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           503,
           "CHUNK_STORE_UNAVAILABLE",
           "Upload chunk state is temporarily unavailable",
-          { retryable: true }
+          { retryable: true },
         );
       }
 
@@ -1074,7 +1042,9 @@ export default async function uploadRoutes(app: FastifyInstance) {
         ...(status === "finalizing" ? { pollAfterMs: FINALIZE_POLL_AFTER_MS } : {}),
         ...(currentMeta?.fileId ? { fileId: currentMeta.fileId } : {}),
         ...(exposeBlobId && currentMeta?.blobId ? { blobId: currentMeta.blobId } : {}),
-        ...(currentMeta?.walrusEndEpoch ? { walrusEndEpoch: Number(currentMeta.walrusEndEpoch) } : {}),
+        ...(currentMeta?.walrusEndEpoch
+          ? { walrusEndEpoch: Number(currentMeta.walrusEndEpoch) }
+          : {}),
         ...(exposeWalrusDebug && (currentMeta?.walrusSource || currentMeta?.walrusObjectId)
           ? {
               walrusDebug: {
@@ -1098,7 +1068,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         reply,
         authzStatusCode(authzStatus.code),
         authzErrorCode(authzStatus.code),
-        authzStatus.message ?? "Upload access denied"
+        authzStatus.message ?? "Upload access denied",
       );
     }
 
@@ -1116,7 +1086,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         503,
         "CHUNK_STORE_UNAVAILABLE",
         "Upload chunk state is temporarily unavailable",
-        { retryable: true }
+        { retryable: true },
       );
     }
 
@@ -1133,7 +1103,9 @@ export default async function uploadRoutes(app: FastifyInstance) {
         : {}),
       ...(currentMeta?.fileId ? { fileId: currentMeta.fileId } : {}),
       ...(exposeBlobId && currentMeta?.blobId ? { blobId: currentMeta.blobId } : {}),
-      ...(currentMeta?.walrusEndEpoch ? { walrusEndEpoch: Number(currentMeta.walrusEndEpoch) } : {}),
+      ...(currentMeta?.walrusEndEpoch
+        ? { walrusEndEpoch: Number(currentMeta.walrusEndEpoch) }
+        : {}),
       ...(exposeWalrusDebug && (currentMeta?.walrusSource || currentMeta?.walrusObjectId)
         ? {
             walrusDebug: {
@@ -1178,21 +1150,16 @@ export default async function uploadRoutes(app: FastifyInstance) {
     if (!redis) return;
     const metaKey = uploadKeys.meta(uploadId);
     const loaded = await guardRedisDependency(reply, () =>
-      Promise.all([
-        getSession(uploadId),
-        redis.hgetall<Record<string, string>>(metaKey),
-      ] as const)
+      Promise.all([getSession(uploadId), redis.hgetall<Record<string, string>>(metaKey)] as const),
     );
     if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
     const [session, meta] = loaded;
     const expired = await guardRedisDependency(reply, () =>
-      expireUploadIfNeeded({ uploadId, session, meta })
+      expireUploadIfNeeded({ uploadId, session, meta }),
     );
     if (expired === REDIS_DEPENDENCY_UNAVAILABLE) return;
     const refreshedMeta = expired
-      ? await guardRedisDependency(reply, () =>
-          redis.hgetall<Record<string, string>>(metaKey)
-        )
+      ? await guardRedisDependency(reply, () => redis.hgetall<Record<string, string>>(metaKey))
       : meta;
     if (refreshedMeta === REDIS_DEPENDENCY_UNAVAILABLE) return;
     const currentMeta = refreshedMeta;
@@ -1207,7 +1174,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         reply,
         authzStatusCode(authzComplete.code),
         authzErrorCode(authzComplete.code),
-        authzComplete.message ?? "Upload access denied"
+        authzComplete.message ?? "Upload access denied",
       );
     }
 
@@ -1232,7 +1199,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           key: idempotencyRedisKey,
           fingerprint: idempotencyFingerprint,
           conflictMessage: "Idempotency key was already used with a different complete request",
-        })
+        }),
       );
       if (replay === REDIS_DEPENDENCY_UNAVAILABLE) return;
       if (replay === "replayed" || replay === "conflict") return;
@@ -1272,12 +1239,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
     if (!session) {
       if (metaStatus === "completed") {
         if (!meta?.fileId || !meta?.blobId) {
-          return sendApiError(
-            reply,
-            500,
-            "INTERNAL_ERROR",
-            "Completed upload metadata is corrupt"
-          );
+          return sendApiError(reply, 500, "INTERNAL_ERROR", "Completed upload metadata is corrupt");
         }
 
         const responseBody = {
@@ -1341,12 +1303,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         return reply.code(200).send(responseBody);
       }
 
-      return sendApiError(
-        reply,
-        409,
-        "UPLOAD_ALREADY_COMPLETED",
-        "Upload is already finalized"
-      );
+      return sendApiError(reply, 409, "UPLOAD_ALREADY_COMPLETED", "Upload is already finalized");
     }
 
     let receivedChunks: number;
@@ -1363,7 +1320,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         503,
         "CHUNK_STORE_UNAVAILABLE",
         "Upload chunk state is temporarily unavailable",
-        { retryable: true }
+        { retryable: true },
       );
     }
 
@@ -1373,12 +1330,12 @@ export default async function uploadRoutes(app: FastifyInstance) {
         400,
         "UPLOAD_INCOMPLETE",
         `Only ${receivedChunks}/${session.totalChunks} chunks uploaded`,
-        { retryable: true }
+        { retryable: true },
       );
     }
 
     const queued = await guardRedisDependency(reply, () =>
-      enqueueUploadFinalize({ uploadId, log })
+      enqueueUploadFinalize({ uploadId, log }),
     );
     if (queued === REDIS_DEPENDENCY_UNAVAILABLE) return;
     if (queued.rejectedByBackpressure) {
@@ -1388,7 +1345,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         503,
         "FINALIZE_QUEUE_BACKPRESSURE",
         "Finalize queue is saturated, retry shortly",
-        { retryable: true }
+        { retryable: true },
       );
     }
     const retryAfter = finalizePollRetryAfterSeconds();
@@ -1466,18 +1423,16 @@ export default async function uploadRoutes(app: FastifyInstance) {
         redis.hgetall<Record<string, string>>(metaKey),
         redis.exists(lockKey),
         redis.sismember(uploadKeys.finalizePending(), uploadId),
-      ] as const)
+      ] as const),
     );
     if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
     const [session, meta, hasLock, isFinalizePending] = loaded;
     const expired = await guardRedisDependency(reply, () =>
-      expireUploadIfNeeded({ uploadId, session, meta })
+      expireUploadIfNeeded({ uploadId, session, meta }),
     );
     if (expired === REDIS_DEPENDENCY_UNAVAILABLE) return;
     const refreshedMeta = expired
-      ? await guardRedisDependency(reply, () =>
-          redis.hgetall<Record<string, string>>(metaKey)
-        )
+      ? await guardRedisDependency(reply, () => redis.hgetall<Record<string, string>>(metaKey))
       : meta;
     if (refreshedMeta === REDIS_DEPENDENCY_UNAVAILABLE) return;
     const currentMeta = refreshedMeta;
@@ -1492,7 +1447,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         reply,
         authzStatusCode(authzCancel.code),
         authzErrorCode(authzCancel.code),
-        authzCancel.message ?? "Upload access denied"
+        authzCancel.message ?? "Upload access denied",
       );
     }
 
@@ -1515,7 +1470,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           key: idempotencyRedisKey,
           fingerprint: idempotencyFingerprint,
           conflictMessage: "Idempotency key was already used with a different cancel request",
-        })
+        }),
       );
       if (replay === REDIS_DEPENDENCY_UNAVAILABLE) return;
       if (replay === "replayed" || replay === "conflict") return;
@@ -1527,7 +1482,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         reply,
         409,
         "UPLOAD_FINALIZATION_IN_PROGRESS",
-        "Upload is currently finalizing"
+        "Upload is currently finalizing",
       );
     }
 
@@ -1554,12 +1509,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       }
 
       if (status === "completed") {
-        return sendApiError(
-          reply,
-          409,
-          "UPLOAD_ALREADY_COMPLETED",
-          "Upload is already finalized"
-        );
+        return sendApiError(reply, 409, "UPLOAD_ALREADY_COMPLETED", "Upload is already finalized");
       }
 
       if (status === "canceled" || status === "failed" || status === "expired") {
@@ -1593,7 +1543,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         redis.hset(metaKey, {
           status: "canceled",
           canceledAt: String(Date.now()),
-        })
+        }),
       );
       if (markedCanceled === REDIS_DEPENDENCY_UNAVAILABLE) return;
 
@@ -1609,7 +1559,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           .del(uploadKeys.chunks(uploadId))
           .srem(uploadKeys.gcIndex(), uploadId)
           .srem(uploadKeys.activeIndex(), uploadId)
-          .exec()
+          .exec(),
       );
       if (cleaned === REDIS_DEPENDENCY_UNAVAILABLE) return;
 
@@ -1641,19 +1591,14 @@ export default async function uploadRoutes(app: FastifyInstance) {
     }
 
     if (status === "completed" || session.status === "completed") {
-      return sendApiError(
-        reply,
-        409,
-        "UPLOAD_ALREADY_COMPLETED",
-        "Upload is already finalized"
-      );
+      return sendApiError(reply, 409, "UPLOAD_ALREADY_COMPLETED", "Upload is already finalized");
     }
 
     const markedCanceled = await guardRedisDependency(reply, () =>
       redis.hset(metaKey, {
         status: "canceled",
         canceledAt: String(Date.now()),
-      })
+      }),
     );
     if (markedCanceled === REDIS_DEPENDENCY_UNAVAILABLE) return;
 
@@ -1669,7 +1614,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         .del(uploadKeys.chunks(uploadId))
         .srem(uploadKeys.gcIndex(), uploadId)
         .srem(uploadKeys.activeIndex(), uploadId)
-        .exec()
+        .exec(),
     );
     if (cleaned === REDIS_DEPENDENCY_UNAVAILABLE) return;
 
@@ -1699,5 +1644,4 @@ export default async function uploadRoutes(app: FastifyInstance) {
     });
     return reply.code(200).send(responseBody);
   });
-
 }

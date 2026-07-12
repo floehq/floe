@@ -8,13 +8,11 @@ import { UploadConfig } from "../../config/uploads.config.js";
 import { chunkStore } from "../../store/index.js";
 
 function isUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    value
-  );
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 export async function reconcileOrphanUploads(
-  log: FastifyBaseLogger
+  log: FastifyBaseLogger,
 ): Promise<{ recovered: number; scanned: number }> {
   if (chunkStore.backend() !== "disk") {
     return { recovered: 0, scanned: 0 };
@@ -51,19 +49,17 @@ export async function reconcileOrphanUploads(
     if (!isBin && !stat.isDirectory()) continue;
     scanned += 1;
 
-    const isTracked = await redis.sismember(
-      uploadKeys.gcIndex(),
-      uploadId
-    );
+    const isTracked = await redis.sismember(uploadKeys.gcIndex(), uploadId);
 
     if (isTracked) continue;
 
     log.warn(
       { uploadId, artifactType: isBin ? "final_bin" : "chunk_dir" },
-      "Recovered orphan upload; registering for GC"
+      "Recovered orphan upload; registering for GC",
     );
 
-    await redis.multi()
+    await redis
+      .multi()
       .hset(uploadKeys.meta(uploadId), {
         status: "expired",
         recoveredAt: String(Date.now()),

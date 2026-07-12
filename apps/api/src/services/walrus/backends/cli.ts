@@ -38,11 +38,11 @@ export function describeWalrusCliBackend() {
 }
 
 export async function uploadToWalrusViaCli(
-  params: WalrusUploadParams
+  params: WalrusUploadParams,
 ): Promise<WalrusUploadResult> {
   const tmpFile = path.join(
     os.tmpdir(),
-    `floe_walrus_${Date.now()}_${Math.random().toString(16).slice(2)}.bin`
+    `floe_walrus_${Date.now()}_${Math.random().toString(16).slice(2)}.bin`,
   );
 
   const rs = params.streamFactory();
@@ -63,7 +63,7 @@ export async function uploadToWalrusViaCli(
     });
     const out = `${stdout ?? ""}\n${stderr ?? ""}`;
 
-    const blobId = out.match(/Blob ID:\s*([A-Za-z0-9_\-]+)/)?.[1];
+    const blobId = out.match(/Blob ID:\s*([A-Za-z0-9_-]+)/)?.[1];
     const objectId =
       out.match(/Sui object ID:\s*(0x[0-9a-fA-F]+)/)?.[1] ??
       out.match(/Owned Blob registration object ID:\s*(0x[0-9a-fA-F]+)/)?.[1];

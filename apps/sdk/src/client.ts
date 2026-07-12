@@ -88,7 +88,7 @@ export class FloeClient {
 
   async createUpload(
     input: CreateUploadInput,
-    options: RequestOptions = {}
+    options: RequestOptions = {},
   ): Promise<CreateUploadResponse> {
     return this.requestJson<CreateUploadResponse>("POST", "/uploads/create", {
       ...options,
@@ -108,7 +108,7 @@ export class FloeClient {
     index: number,
     chunk: Blob,
     sha256: string,
-    options: RequestOptions = {}
+    options: RequestOptions = {},
   ): Promise<{ ok: boolean; chunkIndex: number; reused?: boolean }> {
     const form = new FormData();
     form.set("chunk", chunk, `chunk-${index}`);
@@ -125,7 +125,7 @@ export class FloeClient {
 
   async getUploadStatus(
     uploadId: string,
-    options: RequestOptions & { includeBlobId?: boolean; includeWalrusDebug?: boolean } = {}
+    options: RequestOptions & { includeBlobId?: boolean; includeWalrusDebug?: boolean } = {},
   ): Promise<UploadStatusResponse> {
     return this.requestJson("GET", `/uploads/${encodeURIComponent(uploadId)}/status`, {
       ...options,
@@ -139,7 +139,7 @@ export class FloeClient {
 
   async completeUpload(
     uploadId: string,
-    opts: RequestOptions & { includeBlobId?: boolean; includeWalrusDebug?: boolean } = {}
+    opts: RequestOptions & { includeBlobId?: boolean; includeWalrusDebug?: boolean } = {},
   ): Promise<CompleteUploadResponse> {
     const response = await this.requestJson<
       CompleteUploadResponse | { status: "ready"; fileId: string }
@@ -161,7 +161,7 @@ export class FloeClient {
 
   async cancelUpload(
     uploadId: string,
-    options: RequestOptions = {}
+    options: RequestOptions = {},
   ): Promise<{ ok: true; uploadId: string; status: CancelUploadStatus }> {
     return this.requestJson("DELETE", `/uploads/${encodeURIComponent(uploadId)}`, options);
   }
@@ -187,7 +187,7 @@ export class FloeClient {
       client?: FloeCompatibilityTarget;
       currentVersion?: string;
       versionInfo?: FloeVersionResponse;
-    } = {}
+    } = {},
   ): Promise<FloeCompatibilityCheckResult> {
     const target = options.client ?? "sdk";
     const currentVersion = (options.currentVersion ?? SDK_VERSION).trim();
@@ -219,7 +219,7 @@ export class FloeClient {
 
   async getFileMetadata(
     fileId: string,
-    opts: RequestOptions & { includeBlobId?: boolean } = {}
+    opts: RequestOptions & { includeBlobId?: boolean } = {},
   ): Promise<FileMetadataResponse> {
     return this.requestJson("GET", `/files/${encodeURIComponent(fileId)}/metadata`, {
       ...opts,
@@ -230,17 +230,11 @@ export class FloeClient {
     });
   }
 
-  async getFileManifest(
-    fileId: string,
-    opts: RequestOptions = {}
-  ): Promise<FileManifestResponse> {
+  async getFileManifest(fileId: string, opts: RequestOptions = {}): Promise<FileManifestResponse> {
     return this.requestJson("GET", `/files/${encodeURIComponent(fileId)}/manifest`, opts);
   }
 
-  async renewFile(
-    fileId: string,
-    options: RenewFileOptions
-  ): Promise<FileRenewResponse> {
+  async renewFile(fileId: string, options: RenewFileOptions): Promise<FileRenewResponse> {
     return this.requestJson("POST", `/files/${encodeURIComponent(fileId)}/renew`, {
       ...options,
       json: {
@@ -267,16 +261,20 @@ export class FloeClient {
 
   async headFileStream(
     fileId: string,
-    options: FileStreamOptions = {}
+    options: FileStreamOptions = {},
   ): Promise<FileStreamHeadResult> {
     const rangeHeader = this.buildRangeHeader(options.rangeStart, options.rangeEnd);
-    const response = await this.requestResponse("HEAD", `/files/${encodeURIComponent(fileId)}/stream`, {
-      ...options,
-      headers: {
-        ...(options.headers ?? {}),
-        ...(rangeHeader ? { range: rangeHeader } : {}),
+    const response = await this.requestResponse(
+      "HEAD",
+      `/files/${encodeURIComponent(fileId)}/stream`,
+      {
+        ...options,
+        headers: {
+          ...(options.headers ?? {}),
+          ...(rangeHeader ? { range: rangeHeader } : {}),
+        },
       },
-    });
+    );
 
     return {
       ...this.extractFileStreamResponseInfo(response),
@@ -298,13 +296,15 @@ export class FloeClient {
   async downloadFileToPath(
     fileId: string,
     filePath: string,
-    options: DownloadFileToPathOptions = {}
+    options: DownloadFileToPathOptions = {},
   ): Promise<DownloadFileToPathResult> {
-    const dynamicImport = new Function("s", "return import(s)") as <T>(specifier: string) => Promise<T>;
+    const dynamicImport = new Function("s", "return import(s)") as <T>(
+      specifier: string,
+    ) => Promise<T>;
     const fs = await dynamicImport<{
       createWriteStream(
         path: string,
-        options?: { flags?: "w" | "wx" }
+        options?: { flags?: "w" | "wx" },
       ): {
         on(event: "close", listener: () => void): unknown;
         on(event: "error", listener: (err: unknown) => void): unknown;
@@ -320,9 +320,7 @@ export class FloeClient {
     }>("node:path");
     const stream = await dynamicImport<{
       Readable: {
-        fromWeb(
-          stream: ReadableStream<Uint8Array>
-        ): {
+        fromWeb(stream: ReadableStream<Uint8Array>): {
           on(event: "close", listener: () => void): unknown;
           on(event: "error", listener: (err: unknown) => void): unknown;
         };
@@ -374,8 +372,7 @@ export class FloeClient {
     }
 
     const parallel = Math.max(1, Math.floor(options.parallel ?? 3));
-    const contentType =
-      options.contentType ?? blob.type ?? "application/octet-stream";
+    const contentType = options.contentType ?? blob.type ?? "application/octet-stream";
     const resumeKey = options.resumeKey ?? this.defaultResumeKey(blob, options);
 
     let create: CreateUploadResponse | undefined;
@@ -410,7 +407,7 @@ export class FloeClient {
         {
           signal: options.signal,
           idempotencyKey: options.idempotencyKey,
-        }
+        },
       );
       uploadId = create.uploadId;
       if (this.resumeStore) {
@@ -452,7 +449,7 @@ export class FloeClient {
         {
           signal: options.signal,
           idempotencyKey: options.idempotencyKey,
-        }
+        },
       );
       uploadId = create.uploadId;
       status = await this.getUploadStatus(uploadId, { signal: options.signal });
@@ -477,7 +474,7 @@ export class FloeClient {
     let uploadedChunks = uploaded.size;
     let uploadedBytes = (status.receivedChunks ?? []).reduce(
       (sum, idx) => sum + chunkByteLength(idx, totalChunks, chunkSize, blob.size),
-      0
+      0,
     );
 
     options.onProgress?.({
@@ -521,7 +518,7 @@ export class FloeClient {
     };
 
     await Promise.all(
-      Array.from({ length: Math.min(parallel, pending.length || 1) }, () => worker())
+      Array.from({ length: Math.min(parallel, pending.length || 1) }, () => worker()),
     );
 
     const firstComplete = await this.completeUpload(uploadId, {
@@ -539,11 +536,9 @@ export class FloeClient {
             includeBlobId: options.includeBlobId,
             includeWalrusDebug: options.includeWalrusDebug,
             signal: options.signal,
-            maxWaitMs:
-              options.finalizeMaxWaitMs ?? FloeClient.DEFAULT_FINALIZE_MAX_WAIT_MS,
+            maxWaitMs: options.finalizeMaxWaitMs ?? FloeClient.DEFAULT_FINALIZE_MAX_WAIT_MS,
             pollIntervalMs:
-              options.finalizePollIntervalMs ??
-              FloeClient.DEFAULT_FINALIZE_POLL_INTERVAL_MS,
+              options.finalizePollIntervalMs ?? FloeClient.DEFAULT_FINALIZE_POLL_INTERVAL_MS,
             fallbackSizeBytes: blob.size,
             onStageChange: options.onStageChange,
           });
@@ -575,7 +570,7 @@ export class FloeClient {
 
   async uploadBytes(
     bytes: Uint8Array | ArrayBuffer,
-    options: UploadBlobOptions
+    options: UploadBlobOptions,
   ): Promise<UploadBlobResult> {
     const normalized = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     const copy = new Uint8Array(normalized.byteLength);
@@ -587,7 +582,9 @@ export class FloeClient {
   }
 
   async uploadFile(filePath: string, options: UploadFileOptions = {}): Promise<UploadBlobResult> {
-    const dynamicImport = new Function("s", "return import(s)") as <T>(specifier: string) => Promise<T>;
+    const dynamicImport = new Function("s", "return import(s)") as <T>(
+      specifier: string,
+    ) => Promise<T>;
     const fs = await dynamicImport<{
       readFile(path: string): Promise<Uint8Array>;
       stat(path: string): Promise<{ isFile(): boolean }>;
@@ -614,7 +611,7 @@ export class FloeClient {
             const bytes = new Uint8Array(await fs.readFile(resolvedPath));
             const buffer = bytes.buffer.slice(
               bytes.byteOffset,
-              bytes.byteOffset + bytes.byteLength
+              bytes.byteOffset + bytes.byteLength,
             );
             return new Blob([buffer], { type: contentType });
           })();
@@ -628,28 +625,30 @@ export class FloeClient {
 
   async waitForUploadReady(
     uploadId: string,
-    options: WaitForUploadReadyOptions = {}
+    options: WaitForUploadReadyOptions = {},
   ): Promise<CompleteUploadReadyResponse> {
     return this.waitForUploadReadyInternal(uploadId, {
       includeBlobId: options.includeBlobId,
       includeWalrusDebug: options.includeWalrusDebug,
       signal: options.signal,
       maxWaitMs: options.maxWaitMs ?? FloeClient.DEFAULT_FINALIZE_MAX_WAIT_MS,
-      pollIntervalMs:
-        options.pollIntervalMs ?? FloeClient.DEFAULT_FINALIZE_POLL_INTERVAL_MS,
+      pollIntervalMs: options.pollIntervalMs ?? FloeClient.DEFAULT_FINALIZE_POLL_INTERVAL_MS,
       onStageChange: options.onStageChange,
     });
   }
 
   private async waitForUploadReadyInternal(
     uploadId: string,
-    options: WaitForUploadReadyOptions & { fallbackSizeBytes?: number }
+    options: WaitForUploadReadyOptions & { fallbackSizeBytes?: number },
   ): Promise<CompleteUploadReadyResponse> {
     const startedAt = Date.now();
     let lastErr: unknown;
     let waitMs = options.pollIntervalMs ?? FloeClient.DEFAULT_FINALIZE_POLL_INTERVAL_MS;
 
-    while (Date.now() - startedAt < (options.maxWaitMs ?? FloeClient.DEFAULT_FINALIZE_MAX_WAIT_MS)) {
+    while (
+      Date.now() - startedAt <
+      (options.maxWaitMs ?? FloeClient.DEFAULT_FINALIZE_MAX_WAIT_MS)
+    ) {
       if (options.signal?.aborted) {
         throw new DOMException("The operation was aborted", "AbortError");
       }
@@ -700,7 +699,7 @@ export class FloeClient {
         });
         waitMs = Math.max(
           options.pollIntervalMs ?? FloeClient.DEFAULT_FINALIZE_POLL_INTERVAL_MS,
-          pollAfterMs
+          pollAfterMs,
         );
       } catch (err) {
         lastErr = err;
@@ -729,7 +728,7 @@ export class FloeClient {
         if (retryAfterMs && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
           waitMs = Math.max(
             options.pollIntervalMs ?? FloeClient.DEFAULT_FINALIZE_POLL_INTERVAL_MS,
-            Math.floor(retryAfterMs)
+            Math.floor(retryAfterMs),
           );
         } else {
           const pollInterval =
@@ -739,8 +738,8 @@ export class FloeClient {
             computeBackoffMs(
               Math.max(1, Math.floor((Date.now() - startedAt) / pollInterval)),
               pollInterval,
-              10_000
-            )
+              10_000,
+            ),
           );
         }
       }
@@ -754,7 +753,7 @@ export class FloeClient {
   private async requestJson<T>(
     method: string,
     path: string,
-    options: JsonRequestOptions = {}
+    options: JsonRequestOptions = {},
   ): Promise<T> {
     const response = await this.requestResponse(method, path, options);
     return (await response.json()) as T;
@@ -763,7 +762,7 @@ export class FloeClient {
   private async requestResponse(
     method: string,
     path: string,
-    options: ResponseRequestOptions = {}
+    options: ResponseRequestOptions = {},
   ): Promise<Response> {
     await this.maybeWarnAboutCompatibility(path, options.signal);
 
@@ -822,11 +821,7 @@ export class FloeClient {
           const retryAfterMs = parseRetryAfterMs(response.headers);
           const backoffMs =
             retryAfterMs ??
-            computeBackoffMs(
-              attempt,
-              this.retry.baseDelayMs,
-              this.retry.maxDelayMs
-            );
+            computeBackoffMs(attempt, this.retry.baseDelayMs, this.retry.maxDelayMs);
           await sleep(backoffMs, options.signal);
           continue;
         }
@@ -844,7 +839,7 @@ export class FloeClient {
           const backoffMs = computeBackoffMs(
             attempt,
             this.retry.baseDelayMs,
-            this.retry.maxDelayMs
+            this.retry.maxDelayMs,
           );
           await sleep(backoffMs, options.signal);
           continue;
@@ -864,10 +859,7 @@ export class FloeClient {
     return new URL(path.replace(/^\/+/, ""), rootUrl).toString();
   }
 
-  private buildRangeHeader(
-    rangeStart?: number,
-    rangeEnd?: number
-  ): string | undefined {
+  private buildRangeHeader(rangeStart?: number, rangeEnd?: number): string | undefined {
     if (rangeStart === undefined && rangeEnd === undefined) {
       return undefined;
     }
@@ -892,13 +884,10 @@ export class FloeClient {
   private defaultResumeKey(blob: Blob, options: UploadBlobOptions): string {
     const hasFileCtor = typeof File !== "undefined";
     const lastModified =
-      hasFileCtor &&
-      blob instanceof File &&
-      Number.isFinite(blob.lastModified)
+      hasFileCtor && blob instanceof File && Number.isFinite(blob.lastModified)
         ? blob.lastModified
         : 0;
-    const contentType =
-      options.contentType ?? blob.type ?? "application/octet-stream";
+    const contentType = options.contentType ?? blob.type ?? "application/octet-stream";
     return `floe:${options.filename}:${blob.size}:${contentType}:${lastModified}`;
   }
 
@@ -926,12 +915,10 @@ export class FloeClient {
       acceptRanges: response.headers.get("accept-ranges") ?? undefined,
       metadataSource:
         (response.headers.get("x-floe-metadata-source") as
-          | FileStreamResponseInfo["metadataSource"]
-          | null) ?? undefined,
+          FileStreamResponseInfo["metadataSource"] | null) ?? undefined,
       postgresState:
         (response.headers.get("x-floe-postgres-state") as
-          | FileStreamResponseInfo["postgresState"]
-          | null) ?? undefined,
+          FileStreamResponseInfo["postgresState"] | null) ?? undefined,
     };
   }
 
@@ -954,7 +941,7 @@ export class FloeClient {
       this.compatibilityWarningAttempted = true;
       if (!result.compatible) {
         console.warn(
-          `[Floe SDK] ${result.target} ${result.currentVersion} is not within ${result.service} ${result.serverVersion} supported range ${result.supportedRange}`
+          `[Floe SDK] ${result.target} ${result.currentVersion} is not within ${result.service} ${result.serverVersion} supported range ${result.supportedRange}`,
         );
       }
     } catch {
@@ -966,11 +953,9 @@ export class FloeClient {
 
   private shouldAutoCheckCompatibility(path: string): boolean {
     const href = /^https?:\/\//.test(path) ? path : joinUrl(this.baseUrl, path);
-    return ![
-      this.rootPath("/version"),
-      this.rootPath("/health"),
-      this.rootPath("/livez"),
-    ].includes(href);
+    return ![this.rootPath("/version"), this.rootPath("/health"), this.rootPath("/livez")].includes(
+      href,
+    );
   }
 }
 

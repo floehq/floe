@@ -14,10 +14,7 @@ import { renewWalrusBlob } from "../walrus/renew.js";
 import { getCurrentWalrusEpoch } from "../walrus/epoch.js";
 import { getWalrusBlobState } from "../walrus/blob.js";
 import { finalizeFileMetadata } from "../../sui/file.metadata.js";
-import {
-  observeFinalizeStage,
-  observeSuiFinalize,
-} from "../metrics/runtime.metrics.js";
+import { observeFinalizeStage, observeSuiFinalize } from "../metrics/runtime.metrics.js";
 import {
   findFileByChecksum,
   getBlobObjectIdByBlobId,
@@ -29,22 +26,16 @@ import {
   buildFinalizeFollowupWarningMeta,
   normalizeFinalizeFailure,
   shouldPersistFinalizeFailure,
-  type FinalizeFailureCode,
 } from "./finalize.shared.js";
 import { emitInfrastructureEvent } from "../events/infrastructure.events.js";
 
-const finalFilePath = (uploadId: string) =>
-  path.join(UploadConfig.tmpDir, `${uploadId}.bin`);
+const finalFilePath = (uploadId: string) => path.join(UploadConfig.tmpDir, `${uploadId}.bin`);
 
 const FINALIZE_LOCK_TTL_SECONDS = 15 * 60;
 const FINALIZE_LOCK_REFRESH_INTERVAL_MS = 60_000;
 
 type FinalizeStage =
-  | "verify_chunks"
-  | "walrus_publish"
-  | "sui_finalize"
-  | "redis_commit"
-  | "cleanup";
+  "verify_chunks" | "walrus_publish" | "sui_finalize" | "redis_commit" | "cleanup";
 
 type FinalizeStageDurations = Record<FinalizeStage, number>;
 
@@ -82,7 +73,7 @@ async function refreshFinalizeLockAtomic(params: {
   const res = await redis.eval(
     script,
     [params.lockKey],
-    [params.lockToken, String(params.ttlSeconds)]
+    [params.lockToken, String(params.ttlSeconds)],
   );
   return Number(res) === 1;
 }
@@ -102,10 +93,7 @@ async function releaseFinalizeLockAtomic(params: {
   return Number(res) === 1;
 }
 
-function createChunkAssemblyStream(params: {
-  uploadId: string;
-  totalChunks: number;
-}): Readable {
+function createChunkAssemblyStream(params: { uploadId: string; totalChunks: number }): Readable {
   const iter = async function* () {
     for (let i = 0; i < params.totalChunks; i++) {
       const rs = chunkStore.openChunk(params.uploadId, i);
@@ -186,7 +174,7 @@ async function resolveReusableWalrusBlob(params: {
     }).catch((err) => {
       params.log?.warn(
         { err, blobObjectId, missingEpochs, checksum },
-        "Failed to extend reusable Walrus blob during finalize"
+        "Failed to extend reusable Walrus blob during finalize",
       );
       return null;
     });
@@ -206,7 +194,7 @@ async function resolveReusableWalrusBlob(params: {
 
 export async function finalizeUpload(
   session: InternalSession,
-  context: FinalizeContext = {}
+  context: FinalizeContext = {},
 ): Promise<{
   fileId: string;
   blobId: string;
@@ -357,11 +345,7 @@ export async function finalizeUpload(
     let fileId: string | null = meta?.fileId ?? null;
     let walrusEndEpoch: number | undefined =
       meta?.walrusEndEpoch !== undefined ? Number(meta.walrusEndEpoch) : undefined;
-    let walrusSource:
-      | "newly_created"
-      | "already_certified"
-      | "unknown"
-      | undefined =
+    let walrusSource: "newly_created" | "already_certified" | "unknown" | undefined =
       meta?.walrusSource === "newly_created" ||
       meta?.walrusSource === "already_certified" ||
       meta?.walrusSource === "unknown"
@@ -412,7 +396,7 @@ export async function finalizeUpload(
         (walrusEndEpoch === undefined || !Number.isFinite(walrusEndEpoch))
       ) {
         throw new Error(
-          `WALRUS_RETENTION_TOO_LOW:unknown:${session.resolvedEpochs}:already_certified`
+          `WALRUS_RETENTION_TOO_LOW:unknown:${session.resolvedEpochs}:already_certified`,
         );
       }
 
@@ -487,7 +471,7 @@ export async function finalizeUpload(
         .del(uploadKeys.chunks(uploadId))
         .srem(uploadKeys.gcIndex(), uploadId)
         .srem(uploadKeys.activeIndex(), uploadId)
-        .exec()
+        .exec(),
     );
 
     if (!tx) {
@@ -541,7 +525,10 @@ export async function finalizeUpload(
         finalizeAttemptState: "completed",
       })
       .catch((postCommitErr) => {
-        context.log?.warn({ uploadId, err: postCommitErr }, "Upload finalize post-commit metadata update failed");
+        context.log?.warn(
+          { uploadId, err: postCommitErr },
+          "Upload finalize post-commit metadata update failed",
+        );
       });
 
     context.log?.info(
@@ -552,7 +539,7 @@ export async function finalizeUpload(
         totalMs: finalizeTotalMs,
         stageDurationsMs,
       },
-      "Upload finalize completed"
+      "Upload finalize completed",
     );
     emitInfrastructureEvent(context.log ?? console, {
       event: "finalize_succeeded",
@@ -607,10 +594,13 @@ export async function finalizeUpload(
       });
     } else if (committedCompletedState) {
       await redis
-        .hset(metaKey, buildFinalizeFollowupWarningMeta({
-          errorMessage: message,
-          nowMs: Date.now(),
-        }))
+        .hset(
+          metaKey,
+          buildFinalizeFollowupWarningMeta({
+            errorMessage: message,
+            nowMs: Date.now(),
+          }),
+        )
         .catch(() => {});
     }
 
@@ -625,7 +615,7 @@ export async function finalizeUpload(
         stageDurationsMs,
         err,
       },
-      "Upload finalize failed"
+      "Upload finalize failed",
     );
     emitInfrastructureEvent(context.log ?? console, {
       event: "finalize_failed",

@@ -10,10 +10,7 @@ import type { ChunkStore } from "./chunk.js";
 
 const STALE_TMP_MS = 10 * 60 * 1000;
 
-function createValidationStream(
-  expectedSize: number,
-  hash: crypto.Hash
-) {
+function createValidationStream(expectedSize: number, hash: crypto.Hash) {
   let written = 0;
 
   return new Transform({
@@ -48,7 +45,7 @@ export class DiskChunkStore implements ChunkStore {
     finalPath: string,
     expectedHash: string,
     expectedSize: number,
-    isLastChunk: boolean
+    isLastChunk: boolean,
   ): Promise<void> {
     const stat = await fs.promises.stat(finalPath);
     if (isLastChunk) {
@@ -73,7 +70,7 @@ export class DiskChunkStore implements ChunkStore {
     stream: Readable,
     expectedHash: string,
     expectedSize: number,
-    isLastChunk: boolean
+    isLastChunk: boolean,
   ): Promise<{ alreadyExisted: boolean }> {
     const dir = this.dir(uploadId);
     const finalPath = this.chunkPath(uploadId, index);
@@ -148,17 +145,22 @@ export class DiskChunkStore implements ChunkStore {
 
       try {
         fs.utimesSync(dir, new Date(), new Date());
-      } catch {}
+      } catch {
+        /* empty */
+      }
       return { alreadyExisted: false };
-
     } catch (err) {
       try {
         fs.rmSync(tempPath, { force: true });
-      } catch {}
+      } catch {
+        /* empty */
+      }
 
       try {
         stream.destroy();
-      } catch {}
+      } catch {
+        /* empty */
+      }
 
       throw err;
     }
@@ -174,7 +176,7 @@ export class DiskChunkStore implements ChunkStore {
 
     return fs
       .readdirSync(dir)
-      .filter(name => /^\d+$/.test(name))
+      .filter((name) => /^\d+$/.test(name))
       .map(Number)
       .sort((a, b) => a - b);
   }

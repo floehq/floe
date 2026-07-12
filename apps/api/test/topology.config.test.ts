@@ -1,10 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  buildTopologyConfig,
-  parseTopologyNodeRole,
-} from "../src/config/topology.config.ts";
+import { buildTopologyConfig, parseTopologyNodeRole } from "../src/config/topology.config.ts";
 
 test("buildTopologyConfig exposes read-node capabilities", () => {
   const topology = buildTopologyConfig("read");

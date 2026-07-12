@@ -2,13 +2,10 @@ import type { Readable } from "stream";
 import { walrusQueue } from "./limiter.js";
 import { uploadToWalrusOnce, resolveWalrusStoreMode } from "./upload.js";
 import { WalrusUploadLimits } from "../../config/walrus.config.js";
-import {
-  recordWalrusUploadMetric,
-  classifyWalrusError,
-} from "../../types/walrus.metrics.js";
+import { recordWalrusUploadMetric, classifyWalrusError } from "../../types/walrus.metrics.js";
 import { observeWalrusPublish } from "../metrics/runtime.metrics.js";
 
-const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 type WalrusUploadResult = Awaited<ReturnType<typeof uploadToWalrusOnce>>;
 const WALRUS_STORE_MODE = resolveWalrusStoreMode();
 
@@ -39,10 +36,7 @@ export async function uploadToWalrusWithMetrics(params: {
     const result = (await walrusQueue.add(async () => {
       for (let attempt = 1; attempt <= WalrusUploadLimits.maxRetries; attempt++) {
         try {
-          const res = await uploadToWalrusOnce(
-            params.streamFactory,
-            params.epochs
-          );
+          const res = await uploadToWalrusOnce(params.streamFactory, params.epochs);
 
           recordWalrusUploadMetric({
             uploadId: params.uploadId,
@@ -64,7 +58,6 @@ export async function uploadToWalrusWithMetrics(params: {
           });
 
           return res;
-
         } catch (err) {
           lastError = err;
           if (attempt === WalrusUploadLimits.maxRetries) break;
@@ -76,7 +69,6 @@ export async function uploadToWalrusWithMetrics(params: {
     })) as WalrusUploadResult;
 
     return result;
-
   } catch (err: any) {
     recordWalrusUploadMetric({
       uploadId: params.uploadId,

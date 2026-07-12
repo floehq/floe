@@ -11,7 +11,7 @@ function normalizeAddress(name: string, value?: string): string | undefined {
 }
 
 export async function resolveHeaderProvider(
-  provider?: HeaderProvider
+  provider?: HeaderProvider,
 ): Promise<Record<string, string | number | boolean | null | undefined> | undefined> {
   if (!provider) return undefined;
   if (typeof provider === "function") {

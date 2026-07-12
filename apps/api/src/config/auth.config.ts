@@ -92,13 +92,10 @@ function buildLimits() {
 
   for (const scope of Object.keys(LIMIT_DEFAULTS) as RateLimitScope[]) {
     limits[scope] = {
-      public: parsePositiveIntEnv(
-        LIMIT_ENV[scope].public,
-        LIMIT_DEFAULTS[scope].public
-      ),
+      public: parsePositiveIntEnv(LIMIT_ENV[scope].public, LIMIT_DEFAULTS[scope].public),
       authenticated: parsePositiveIntEnv(
         LIMIT_ENV[scope].authenticated,
-        LIMIT_DEFAULTS[scope].authenticated
+        LIMIT_DEFAULTS[scope].authenticated,
       ),
     };
   }
@@ -112,7 +109,7 @@ function assertTierOrder(limits: Record<RateLimitScope, Record<RateLimitTier, nu
     const auth = limits[scope].authenticated;
     if (auth < pub) {
       throw new Error(
-        `Invalid rate limit config for ${scope}: authenticated (${auth}) must be >= public (${pub})`
+        `Invalid rate limit config for ${scope}: authenticated (${auth}) must be >= public (${pub})`,
       );
     }
   }
@@ -126,12 +123,13 @@ function parseAccessPolicy(): AccessPolicy {
   if (raw === "public" || raw === "hybrid" || raw === "private") {
     return raw;
   }
-  throw new Error(
-    "FLOE_ACCESS_POLICY/FLOE_AUTH_MODE must be one of: public, hybrid, private"
-  );
+  throw new Error("FLOE_ACCESS_POLICY/FLOE_AUTH_MODE must be one of: public, hybrid, private");
 }
 
-function parseAuthProviderKind(params: { accessPolicy: AccessPolicy; localKeyCount: number }): AuthProviderKind {
+function parseAuthProviderKind(params: {
+  accessPolicy: AccessPolicy;
+  localKeyCount: number;
+}): AuthProviderKind {
   const raw = process.env.FLOE_AUTH_PROVIDER?.trim().toLowerCase();
   if (!raw) {
     if (params.localKeyCount > 0) return "local";
@@ -237,19 +235,13 @@ if (parsedAuthProviderKind === "none" && parsedAccessPolicy !== "public") {
 }
 
 const maxFileSizeBytes = {
-  public: parsePositiveIntEnv(
-    "FLOE_PUBLIC_MAX_FILE_SIZE_BYTES",
-    100 * 1024 * 1024
-  ),
-  authenticated: parsePositiveIntEnv(
-    "FLOE_AUTH_MAX_FILE_SIZE_BYTES",
-    15 * 1024 * 1024 * 1024
-  ),
+  public: parsePositiveIntEnv("FLOE_PUBLIC_MAX_FILE_SIZE_BYTES", 100 * 1024 * 1024),
+  authenticated: parsePositiveIntEnv("FLOE_AUTH_MAX_FILE_SIZE_BYTES", 15 * 1024 * 1024 * 1024),
 } as const;
 
 if (maxFileSizeBytes.authenticated < maxFileSizeBytes.public) {
   throw new Error(
-    `Invalid upload policy: FLOE_AUTH_MAX_FILE_SIZE_BYTES (${maxFileSizeBytes.authenticated}) must be >= FLOE_PUBLIC_MAX_FILE_SIZE_BYTES (${maxFileSizeBytes.public})`
+    `Invalid upload policy: FLOE_AUTH_MAX_FILE_SIZE_BYTES (${maxFileSizeBytes.authenticated}) must be >= FLOE_PUBLIC_MAX_FILE_SIZE_BYTES (${maxFileSizeBytes.public})`,
   );
 }
 

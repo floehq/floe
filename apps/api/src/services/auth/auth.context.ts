@@ -54,7 +54,7 @@ export function authContextCacheKey(context: AuthContext): string {
 
 export function authRequiredForAction(
   action: "upload" | "file_read",
-  accessPolicy: AccessPolicy = AuthAccessPolicyConfig.policy
+  accessPolicy: AccessPolicy = AuthAccessPolicyConfig.policy,
 ): boolean {
   if (accessPolicy === "private") return true;
   if (accessPolicy === "hybrid") {

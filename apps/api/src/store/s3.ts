@@ -19,9 +19,9 @@ type AwsS3Module = {
 function loadAwsS3(): AwsS3Module {
   try {
     return require("@aws-sdk/client-s3") as AwsS3Module;
-  } catch (err) {
+  } catch {
     throw new Error(
-      "S3 chunk store requires @aws-sdk/client-s3. Install it with: npm install --workspace=apps/api @aws-sdk/client-s3"
+      "S3 chunk store requires @aws-sdk/client-s3. Install it with: npm install --workspace=apps/api @aws-sdk/client-s3",
     );
   }
 }
@@ -60,7 +60,7 @@ class ChunkValidationStream extends Transform {
     private readonly expectedHash: string,
     private readonly expectedSize: number,
     private readonly maxChunkBytes: number,
-    private readonly isLastChunk: boolean
+    private readonly isLastChunk: boolean,
   ) {
     super();
   }
@@ -68,7 +68,7 @@ class ChunkValidationStream extends Transform {
   override _transform(
     chunk: Buffer | string,
     _encoding: BufferEncoding,
-    callback: (error?: Error | null, data?: Buffer) => void
+    callback: (error?: Error | null, data?: Buffer) => void,
   ) {
     const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     this.written += buf.length;
@@ -161,7 +161,7 @@ export class S3ChunkStore implements ChunkStore {
     stream: Readable,
     expectedHash: string,
     expectedSize: number,
-    isLastChunk: boolean
+    isLastChunk: boolean,
   ): Promise<{ alreadyExisted: boolean }> {
     const key = this.chunkKey(uploadId, index);
 
@@ -170,10 +170,12 @@ export class S3ChunkStore implements ChunkStore {
         new this.cfg.cmd.HeadObjectCommand({
           Bucket: this.cfg.bucket,
           Key: key,
-        })
+        }),
       );
       const contentLength = Number(head?.ContentLength ?? head?.contentLength);
-      const storedHash = String(head?.Metadata?.sha256 ?? head?.metadata?.sha256 ?? "").toLowerCase();
+      const storedHash = String(
+        head?.Metadata?.sha256 ?? head?.metadata?.sha256 ?? "",
+      ).toLowerCase();
       if (Number.isFinite(contentLength)) {
         if (isLastChunk) {
           if (contentLength <= 0 || contentLength > expectedSize) {
@@ -202,7 +204,7 @@ export class S3ChunkStore implements ChunkStore {
       expectedHash.toLowerCase(),
       expectedSize,
       this.cfg.maxChunkBytes,
-      isLastChunk
+      isLastChunk,
     );
     const validatedStream = stream.pipe(validator);
 
@@ -218,7 +220,7 @@ export class S3ChunkStore implements ChunkStore {
             sha256: expectedHash.toLowerCase(),
           },
           IfNoneMatch: "*",
-        })
+        }),
       );
       return { alreadyExisted: false };
     } catch (err: any) {
@@ -237,7 +239,7 @@ export class S3ChunkStore implements ChunkStore {
         new this.cfg.cmd.HeadObjectCommand({
           Bucket: this.cfg.bucket,
           Key: this.chunkKey(uploadId, index),
-        })
+        }),
       );
       return true;
     } catch {
@@ -255,7 +257,7 @@ export class S3ChunkStore implements ChunkStore {
           Bucket: this.cfg.bucket,
           Prefix: this.uploadPrefix(uploadId),
           ContinuationToken: token,
-        })
+        }),
       );
 
       for (const obj of res.Contents ?? []) {
@@ -283,7 +285,7 @@ export class S3ChunkStore implements ChunkStore {
           new this.cfg.cmd.GetObjectCommand({
             Bucket: this.cfg.bucket,
             Key: this.chunkKey(uploadId, index),
-          })
+          }),
         );
 
         const body = res.Body;
@@ -311,7 +313,7 @@ export class S3ChunkStore implements ChunkStore {
         new this.cfg.cmd.DeleteObjectCommand({
           Bucket: this.cfg.bucket,
           Key: key,
-        })
+        }),
       );
     } catch {
       // Best-effort; the chunk may not exist.
@@ -326,7 +328,7 @@ export class S3ChunkStore implements ChunkStore {
           Bucket: this.cfg.bucket,
           Prefix: this.uploadPrefix(uploadId),
           ContinuationToken: token,
-        })
+        }),
       );
       const keys = (listed.Contents ?? [])
         .map((x: any) => x.Key)
@@ -335,12 +337,12 @@ export class S3ChunkStore implements ChunkStore {
       if (keys.length > 0) {
         await this.cfg.client.send(
           new this.cfg.cmd.DeleteObjectsCommand({
-              Bucket: this.cfg.bucket,
-              Delete: {
+            Bucket: this.cfg.bucket,
+            Delete: {
               Objects: keys.map((key: string) => ({ Key: key })),
               Quiet: true,
             },
-          })
+          }),
         );
       }
 

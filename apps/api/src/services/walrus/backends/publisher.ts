@@ -89,7 +89,7 @@ async function checkBalanceOnce(clientAddress: string) {
 
 async function createAuthHeaders(
   keypair: Ed25519Keypair,
-  apiBaseUrl: string
+  apiBaseUrl: string,
 ): Promise<Record<string, string>> {
   const address = keypair.getPublicKey().toSuiAddress();
   const timestamp = Date.now();
@@ -113,16 +113,18 @@ async function safeReadText(res: Response): Promise<string> {
 }
 
 export async function uploadToWalrusViaPublisher(
-  params: WalrusUploadParams
+  params: WalrusUploadParams,
 ): Promise<WalrusUploadResult> {
   if (WALRUS_PUBLISHER_BASE_URLS.length === 0) {
     throw new Error(
-      "FLOE_WALRUS_PUBLISHER_BASE_URL or FLOE_WALRUS_PUBLISHER_BASE_URLS must be set to http(s) URL when FLOE_WALRUS_STORE_MODE=publisher"
+      "FLOE_WALRUS_PUBLISHER_BASE_URL or FLOE_WALRUS_PUBLISHER_BASE_URLS must be set to http(s) URL when FLOE_WALRUS_STORE_MODE=publisher",
     );
   }
   for (const baseUrl of WALRUS_PUBLISHER_BASE_URLS) {
     if (!/^https?:\/\//.test(baseUrl)) {
-      throw new Error("FLOE_WALRUS_PUBLISHER_BASE_URLS entries must start with http:// or https://");
+      throw new Error(
+        "FLOE_WALRUS_PUBLISHER_BASE_URLS entries must start with http:// or https://",
+      );
     }
   }
 
@@ -134,7 +136,11 @@ export async function uploadToWalrusViaPublisher(
       : 0;
 
   let lastError: unknown = null;
-  for (let writerAttempt = 0; writerAttempt < WALRUS_PUBLISHER_BASE_URLS.length; writerAttempt += 1) {
+  for (
+    let writerAttempt = 0;
+    writerAttempt < WALRUS_PUBLISHER_BASE_URLS.length;
+    writerAttempt += 1
+  ) {
     const idx = (startIdx + writerAttempt) % WALRUS_PUBLISHER_BASE_URLS.length;
     const baseUrl = WALRUS_PUBLISHER_BASE_URLS[idx];
     const paramsQs = new URLSearchParams({ epochs: String(params.epochs) });
@@ -247,13 +253,13 @@ export async function uploadToWalrusViaPublisher(
       return {
         blobId,
         objectId,
-        cost: pickFirstNumber([newlyCreated?.cost, newlyCreated?.storageCost, newlyCreated?.storage_cost]),
+        cost: pickFirstNumber([
+          newlyCreated?.cost,
+          newlyCreated?.storageCost,
+          newlyCreated?.storage_cost,
+        ]),
         endEpoch,
-        source: newlyCreated
-          ? "newly_created"
-          : alreadyCertified
-            ? "already_certified"
-            : "unknown",
+        source: newlyCreated ? "newly_created" : alreadyCertified ? "already_certified" : "unknown",
       };
     } catch (err) {
       lastError = err;

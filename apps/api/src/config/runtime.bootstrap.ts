@@ -95,10 +95,7 @@ export function normalizeRuntimeConfig(raw: unknown): RuntimeFileConfig {
   }
 
   const metricsEnabled = (value.metrics as any)?.enabled;
-  if (
-    metricsEnabled !== undefined &&
-    typeof metricsEnabled !== "boolean"
-  ) {
+  if (metricsEnabled !== undefined && typeof metricsEnabled !== "boolean") {
     throw new Error("metrics.enabled must be a boolean");
   }
 
@@ -201,10 +198,7 @@ export function applyRuntimeConfig(config: RuntimeFileConfig, argvRole?: NodeRol
     process.env.FLOE_NODE_ROLE = argvRole;
   }
 
-  setEnvDefault(
-    "PORT",
-    config.http?.port !== undefined ? String(config.http.port) : undefined
-  );
+  setEnvDefault("PORT", config.http?.port !== undefined ? String(config.http.port) : undefined);
   setEnvDefault("FLOE_CORS_ORIGINS", config.http?.corsOrigins?.join(","));
   if (config.http?.trustProxy !== undefined) {
     setEnvDefault("FLOE_TRUST_PROXY", config.http.trustProxy ? "1" : "0");

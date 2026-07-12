@@ -23,7 +23,7 @@ async function createUpstashClient(): Promise<RedisClient> {
 
   if (!url || !token) {
     throw new Error(
-      "Upstash Redis env vars missing (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN)"
+      "Upstash Redis env vars missing (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN)",
     );
   }
 
@@ -53,17 +53,14 @@ async function createNativeClient(): Promise<RedisClient> {
 
 export async function initRedis(): Promise<RedisClient> {
   if (redis) return redis;
-  redis = resolveRedisProvider() === "native"
-    ? await createNativeClient()
-    : await createUpstashClient();
+  redis =
+    resolveRedisProvider() === "native" ? await createNativeClient() : await createUpstashClient();
   return redis;
 }
 
 export function getRedis(): RedisClient {
   if (!redis) {
-    throw new Error(
-      "Redis not initialized. initRedis() must be awaited during startup."
-    );
+    throw new Error("Redis not initialized. initRedis() must be awaited during startup.");
   }
   return redis;
 }

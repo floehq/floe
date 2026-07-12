@@ -25,18 +25,14 @@ export interface WalrusUploadMetric {
   timestamp: number;
 }
 
-export function recordWalrusUploadMetric(
-  metric: WalrusUploadMetric
-) {
+export function recordWalrusUploadMetric(metric: WalrusUploadMetric) {
   if (process.env.FLOE_LOG_WALRUS_METRICS !== "1") {
     return;
   }
   process.stdout.write(`${JSON.stringify({ event: "walrus.upload.metric", ...metric })}\n`);
 }
 
-export function classifyWalrusError(
-  err: Error
-): WalrusUploadOutcome {
+export function classifyWalrusError(err: Error): WalrusUploadOutcome {
   const msg = (err.message ?? "").toUpperCase();
 
   if ((err as any)?.name === "AbortError") return "timeout";

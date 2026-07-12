@@ -61,13 +61,7 @@ export type CreateUploadResponse = {
 };
 
 export type UploadStatus =
-  | "pending"
-  | "uploading"
-  | "finalizing"
-  | "completed"
-  | "failed"
-  | "expired"
-  | "canceled";
+  "pending" | "uploading" | "finalizing" | "completed" | "failed" | "expired" | "canceled";
 
 export type CancelUploadStatus = "canceled" | "failed" | "expired";
 
@@ -119,9 +113,7 @@ export type CompleteUploadFinalizingResponse = {
   inProgress?: boolean;
 } & FinalizeDiagnostics;
 
-export type CompleteUploadResponse =
-  | CompleteUploadReadyResponse
-  | CompleteUploadFinalizingResponse;
+export type CompleteUploadResponse = CompleteUploadReadyResponse | CompleteUploadFinalizingResponse;
 
 export type WalrusExpiryStatus = {
   currentEpoch: number;
@@ -311,9 +303,7 @@ export type FloeVersionResponse = {
 };
 
 export type FloeCompatibilityFailureReason =
-  | "outside_supported_range"
-  | "invalid_current_version"
-  | "invalid_supported_range";
+  "outside_supported_range" | "invalid_current_version" | "invalid_supported_range";
 
 export type FloeCompatibilityCheckResult = FloeVersionResponse & {
   target: FloeCompatibilityTarget;

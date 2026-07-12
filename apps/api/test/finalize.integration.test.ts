@@ -265,7 +265,7 @@ before(async () => {
   redisProcess = spawn(
     "redis-server",
     ["--port", String(redisPort), "--save", "", "--appendonly", "no"],
-    { stdio: "ignore" }
+    { stdio: "ignore" },
   );
   await waitForRedis(redisPort);
 
@@ -309,7 +309,9 @@ test("runFinalizeJob requeues retryable transient failures through the real work
 
     const scheduled: Array<{ uploadId: string; delayMs: number }> = [];
     queueModule.finalizeQueueTestHooks.setProcessFinalize(async () => {
-      const err = new Error("WALRUS_UPLOAD_FAILED: upstream unavailable") as Error & { finalizeStage?: string };
+      const err = new Error("WALRUS_UPLOAD_FAILED: upstream unavailable") as Error & {
+        finalizeStage?: string;
+      };
       err.finalizeStage = "walrus_publish";
       throw err;
     });
@@ -464,7 +466,11 @@ test("recoverFinalizingUploads requeues only finalizing uploads and cleans stale
     const { uploadKeys } = keysModule;
 
     await redis.hset(uploadKeys.meta(finalizingUploadId), { status: "finalizing" });
-    await redis.hset(uploadKeys.meta(completedUploadId), { status: "completed", fileId: "0x1", blobId: "0x2" });
+    await redis.hset(uploadKeys.meta(completedUploadId), {
+      status: "completed",
+      fileId: "0x1",
+      blobId: "0x2",
+    });
     await redis.hset(uploadKeys.meta(failedUploadId), { status: "failed" });
 
     await queueModule.finalizeQueueTestHooks.forceEnqueue(finalizingUploadId);
@@ -608,7 +614,7 @@ test("stopUploadFinalizeWorker waits for timed-out finalize work to settle", asy
       async () =>
         await new Promise<void>((resolve) => {
           releaseFinalize = resolve;
-        })
+        }),
     );
     await queueModule.finalizeQueueTestHooks.forceEnqueue(uploadId);
 
@@ -672,7 +678,7 @@ test("health route reports stalled finalize backlog as degraded", async () => {
     await redis.eval(
       'redis.call("ZADD", KEYS[1], ARGV[2], ARGV[1]); return 1',
       [uploadKeys.finalizePendingSince()],
-      [uploadId, String(Date.now() - 5_000)]
+      [uploadId, String(Date.now() - 5_000)],
     );
 
     const res = await app.inject({ method: "GET", url: "/health", routePath: "/health" });
@@ -682,7 +688,10 @@ test("health route reports stalled finalize backlog as degraded", async () => {
     assert.equal(body.ready, false);
     assert.equal(body.degraded, true);
     assert.equal(body.checks.finalizeQueue.depth, 1);
-    assert.equal(String(body.checks.finalizeQueueWarning).startsWith("finalize queue oldest age"), true);
+    assert.equal(
+      String(body.checks.finalizeQueueWarning).startsWith("finalize queue oldest age"),
+      true,
+    );
   } finally {
     await cleanupUpload(uploadId);
   }
@@ -1114,7 +1123,11 @@ test("ops upload route maps normalized auth failures to 401 and 403", async () =
   try {
     const authRequiredApp = await createRouteApp({
       async authorizeOpsAccess() {
-        return { allowed: false, code: "AUTH_REQUIRED", message: "Authenticated operator access is required" };
+        return {
+          allowed: false,
+          code: "AUTH_REQUIRED",
+          message: "Authenticated operator access is required",
+        };
       },
     });
     const authRequired = await authRequiredApp.inject({

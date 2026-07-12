@@ -9,11 +9,7 @@ import uploadRoutes from "./routes/uploads.js";
 import healthRoute from "./routes/health.js";
 import { filesRoutes } from "./routes/files.js";
 import { closeRedis, initRedis } from "./state/redis.js";
-import {
-  closePostgres,
-  initPostgres,
-  isPostgresConfigured,
-} from "./state/postgres.js";
+import { closePostgres, initPostgres, isPostgresConfigured } from "./state/postgres.js";
 import { initS3IfEnabled } from "./state/s3.js";
 import { startUploadGc, stopUploadGc } from "./state/gc/upload.gc.scheduler.js";
 import { reconcileOrphanUploads } from "./state/gc/upload.gc.reconcile.js";
@@ -22,10 +18,7 @@ import {
   stopUploadFinalizeWorker,
 } from "./services/uploads/finalize.queue.js";
 import { ChunkConfig, UploadConfig } from "./config/uploads.config.js";
-import {
-  createDefaultAuthProvider,
-  type AuthProvider,
-} from "./services/auth/auth.provider.js";
+import { createDefaultAuthProvider, type AuthProvider } from "./services/auth/auth.provider.js";
 import {
   AuthOwnerPolicyConfig,
   AuthRateLimitConfig,
@@ -143,7 +136,13 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
       "x-chunk-sha256",
       "x-floe-sdk",
     ],
-    exposedHeaders: ["x-request-id", "x-ratelimit-limit", "x-ratelimit-remaining", "x-ratelimit-window", "retry-after"],
+    exposedHeaders: [
+      "x-request-id",
+      "x-ratelimit-limit",
+      "x-ratelimit-remaining",
+      "x-ratelimit-window",
+      "retry-after",
+    ],
     maxAge: 600,
   });
 
@@ -187,7 +186,7 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
           backend: chunkStore.backend(),
         },
       },
-      "Redis initialized and config loaded"
+      "Redis initialized and config loaded",
     );
   } catch (err) {
     app.log.error(err, "Failed to initialize dependencies");
@@ -204,14 +203,11 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
           finalizeQueue: finalizeRecovery,
         },
       },
-      "Startup recovery completed"
+      "Startup recovery completed",
     );
     startUploadGc(app.log);
   } else {
-    app.log.info(
-      { role: TopologyConfig.role },
-      "Write-path workers disabled for this node role"
-    );
+    app.log.info({ role: TopologyConfig.role }, "Write-path workers disabled for this node role");
   }
 
   if (TopologyConfig.routes.uploads) {
@@ -240,18 +236,12 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
     };
     const knownCode = err instanceof Error ? knownCodeByMessage[err.message] : undefined;
 
-    req.log.error(
-      { err, url: req.url, method: req.method, requestId: req.id },
-      "Request error"
-    );
+    req.log.error({ err, url: req.url, method: req.method, requestId: req.id }, "Request error");
 
     return reply.code(statusCode).send({
       error: {
         code: knownCode ?? (statusCode < 500 ? "REQUEST_ERROR" : "INTERNAL_ERROR"),
-        message:
-          statusCode < 500 && err instanceof Error
-            ? err.message
-            : "Unexpected server error",
+        message: statusCode < 500 && err instanceof Error ? err.message : "Unexpected server error",
 
         retryable: false,
       },
@@ -273,7 +263,7 @@ export async function start() {
 
     app.log.info(
       { port: PORT, env: process.env.NODE_ENV ?? "development", role: TopologyConfig.role },
-      "API server started"
+      "API server started",
     );
   } catch (err) {
     app.log.error(err, "Failed to start server");

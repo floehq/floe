@@ -67,12 +67,10 @@ export function sendApiError(
   options?: {
     retryable?: boolean;
     details?: Record<string, unknown>;
-  }
+  },
 ) {
   const safeStatus =
-    Number.isInteger(statusCode) && statusCode >= 400 && statusCode <= 599
-      ? statusCode
-      : 500;
+    Number.isInteger(statusCode) && statusCode >= 400 && statusCode <= 599 ? statusCode : 500;
 
   const response: ApiErrorResponse = {
     error: {

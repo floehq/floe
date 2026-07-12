@@ -17,4 +17,8 @@ tmp/**
 # logs
 *.log
 
+# test coverage
+coverage/
+apps/api/coverage/
+
 **/floe-move/build/

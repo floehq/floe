@@ -1,21 +1,13 @@
 import type { FastifyRequest } from "fastify";
 
-import {
-  AuthExternalConfig,
-} from "../../config/auth.config.js";
+import { AuthExternalConfig } from "../../config/auth.config.js";
 import { extractPresentedCredential } from "./auth.credentials.js";
 import type { AuthContext, AuthSubjectType } from "./auth.context.js";
 
 type ExternalVerifyResponse = {
   valid?: boolean;
   reason?:
-    | "invalid"
-    | "expired"
-    | "revoked"
-    | "malformed"
-    | "unauthorized"
-    | "timeout"
-    | "missing_claims";
+    "invalid" | "expired" | "revoked" | "malformed" | "unauthorized" | "timeout" | "missing_claims";
   authenticated?: boolean;
   subjectType?: AuthSubjectType | "user_token";
   subjectId?: string;
@@ -29,10 +21,7 @@ type ExternalVerifyResponse = {
   expiresAt?: string;
 };
 
-const externalAuthCache = new Map<
-  string,
-  { expiresAt: number; context: AuthContext }
->();
+const externalAuthCache = new Map<string, { expiresAt: number; context: AuthContext }>();
 
 function computeCacheExpiryMs(context: AuthContext): number {
   const ttlExpiryMs = Date.now() + AuthExternalConfig.cacheTtlMs;
@@ -75,21 +64,22 @@ function parseSubjectType(raw?: string): AuthSubjectType {
 
 function parseExternalResponse(
   presentedCredentialType: "bearer" | "api_key",
-  payload: ExternalVerifyResponse
+  payload: ExternalVerifyResponse,
 ): AuthContext | null {
   if (!payload || typeof payload !== "object") {
     return null;
   }
   const isValid =
-    payload.valid === true ||
-    (payload.valid === undefined && payload.authenticated === true);
+    payload.valid === true || (payload.valid === undefined && payload.authenticated === true);
   if (!isValid) return null;
   if (typeof payload.subjectId !== "string" || payload.subjectId.trim().length === 0) {
     return null;
   }
   const subjectType = parseSubjectType(payload.subjectType);
   const scopes = Array.isArray(payload.scopes)
-    ? payload.scopes.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    ? payload.scopes.filter(
+        (value): value is string => typeof value === "string" && value.trim().length > 0,
+      )
     : [];
   const expiresAt = payload.expiresAt?.trim();
   if (expiresAt) {

@@ -1,8 +1,5 @@
 import { getRedis } from "../../state/redis.js";
-import {
-  AuthRateLimitConfig,
-  type RateLimitScope,
-} from "../../config/auth.config.js";
+import { AuthRateLimitConfig, type RateLimitScope } from "../../config/auth.config.js";
 import type { RequestIdentity } from "./auth.context.js";
 
 function windowBucket(nowMs: number, windowSeconds: number): number {
@@ -38,7 +35,10 @@ type LocalLeaseState = {
 };
 
 const localLeaseCache = new Map<string, LocalLeaseState>();
-const localLeaseInflight = new Map<string, { bucket: number; promise: Promise<RateLimitDecision> }>();
+const localLeaseInflight = new Map<
+  string,
+  { bucket: number; promise: Promise<RateLimitDecision> }
+>();
 const LOCAL_LEASE_CACHE_MAX_ENTRIES = 10_000;
 
 function getLeaseSize(scope: RateLimitScope): number | null {
@@ -126,7 +126,7 @@ async function leaseRemoteAllowance(params: {
   nowMs: number;
 }): Promise<RateLimitDecision> {
   const leaseSize = Math.max(1, getLeaseSize(params.scope) ?? 1);
- const key = `floe:v1:ratelimit:${params.scope}:${params.bucket}:${params.identity.subject}`;
+  const key = `floe:v1:ratelimit:${params.scope}:${params.bucket}:${params.identity.subject}`;
   const redis = getRedis();
   const script = `
     local key = KEYS[1]
@@ -145,11 +145,11 @@ async function leaseRemoteAllowance(params: {
     return { current, reserved }
   `;
 
-  const result = await redis.eval(script, [key], [
-    String(params.windowSeconds),
-    String(leaseSize),
-    String(params.limit),
-  ]);
+  const result = await redis.eval(
+    script,
+    [key],
+    [String(params.windowSeconds), String(leaseSize), String(params.limit)],
+  );
   const [currentRaw, reservedRaw] = Array.isArray(result) ? result : [result, 0];
   const current = Number(currentRaw);
   const reserved = Number(reservedRaw);
@@ -169,7 +169,9 @@ async function leaseRemoteAllowance(params: {
     current: reserved > 0 ? firstInLease : Math.max(current, params.limit + 1),
     limit: params.limit,
     windowSeconds: params.windowSeconds,
-    ...(reserved > 0 ? {} : { retryAfterSeconds: retryAfterSeconds(params.nowMs, params.windowSeconds) }),
+    ...(reserved > 0
+      ? {}
+      : { retryAfterSeconds: retryAfterSeconds(params.nowMs, params.windowSeconds) }),
     identity: params.identity,
   };
 }

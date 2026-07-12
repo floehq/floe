@@ -26,7 +26,7 @@ function parseSuiRpcUrl(network: "mainnet" | "testnet"): string {
   // Common misconfig: this hostname often fails to resolve in some environments.
   if (url.includes("rpc.testnet.sui.io")) {
     throw new Error(
-      "SUI_RPC_URL looks invalid/unreachable (rpc.testnet.sui.io). Use a fullnode URL like https://fullnode.testnet.sui.io:443"
+      "SUI_RPC_URL looks invalid/unreachable (rpc.testnet.sui.io). Use a fullnode URL like https://fullnode.testnet.sui.io:443",
     );
   }
 

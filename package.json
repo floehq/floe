@@ -1,5 +1,6 @@
 {
   "name": "@floe/api",
+  "type": "module",
   "private": true,
   "engines": {
     "node": ">=20.0.0"
@@ -19,8 +20,12 @@
     "clean": "rm -rf node_modules && npm install"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.0.0",
+    "eslint": "^10.7.0",
+    "prettier": "^3.9.5",
     "tsx": "^4.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "typescript-eslint": "^8.63.0"
   }
 }

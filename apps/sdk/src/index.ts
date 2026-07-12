@@ -1,9 +1,6 @@
 export { FloeClient, SDK_VERSION } from "./client.js";
 export { FloeError, FloeApiError, isFloeApiError } from "./errors.js";
-export {
-  createBrowserLocalStorageResumeStore,
-  createNodeFileResumeStore,
-} from "./resume.js";
+export { createBrowserLocalStorageResumeStore, createNodeFileResumeStore } from "./resume.js";
 export type {
   AuthConfig,
   CancelUploadStatus,

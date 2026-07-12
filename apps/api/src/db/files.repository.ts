@@ -42,12 +42,20 @@ export async function ensureFilesTable(): Promise<void> {
   `);
 
   // Migration for existing table
-  await pg.query(`
+  await pg
+    .query(
+      `
     alter table floe_files add column if not exists blob_object_id text;
-  `).catch(() => {});
-  await pg.query(`
+  `,
+    )
+    .catch(() => {});
+  await pg
+    .query(
+      `
     alter table floe_files add column if not exists checksum text;
-  `).catch(() => {});
+  `,
+    )
+    .catch(() => {});
 
   await pg.query(`
     create table if not exists floe_blob_objects (
@@ -94,7 +102,7 @@ export async function upsertIndexedFile(record: IndexedFileRecord): Promise<void
       record.mimeType,
       record.walrusEndEpoch,
       Math.trunc(record.createdAtMs),
-    ]
+    ],
   );
 
   if (record.blobObjectId) {
@@ -106,9 +114,7 @@ export async function upsertIndexedFile(record: IndexedFileRecord): Promise<void
   }
 }
 
-export async function getIndexedFile(
-  fileId: string
-): Promise<IndexedFileRecord | null> {
+export async function getIndexedFile(fileId: string): Promise<IndexedFileRecord | null> {
   const pg = getPostgres();
   if (!pg) return null;
 
@@ -129,7 +135,7 @@ export async function getIndexedFile(
       where f.file_id = $1
       limit 1
     `,
-    [fileId]
+    [fileId],
   );
 
   const row = out.rows[0];
@@ -151,9 +157,7 @@ export async function getIndexedFile(
   };
 }
 
-export async function findFileByChecksum(
-  checksum: string
-): Promise<IndexedFileRecord | null> {
+export async function findFileByChecksum(checksum: string): Promise<IndexedFileRecord | null> {
   const pg = getPostgres();
   if (!pg) return null;
 
@@ -175,7 +179,7 @@ export async function findFileByChecksum(
       order by f.walrus_end_epoch desc nulls last, f.updated_at desc, f.created_at_ms desc
       limit 1
     `,
-    [checksum]
+    [checksum],
   );
 
   const row = out.rows[0];
@@ -197,9 +201,7 @@ export async function findFileByChecksum(
   };
 }
 
-export async function findFileByBlobId(
-  blobId: string
-): Promise<IndexedFileRecord | null> {
+export async function findFileByBlobId(blobId: string): Promise<IndexedFileRecord | null> {
   const pg = getPostgres();
   if (!pg) return null;
 
@@ -221,7 +223,7 @@ export async function findFileByBlobId(
       order by f.walrus_end_epoch desc nulls last, f.updated_at desc, f.created_at_ms desc
       limit 1
     `,
-    [blobId]
+    [blobId],
   );
 
   const row = out.rows[0];
@@ -261,13 +263,11 @@ export async function upsertBlobObjectMapping(record: {
         checksum = coalesce(excluded.checksum, floe_blob_objects.checksum),
         updated_at = now()
     `,
-    [record.blobId, record.blobObjectId, record.checksum ?? null]
+    [record.blobId, record.blobObjectId, record.checksum ?? null],
   );
 }
 
-export async function getBlobObjectIdByBlobId(
-  blobId: string
-): Promise<string | null> {
+export async function getBlobObjectIdByBlobId(blobId: string): Promise<string | null> {
   const pg = getPostgres();
   if (!pg) return null;
 
@@ -278,7 +278,7 @@ export async function getBlobObjectIdByBlobId(
       where blob_id = $1
       limit 1
     `,
-    [blobId]
+    [blobId],
   );
   const row = out.rows[0];
   if (!row?.blob_object_id) return null;

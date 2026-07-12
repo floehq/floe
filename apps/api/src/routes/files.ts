@@ -93,18 +93,18 @@ function sendFileAccessDenied(reply: any, authz: { code?: string; message?: stri
     reply,
     authzStatusCode(authz.code),
     authzErrorCode(authz.code),
-    authz.message ?? "File access denied"
+    authz.message ?? "File access denied",
   );
 }
 
 async function resolveFileFields(id: string): Promise<CachedFileFieldsResult> {
-  let fileId = normalizeFileIdParam(id);
+  const fileId = normalizeFileIdParam(id);
   let out: CachedFileFieldsResult = { fields: null, source: null, postgresState: "disabled" };
 
   if (fileId) {
     try {
       out = await getFileFieldsCached(fileId);
-    } catch (err) {
+    } catch {
       // Fallback
     }
   }
@@ -199,7 +199,7 @@ async function* walrusByteStream(params: {
   const makeWalrusReadError = (upstreamStatus: number, upstreamBody: string) => {
     const snippet = safeUpstreamSnippet(upstreamBody);
     const err = new Error(
-      `WALRUS_RANGE_FAILED status=${upstreamStatus}${snippet ? ` body=${snippet}` : ""}`.trim()
+      `WALRUS_RANGE_FAILED status=${upstreamStatus}${snippet ? ` body=${snippet}` : ""}`.trim(),
     ) as Error & { statusCode?: number };
 
     if (upstreamStatus === 404) {
@@ -258,10 +258,10 @@ async function* walrusByteStream(params: {
         continue;
       }
 
-      const isFullObjectAttempt =
-        params.start === 0 && offset === 0 && segEnd === params.end;
+      const isFullObjectAttempt = params.start === 0 && offset === 0 && segEnd === params.end;
 
       if (upstream.status === 200 && isFullObjectAttempt) {
+        // Full-object 200 response is valid even without 206
       } else if (upstream.status !== 206) {
         const text = await upstream.text().catch(() => "");
         throw makeWalrusReadError(upstream.status, text);
@@ -269,7 +269,9 @@ async function* walrusByteStream(params: {
 
       const body = upstream.body;
       if (!body) {
-        throw new Error(`WALRUS_MISSING_BODY status=${upstream.status} offset=${offset} end=${segEnd}`);
+        throw new Error(
+          `WALRUS_MISSING_BODY status=${upstream.status} offset=${offset} end=${segEnd}`,
+        );
       }
 
       const rs = Readable.fromWeb(body as any);
@@ -285,9 +287,7 @@ async function* walrusByteStream(params: {
 
       if (read < expected) {
         if (read === 0) {
-          throw new Error(
-            `WALRUS_EMPTY_SEGMENT offset=${offset} end=${segEnd}`
-          );
+          throw new Error(`WALRUS_EMPTY_SEGMENT offset=${offset} end=${segEnd}`);
         }
 
         offset += read;
@@ -296,9 +296,7 @@ async function* walrusByteStream(params: {
       }
 
       if (read > expected) {
-        throw new Error(
-          `WALRUS_SEGMENT_OVERRUN expected=${expected} read=${read}`
-        );
+        throw new Error(`WALRUS_SEGMENT_OVERRUN expected=${expected} read=${read}`);
       }
 
       offset = segEnd + 1;
@@ -376,15 +374,15 @@ export function chooseStreamReadPlan(params: {
 }): StreamReadPlan {
   const boundedMediaSegment = Math.min(
     WalrusReadLimits.maxRangeBytes,
-    WalrusReadLimits.mediaSegmentBytes
+    WalrusReadLimits.mediaSegmentBytes,
   );
   const boundedInitialSegment = Math.min(
     WalrusReadLimits.maxRangeBytes,
     Math.max(
       boundedMediaSegment,
       WalrusReadLimits.initialSegmentBytes,
-      WalrusReadLimits.inlineFullObjectMaxBytes
-    )
+      WalrusReadLimits.inlineFullObjectMaxBytes,
+    ),
   );
 
   if (params.hasRangeHeader) {
@@ -437,24 +435,20 @@ export async function filesRoutes(app: FastifyInstance) {
       return sendFileAccessDenied(res, authzPrecheck);
     }
 
-    let fields: any | null = null;
-    let fieldsSource: FileFieldsSource | null = null;
-    let postgresState: PostgresReadState = "disabled";
     const t0 = Date.now();
+    let fields: any | null;
+    let fieldsSource: FileFieldsSource | null;
+    let postgresState: PostgresReadState;
     try {
       const out = await getFileFieldsCached(fileId);
       fields = out.fields;
       fieldsSource = out.source;
       postgresState = out.postgresState;
-    } catch (err) {
-      req.log.error({ err, fileId }, "Sui read failed");
-      return sendApiError(
-        res,
-        503,
-        "SUI_UNAVAILABLE",
-        "Failed to fetch file metadata from Sui",
-        { retryable: true }
-      );
+    } catch (_err) {
+      req.log.error({ err: _err, fileId }, "Sui read failed");
+      return sendApiError(res, 503, "SUI_UNAVAILABLE", "Failed to fetch file metadata from Sui", {
+        retryable: true,
+      });
     }
 
     if (!fields) {
@@ -465,18 +459,13 @@ export async function filesRoutes(app: FastifyInstance) {
     const normalized = normalizeFileFields(fields);
     if (!normalized) {
       req.log.error({ fileId, fields }, "Invalid file metadata fields");
-      return sendApiError(
-        res,
-        502,
-        "INVALID_FILE_METADATA",
-        "File metadata is invalid"
-      );
+      return sendApiError(res, 502, "INVALID_FILE_METADATA", "File metadata is invalid");
     }
 
     if (isFileFieldsDebugEnabled()) {
       req.log.info(
         { fileId, source: fieldsSource ?? "unknown", durationMs: Date.now() - t0 },
-        "metadata fields lookup"
+        "metadata fields lookup",
       );
     }
     observeMetadataLookup({
@@ -488,14 +477,14 @@ export async function filesRoutes(app: FastifyInstance) {
     const exposeBlobId = shouldExposeBlobId(req);
     const container = inferContainerFromMime(normalized.mimeType);
     const publicStreamUrl = getPublicStreamUrl(fileId);
-    
+
     // Estimate expiry status
     let expiryStatus: any = null;
     if (normalized.walrusEndEpoch !== null) {
       try {
         const currentEpoch = await getCurrentWalrusEpoch();
         if (currentEpoch !== null) {
-        const epochsRemaining = Math.max(0, normalized.walrusEndEpoch - currentEpoch);
+          const epochsRemaining = Math.max(0, normalized.walrusEndEpoch - currentEpoch);
           // Walrus testnet epochs are currently 1 day.
           const daysRemaining = epochsRemaining;
           expiryStatus = {
@@ -599,7 +588,7 @@ export async function filesRoutes(app: FastifyInstance) {
         res,
         400,
         "MISSING_BLOB_OBJECT_ID",
-        "Walrus renewal requires a blob object ID which is missing from this file's metadata."
+        "Walrus renewal requires a blob object ID which is missing from this file's metadata.",
       );
     }
 
@@ -625,7 +614,7 @@ export async function filesRoutes(app: FastifyInstance) {
         ) {
           req.log.warn(
             { err: metadataErr, fileId },
-            "Skipping Sui renewal metadata update because the file object is missing"
+            "Skipping Sui renewal metadata update because the file object is missing",
           );
         } else {
           throw metadataErr;
@@ -654,7 +643,7 @@ export async function filesRoutes(app: FastifyInstance) {
         res,
         500,
         "RENEWAL_FAILED",
-        `Failed to renew file: ${(err as Error)?.message ?? "unknown"}`
+        `Failed to renew file: ${(err as Error)?.message ?? "unknown"}`,
       );
     }
   });
@@ -687,24 +676,20 @@ export async function filesRoutes(app: FastifyInstance) {
       return sendFileAccessDenied(res, authzPrecheck);
     }
 
-    let fields: any | null = null;
-    let fieldsSource: FileFieldsSource | null = null;
-    let postgresState: PostgresReadState = "disabled";
     const t0 = Date.now();
+    let fields: any | null;
+    let fieldsSource: FileFieldsSource | null;
+    let postgresState: PostgresReadState;
     try {
       const out = await getFileFieldsCached(fileId);
       fields = out.fields;
       fieldsSource = out.source;
       postgresState = out.postgresState;
-    } catch (err) {
-      req.log.error({ err, fileId }, "Sui read failed");
-      return sendApiError(
-        res,
-        503,
-        "SUI_UNAVAILABLE",
-        "Failed to fetch file metadata from Sui",
-        { retryable: true }
-      );
+    } catch (_err) {
+      req.log.error({ err: _err, fileId }, "Sui read failed");
+      return sendApiError(res, 503, "SUI_UNAVAILABLE", "Failed to fetch file metadata from Sui", {
+        retryable: true,
+      });
     }
 
     if (!fields) {
@@ -715,18 +700,13 @@ export async function filesRoutes(app: FastifyInstance) {
     const normalized = normalizeFileFields(fields);
     if (!normalized) {
       req.log.error({ fileId, fields }, "Invalid file metadata fields");
-      return sendApiError(
-        res,
-        502,
-        "INVALID_FILE_METADATA",
-        "File metadata is invalid"
-      );
+      return sendApiError(res, 502, "INVALID_FILE_METADATA", "File metadata is invalid");
     }
 
     if (isFileFieldsDebugEnabled()) {
       req.log.info(
         { fileId, source: fieldsSource ?? "unknown", durationMs: Date.now() - t0 },
-        "manifest fields lookup"
+        "manifest fields lookup",
       );
     }
     observeMetadataLookup({
@@ -789,7 +769,9 @@ export async function filesRoutes(app: FastifyInstance) {
 
       const { fileId: rawFileId } = req.params as { fileId: string };
       const normalizedFileId = normalizeFileIdParam(rawFileId);
-      const indexedByBlob = normalizedFileId ? null : await findFileByBlobId(rawFileId).catch(() => null);
+      const indexedByBlob = normalizedFileId
+        ? null
+        : await findFileByBlobId(rawFileId).catch(() => null);
       const fileId = normalizedFileId ?? indexedByBlob?.fileId ?? null;
       if (!fileId) {
         req.log.warn({ fileId: rawFileId }, "Invalid file id");
@@ -797,7 +779,7 @@ export async function filesRoutes(app: FastifyInstance) {
           reply,
           400,
           "INVALID_FILE_ID",
-          "fileId must be a valid Sui object id or blob id"
+          "fileId must be a valid Sui object id or blob id",
         );
       }
 
@@ -810,14 +792,11 @@ export async function filesRoutes(app: FastifyInstance) {
         return sendFileAccessDenied(reply, authzPrecheck);
       }
 
-      let fields: any | null = null;
-      let fieldsSource: FileFieldsSource | null = null;
-      let postgresState: PostgresReadState = "disabled";
+      const fieldsResult = await resolveFileFields(rawFileId);
+      const fields = fieldsResult.fields;
+      const fieldsSource = fieldsResult.source;
+      const postgresState: PostgresReadState = fieldsResult.postgresState;
       const t0 = Date.now();
-      const out = await resolveFileFields(rawFileId);
-      fields = out.fields;
-      fieldsSource = out.source;
-      postgresState = out.postgresState;
 
       if (!fields) {
         return sendApiError(reply, 404, "FILE_NOT_FOUND", "File not found");
@@ -827,18 +806,13 @@ export async function filesRoutes(app: FastifyInstance) {
       const normalized = normalizeFileFields(fields);
       if (!normalized) {
         req.log.error({ fileId, fields }, "Invalid file metadata fields");
-        return sendApiError(
-          reply,
-          502,
-          "INVALID_FILE_METADATA",
-          "File metadata is invalid"
-        );
+        return sendApiError(reply, 502, "INVALID_FILE_METADATA", "File metadata is invalid");
       }
 
       if (isFileFieldsDebugEnabled()) {
         req.log.info(
           { fileId, source: fieldsSource ?? "unknown", durationMs: Date.now() - t0 },
-          "stream fields lookup"
+          "stream fields lookup",
         );
       }
       observeMetadataLookup({
@@ -880,12 +854,7 @@ export async function filesRoutes(app: FastifyInstance) {
 
         if ("error" in parsedOrErr) {
           reply.header("Content-Range", `bytes */${sizeBytes}`);
-          return sendApiError(
-            reply,
-            416,
-            "INVALID_RANGE",
-            "Unsupported Range header"
-          );
+          return sendApiError(reply, 416, "INVALID_RANGE", "Unsupported Range header");
         }
 
         start = parsedOrErr.range.start;
@@ -1055,7 +1024,7 @@ export async function filesRoutes(app: FastifyInstance) {
           if (totalStreamedBytes !== span) {
             throw new Error(`STREAM_TRUNCATED expected=${span} read=${totalStreamedBytes}`);
           }
-        })()
+        })(),
       );
       stream.once("end", () => {
         emitInfrastructureEvent(req.log, {
@@ -1094,7 +1063,7 @@ export async function filesRoutes(app: FastifyInstance) {
             streamedBytes: totalStreamedBytes,
             reason: classifyStreamErrorReason(String(err?.message ?? "")),
           },
-          "Stream failed"
+          "Stream failed",
         );
         recordStreamReadError(classifyStreamErrorReason(String(err?.message ?? "")));
         emitInfrastructureEvent(req.log, {

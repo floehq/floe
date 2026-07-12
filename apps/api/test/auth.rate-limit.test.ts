@@ -97,12 +97,12 @@ test("file read rate limits reuse a local lease before hitting Redis again", asy
     assert.equal(second.allowed, true);
     assert.equal(third.allowed, true);
     assert.equal(fourth.allowed, true);
-    assert.deepEqual(
-      [first.current, second.current, third.current, fourth.current],
-      [1, 2, 3, 4]
-    );
+    assert.deepEqual([first.current, second.current, third.current, fourth.current], [1, 2, 3, 4]);
     assert.equal(redis.calls.length, 2);
-    assert.deepEqual(redis.calls.map((call) => Number(call.args[1])), [3, 3]);
+    assert.deepEqual(
+      redis.calls.map((call) => Number(call.args[1])),
+      [3, 3],
+    );
   } finally {
     Object.assign(AuthRateLimitConfig.localLeaseSize as Record<string, number>, originalLease);
     clearLocalRateLimitLeaseCacheForTests();
@@ -125,7 +125,7 @@ test("concurrent file reads share one in-flight lease fetch instead of over-rese
   try {
     const identity = makeIdentity();
     const burst = Array.from({ length: 4 }, () =>
-      checkTieredRateLimit({ scope: "file_meta_read", identity })
+      checkTieredRateLimit({ scope: "file_meta_read", identity }),
     );
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(redis.calls.length, 1);
@@ -135,11 +135,11 @@ test("concurrent file reads share one in-flight lease fetch instead of over-rese
 
     assert.deepEqual(
       results.map((result) => result.allowed),
-      [true, true, true, true]
+      [true, true, true, true],
     );
     assert.deepEqual(
       results.map((result) => result.current),
-      [1, 2, 3, 4]
+      [1, 2, 3, 4],
     );
     assert.equal(redis.calls.length, 2);
   } finally {
@@ -172,7 +172,10 @@ test("lease reservations never over-reserve past the configured limit", async ()
     assert.equal(first.allowed, true);
     assert.equal(second.allowed, true);
     assert.equal(third.allowed, false);
-    assert.deepEqual(redis.calls.map((call) => Number(call.args[1])), [5, 5]);
+    assert.deepEqual(
+      redis.calls.map((call) => Number(call.args[1])),
+      [5, 5],
+    );
   } finally {
     Object.assign(AuthRateLimitConfig.localLeaseSize as Record<string, number>, originalLease);
     AuthRateLimitConfig.limits.file_meta_read.public = originalLimit;

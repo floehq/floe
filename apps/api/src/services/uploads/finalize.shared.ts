@@ -148,23 +148,18 @@ export function classifyFinalizeJobFailure(err: unknown): {
   };
 }
 
-
-
 export function shouldPersistFinalizeFailure(params: {
   committedCompletedState: boolean;
   errorMessage: string;
 }): boolean {
   if (params.committedCompletedState) return false;
   return (
-    params.errorMessage !== "UPLOAD_FINALIZATION_LOCK_LOST"
-    && params.errorMessage !== "UPLOAD_FINALIZATION_IN_PROGRESS"
+    params.errorMessage !== "UPLOAD_FINALIZATION_LOCK_LOST" &&
+    params.errorMessage !== "UPLOAD_FINALIZATION_IN_PROGRESS"
   );
 }
 
-export function buildFinalizeFollowupWarningMeta(params: {
-  errorMessage: string;
-  nowMs: number;
-}) {
+export function buildFinalizeFollowupWarningMeta(params: { errorMessage: string; nowMs: number }) {
   return {
     finalizeWarning: params.errorMessage.slice(0, 500),
     finalizeWarningAt: String(params.nowMs),
@@ -186,7 +181,7 @@ export function computeFinalizeRetryDelayMs(params: {
   maxDelayMs: number;
 }): number {
   const exponent = Math.max(0, params.attempt - 1);
-  const delay = params.baseDelayMs * (2 ** exponent);
+  const delay = params.baseDelayMs * 2 ** exponent;
   return Math.min(params.maxDelayMs, delay);
 }
 
@@ -224,7 +219,7 @@ export async function executeRetryableFinalizeFailure(params: {
       delayMs: params.delayMs,
       nowMs: params.nowMs,
       stage: params.stage,
-    })
+    }),
   );
   await params.scheduleRetry(params.uploadId, params.delayMs);
   await params.clearPending(params.uploadId);
@@ -302,7 +297,11 @@ export async function executeFinalizeWorkerFailureAction(params: {
     retryable: boolean;
     stage?: string;
   }) => Promise<void>;
-}): Promise<{ metricsOutcome: "retry_lock" | "retry_transient" | "failed"; reason: string; retryable: boolean }> {
+}): Promise<{
+  metricsOutcome: "retry_lock" | "retry_transient" | "failed";
+  reason: string;
+  retryable: boolean;
+}> {
   if (params.action.action === "retry_lock") {
     await executeFinalizeLockRetry({
       uploadId: params.uploadId,
@@ -353,27 +352,25 @@ export async function executeFinalizeWorkerFailureAction(params: {
 
 export function assessFinalizeQueueHealth(params: {
   ready: boolean;
-  finalizeQueue:
-    | {
-        depth: number | null;
-        pendingUnique: number | null;
-        activeLocal: number | null;
-        concurrency: number | null;
-        oldestQueuedAt: number | null;
-        oldestQueuedAgeMs: number | null;
-      }
-    | null;
+  finalizeQueue: {
+    depth: number | null;
+    pendingUnique: number | null;
+    activeLocal: number | null;
+    concurrency: number | null;
+    oldestQueuedAt: number | null;
+    oldestQueuedAgeMs: number | null;
+  } | null;
   stuckAgeThresholdMs: number;
 }) {
   const oldestQueuedAgeMs = params.finalizeQueue?.oldestQueuedAgeMs ?? null;
   const pendingUnique = params.finalizeQueue?.pendingUnique ?? null;
   const activeLocal = params.finalizeQueue?.activeLocal ?? null;
   const backlogStalled =
-    oldestQueuedAgeMs !== null
-    && pendingUnique !== null
-    && activeLocal !== null
-    && pendingUnique > activeLocal
-    && oldestQueuedAgeMs >= params.stuckAgeThresholdMs;
+    oldestQueuedAgeMs !== null &&
+    pendingUnique !== null &&
+    activeLocal !== null &&
+    pendingUnique > activeLocal &&
+    oldestQueuedAgeMs >= params.stuckAgeThresholdMs;
 
   return {
     ready: params.ready && !backlogStalled,
@@ -385,15 +382,11 @@ export function assessFinalizeQueueHealth(params: {
 }
 
 export type FinalizeStageName =
-  | "verify_chunks"
-  | "walrus_publish"
-  | "sui_finalize"
-  | "redis_commit"
-  | "cleanup";
+  "verify_chunks" | "walrus_publish" | "sui_finalize" | "redis_commit" | "cleanup";
 
 export function buildCompletedFinalizeResult(
   meta: Record<string, string>,
-  fallbackSizeBytes: number
+  fallbackSizeBytes: number,
 ) {
   if (!meta.fileId || !meta.blobId) {
     throw new Error("CORRUPT_COMPLETED_UPLOAD");
@@ -422,9 +415,7 @@ export function classifyFinalizeRecoveryAction(entry: {
   status: string | null | undefined;
   failedRetryable?: string | null | undefined;
   finalizeAttemptState?: string | null | undefined;
-}):
-  | "requeue"
-  | "cleanup" {
+}): "requeue" | "cleanup" {
   if (entry.status === "finalizing") return "requeue";
   if (entry.status === "failed" && entry.failedRetryable === "1") return "requeue";
   if (entry.finalizeAttemptState === "retryable_failure") return "requeue";
@@ -437,7 +428,7 @@ export function planFinalizeRecoveryPass(
     status: string | null | undefined;
     failedRetryable?: string | null | undefined;
     finalizeAttemptState?: string | null | undefined;
-  }>
+  }>,
 ): {
   requeueIds: string[];
   cleanupIds: string[];
@@ -482,10 +473,7 @@ export async function executeFinalizeRecoveryPlan(params: {
   };
 }
 
-export function buildFinalizeLockRetryMeta(params: {
-  delayMs: number;
-  nowMs: number;
-}) {
+export function buildFinalizeLockRetryMeta(params: { delayMs: number; nowMs: number }) {
   return {
     lastFinalizeRetryAt: String(params.nowMs),
     lastFinalizeRetryDelayMs: String(params.delayMs),
@@ -503,7 +491,7 @@ export async function executeFinalizeLockRetry(params: {
   nowMs: number;
 }): Promise<{ reason: "lock_in_progress"; retryable: true; delayMs: number }> {
   await params.writeMeta(
-    buildFinalizeLockRetryMeta({ delayMs: params.delayMs, nowMs: params.nowMs })
+    buildFinalizeLockRetryMeta({ delayMs: params.delayMs, nowMs: params.nowMs }),
   );
   await params.scheduleRetry(params.uploadId, params.delayMs);
   await params.clearPending(params.uploadId);
@@ -574,7 +562,7 @@ export function enqueueFinalizeQueueState(params: {
 
 export function cleanupFinalizeQueueState(
   state: FinalizeQueueState,
-  uploadId: string
+  uploadId: string,
 ): FinalizeQueueState {
   const pending = new Set(state.pendingIds);
   pending.delete(uploadId);

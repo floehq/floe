@@ -34,9 +34,7 @@ export const WalrusEnv = {
   // Ordered list. Reader will try primary first, then fallbacks.
   get aggregatorUrls() {
     const primaryAggregator = requireEnv("WALRUS_AGGREGATOR_URL");
-    const fallbackAggregators = parseUrlList(
-      process.env.WALRUS_AGGREGATOR_FALLBACK_URLS
-    );
+    const fallbackAggregators = parseUrlList(process.env.WALRUS_AGGREGATOR_FALLBACK_URLS);
 
     assertHttpUrl("WALRUS_AGGREGATOR_URL", primaryAggregator);
     for (const u of fallbackAggregators) {
@@ -46,8 +44,10 @@ export const WalrusEnv = {
     return [primaryAggregator, ...fallbackAggregators];
   },
   get systemId() {
-    return process.env.WALRUS_SYSTEM_ID ||
-      "0x388273cf320579e001804b4d79198f24458d9753e85e09f5db99c55b14197477";
+    return (
+      process.env.WALRUS_SYSTEM_ID ||
+      "0x388273cf320579e001804b4d79198f24458d9753e85e09f5db99c55b14197477"
+    );
   },
 };
 
@@ -68,22 +68,16 @@ export const WalrusReadLimits = {
   // Default stitched segment size for media playback. Keep this smaller than the
   // absolute max range size so seeks and cold reads are less sensitive to
   // aggregator hiccups during long streams.
-  mediaSegmentBytes: parsePositiveIntEnv(
-    "FLOE_STREAM_MEDIA_SEGMENT_BYTES",
-    8 * 1024 * 1024
-  ),
+  mediaSegmentBytes: parsePositiveIntEnv("FLOE_STREAM_MEDIA_SEGMENT_BYTES", 8 * 1024 * 1024),
 
   // Larger first read for cold full-object playback so players can start with
   // fewer round-trips before normal stitched reads continue.
-  initialSegmentBytes: parsePositiveIntEnv(
-    "FLOE_STREAM_INITIAL_SEGMENT_BYTES",
-    32 * 1024 * 1024
-  ),
+  initialSegmentBytes: parsePositiveIntEnv("FLOE_STREAM_INITIAL_SEGMENT_BYTES", 32 * 1024 * 1024),
 
   // For small full-object reads, avoid stitched multi-range behavior entirely.
   inlineFullObjectMaxBytes: parsePositiveIntEnv(
     "FLOE_STREAM_INLINE_FULL_MAX_BYTES",
-    32 * 1024 * 1024
+    32 * 1024 * 1024,
   ),
 
   // Retry budget per stitched segment (network errors, 5xx, 429).
