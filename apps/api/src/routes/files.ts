@@ -45,6 +45,12 @@ import {
   teeCachedStreamRange,
 } from "../services/stream/stream.cache.js";
 
+// In-memory cache for positive Walrus blob existence results.
+// Keyed by blobId, stores expiry timestamp. Negative results are NOT cached.
+// TTL is 60 seconds to avoid re-checking per-request during playback bursts.
+const blobExistenceCacheTTL = 60_000;
+const blobExistenceCache = new Map<string, number>();
+
 /**
  * Normalize a client-provided ETag (possibly quoted or weak) and compare
  * it against the server's raw blobId ETag value.
@@ -942,11 +948,29 @@ export async function filesRoutes(app: FastifyInstance) {
         return reply.status(status).send();
       }
 
-      // Pre-flight HEAD check — if all Walrus aggregators report 404, avoid an
-      // expensive streaming attempt and surface a clear error page.
-      const blobExists = await checkWalrusBlobExists({ blobId }).catch(() => ({ exists: true }));
-      if (!blobExists.exists) {
-        const html = `<!DOCTYPE html>
+      // Check local disk cache first. If we already have the blob cached,
+      // we can skip the Walrus existence check entirely — the file on disk
+      // is proof the blob exists.
+      const cachedPath = await getCachedStreamPath(blobId, sizeBytes);
+
+      let blobExists: { exists: boolean } | null = null;
+
+      if (!cachedPath) {
+        // Check the short-TTL positive-result cache before hitting Walrus.
+        const cachedExpiry = blobExistenceCache.get(blobId);
+        if (cachedExpiry !== undefined && cachedExpiry > Date.now()) {
+          blobExists = { exists: true };
+        } else {
+          blobExists = await checkWalrusBlobExists({ blobId }).catch(() => ({ exists: true }));
+          if (blobExists.exists) {
+            // Cache positive results for 60s to avoid re-checking during
+            // playback bursts. Negative results are NOT cached.
+            blobExistenceCache.set(blobId, Date.now() + blobExistenceCacheTTL);
+          }
+        }
+
+        if (!blobExists.exists) {
+          const html = `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><title>Blob Not Available</title></head>
 <body style="font-family:sans-serif;padding:2rem;max-width:600px;margin:auto;text-align:center">
@@ -956,27 +980,12 @@ export async function filesRoutes(app: FastifyInstance) {
   <p>Try refreshing the page in a minute.</p>
 </body>
 </html>`;
-        return reply.status(503).type("text/html").send(html);
+          return reply.status(503).type("text/html").send(html);
+        }
       }
 
-      const fillResult =
-        (await getCachedStreamPath(blobId, sizeBytes).then(
-          (p) => (p ? ({ kind: "cache_hit", cachePath: p } as const) : null),
-        )) ??
-        (status === 200
-          ? await teeCachedStreamBlob({
-              blobId,
-              sizeBytes,
-            }).catch(() => null)
-          : null);
-
-      if (fillResult) {
-        if (fillResult.kind === "tee") {
-          // Tee stream: pipe directly to the client while it writes to disk.
-          return reply.status(status).send(fillResult.stream);
-        }
-
-        const cachedPath = fillResult.cachePath;
+      // Use cached file if available; otherwise try to tee-cache + stream.
+      if (cachedPath) {
         const stat = await fs.stat(cachedPath).catch(() => null);
         if (stat?.isFile() && stat.size >= end + 1) {
           emitInfrastructureEvent(req.log, {
@@ -1038,6 +1047,26 @@ export async function filesRoutes(app: FastifyInstance) {
             });
           });
           return reply.status(status).send(cachedStream);
+        }
+      }
+
+      // Full-file tee cache: for status === 200 and small files, fetch and
+      // stream the entire blob at once (tee writes to disk concurrently).
+      if (status === 200) {
+        const teeResult = await teeCachedStreamBlob({ blobId, sizeBytes }).catch(() => null);
+        if (teeResult) {
+          if (teeResult.kind === "tee") {
+            return reply.status(status).send(teeResult.stream);
+          }
+          // cache_hit: serve from the now-cached file
+          const stat = await fs.stat(teeResult.cachePath).catch(() => null);
+          if (stat?.isFile() && stat.size >= end + 1) {
+            return reply.status(status).send(createCachedReadStream({
+              filePath: teeResult.cachePath,
+              start,
+              end,
+            }));
+          }
         }
       }
 
