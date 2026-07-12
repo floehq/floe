@@ -146,7 +146,6 @@ test("walrus upload - describeWalrusWriters returns correct shape for sdk mode",
   }
 });
 
-
 // ============================================================
 // Walrus Read tests (via walrus.config parser)
 // ============================================================

@@ -26,7 +26,6 @@ test("files repository - upsertIndexedFile is noop when postgres is not enabled"
   });
 });
 
-
 test("files repository - ensureFilesTable is noop when postgres is not enabled", async () => {
   const mod = await import("../src/db/files.repository.js");
   await mod.ensureFilesTable();
@@ -124,8 +123,6 @@ test("files repository - getIndexedFile handles null walrus_end_epoch", async ()
   assert.equal(result.walrusEndEpoch, null);
 });
 
-
-
 test("files repository - upsertIndexedFile calls pg.query with correct params", async () => {
   const postgres = await import("../src/state/postgres.js");
 
@@ -157,4 +154,3 @@ test("files repository - upsertIndexedFile calls pg.query with correct params", 
   });
   assert.equal(queryCalled, true);
 });
-
