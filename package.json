@@ -19,6 +19,11 @@
     "lint": "npm run lint --workspaces --if-present",
     "clean": "rm -rf node_modules && npm install"
   },
+  "overrides": {
+    "glob": "11.1.0",
+    "minimatch": "10.2.3",
+    "sigstore": "4.1.1"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/node": "^22.0.0",
