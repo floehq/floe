@@ -295,12 +295,9 @@ export function recordUploadTotalDuration(params: {
   durationMs: number;
   outcome: "succeeded" | "failed";
 }) {
-  observeHistogram(
-    "floe_upload_total_duration_ms",
-    params.durationMs,
-    UPLOAD_DURATION_BUCKETS_MS,
-    { outcome: params.outcome },
-  );
+  observeHistogram("floe_upload_total_duration_ms", params.durationMs, UPLOAD_DURATION_BUCKETS_MS, {
+    outcome: params.outcome,
+  });
 }
 
 export function observeWalrusSegmentFetch(params: {
