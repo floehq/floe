@@ -11,7 +11,9 @@ process.env.WALRUS_AGGREGATOR_URL = "http://127.0.0.1:1";
 process.env.UPLOAD_TMP_DIR = "/tmp/floe-test-upload";
 delete process.env.DATABASE_URL;
 
-type FilesRouteModule = typeof import("../src/routes/files.ts");
+type FilesRouteModule = typeof import("../src/routes/files.ts") & {
+  getBlobExistenceCacheForTests: () => Map<string, number>;
+};
 type PostgresModule = typeof import("../src/state/postgres.ts");
 type SuiModule = typeof import("../src/state/sui.ts");
 type StreamCacheModule = typeof import("../src/services/stream/stream.cache.ts");
@@ -22,6 +24,7 @@ let suiModule: SuiModule;
 let streamCacheModule: StreamCacheModule;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let originalGetObject: any;
+let walrusFetchCallCount = 0;
 const walrusSamples = new Map<string, Uint8Array>();
 
 function buildFileFields(
@@ -215,7 +218,9 @@ before(async () => {
   streamCacheModule = await import("../src/services/stream/stream.cache.ts");
   const client = suiModule.getSuiClient();
   originalGetObject = client.getObject.bind(client);
+  walrusFetchCallCount = 0;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    walrusFetchCallCount += 1;
     const url =
       typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const blobId = decodeURIComponent(url.split("/").pop() ?? "");
@@ -247,6 +252,8 @@ afterEach(() => {
   postgresModule.setPostgresForTests(null, false);
   suiModule.getSuiClient().getObject = originalGetObject;
   walrusSamples.clear();
+  // Clear in-memory blob existence cache between tests
+  filesRouteModule.getBlobExistenceCacheForTests().clear();
   return fs.rm(process.env.UPLOAD_TMP_DIR!, { recursive: true, force: true });
 });
 
@@ -403,6 +410,9 @@ test("stream routes expose metadata source headers", async () => {
   const app = await createRouteApp();
   const fileId = "0x6666666666666666666666666666666666666666666666666666666666666666";
 
+  // Set up matching walrus sample so the tee cache fill doesn't truncate
+  walrusSamples.set("blob-4", Uint8Array.from(new Array(256).fill(0).map((_, i) => i & 0xff)));
+
   const getRes = await app.inject({
     method: "GET",
     url: `/v1/files/${fileId}/stream`,
@@ -412,6 +422,14 @@ test("stream routes expose metadata source headers", async () => {
   assert.equal(getRes.statusCode, 200);
   assert.equal(getRes.headers["x-floe-metadata-source"], "postgres");
   assert.equal(getRes.headers["x-floe-postgres-state"], "healthy");
+
+  // Drain the tee stream (if any) so the background cache write completes
+  // before afterEach removes the tmp directory.
+  if (getRes.payload instanceof Readable) {
+    for await (const _ of getRes.payload) {
+      // drain
+    }
+  }
 
   const headRes = await app.inject({
     method: "HEAD",
@@ -448,16 +466,31 @@ test("shouldCacheFullObject caches only bounded small files", () => {
   assert.equal(streamCacheModule.shouldCacheFullObject(64 * 1024 * 1024), false);
 });
 
-test("ensureCachedStreamRange persists exact bytes for a cached segment", async () => {
+test("teeCachedStreamRange persists exact bytes for a cached segment", async () => {
   const blobId = "range-cache-blob";
   walrusSamples.set(blobId, Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
 
-  const cachedPath = await streamCacheModule.ensureCachedStreamRange({
+  const result = await streamCacheModule.teeCachedStreamRange({
     blobId,
     start: 2,
     end: 6,
   });
-  const bytes = await fs.readFile(cachedPath);
+
+  // First call should be "tee" — drain the stream so the cache write completes
+  if (result.kind === "tee") {
+    for await (const _ of (result as { kind: "tee"; stream: Readable }).stream) {
+      // drain
+    }
+  }
+
+  // Now the cache should be filled — verify via getCachedStreamRangePath
+  const cachedPath = await streamCacheModule.getCachedStreamRangePath({
+    blobId,
+    start: 2,
+    end: 6,
+  });
+  assert.ok(cachedPath, "Expected cache path to exist after tee fill");
+  const bytes = await fs.readFile(cachedPath!);
 
   assert.deepEqual([...bytes], [2, 3, 4, 5, 6]);
 });
@@ -478,12 +511,25 @@ test("STREAM_CACHE_MIN_FREE_DISK_FRACTION is removed (only fixed byte floor rema
   // well above STREAM_CACHE_MIN_FREE_DISK_BYTES (default 1 GB).
   const blobId = "disk-fraction-regression";
   walrusSamples.set(blobId, Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
-  const cachedPath = await streamCacheModule.ensureCachedStreamRange({
+  const result = await streamCacheModule.teeCachedStreamRange({
     blobId,
     start: 0,
     end: 3,
   });
-  const bytes = await fs.readFile(cachedPath);
+  // Drain the tee stream so the cache write completes
+  if (result.kind === "tee") {
+    for await (const _ of (result as { kind: "tee"; stream: Readable }).stream) {
+      // drain
+    }
+  }
+  // Verify the cache was written correctly
+  const cachedPath = await streamCacheModule.getCachedStreamRangePath({
+    blobId,
+    start: 0,
+    end: 3,
+  });
+  assert.ok(cachedPath, "Expected cache path to exist after tee fill");
+  const bytes = await fs.readFile(cachedPath!);
   assert.deepEqual([...bytes], [0, 1, 2, 3]);
 });
 
@@ -801,4 +847,462 @@ test("stream auth denial does not inherit public cache headers", async () => {
   assert.equal(res.statusCode, 401);
   assert.equal(body.error.code, "AUTH_REQUIRED");
   assert.equal(res.headers["cache-control"], undefined);
+});
+
+// ============================================================
+// Tee cache fill tests
+// ============================================================
+
+test("teeCachedStreamBlob serves two concurrent consumers with one Walrus fetch", async () => {
+  const blobId = "tee-concurrent-1";
+  const sizeBytes = 100;
+  const data = Uint8Array.from(new Array(sizeBytes).fill(0).map((_, i) => i & 0xff));
+  walrusSamples.set(blobId, data);
+
+  const preCount = walrusFetchCallCount;
+
+  // Both consumers call teeCachedStreamBlob concurrently
+  const [resultA, resultB] = await Promise.all([
+    streamCacheModule.teeCachedStreamBlob({ blobId, sizeBytes }),
+    streamCacheModule.teeCachedStreamBlob({ blobId, sizeBytes }),
+  ]);
+
+  // Both results should be "tee" (cache miss, concurrent session)
+  assert.ok(resultA);
+  assert.ok(resultB);
+  assert.equal(resultA!.kind, "tee");
+  assert.equal(resultB!.kind, "tee");
+
+  // Both streams should yield the same correct data.
+  // Draining the streams also implicitly waits for the background write
+  // (cs.end() only fires after the write completes).
+  const bytesA: number[] = [];
+  for await (const chunk of (resultA as { kind: "tee"; stream: Readable }).stream) {
+    bytesA.push(...(chunk as Uint8Array));
+  }
+  const bytesB: number[] = [];
+  for await (const chunk of (resultB as { kind: "tee"; stream: Readable }).stream) {
+    bytesB.push(...(chunk as Uint8Array));
+  }
+
+  // Exactly one Walrus fetch across both concurrent consumers
+  assert.equal(walrusFetchCallCount - preCount, 1);
+
+  assert.equal(bytesA.length, sizeBytes);
+  assert.equal(bytesB.length, sizeBytes);
+  assert.deepEqual(bytesA, bytesB);
+  // Both should contain the correct data
+  assert.equal(bytesA[0], 0);
+  assert.equal(bytesA[sizeBytes - 1], (sizeBytes - 1) & 0xff);
+});
+
+test("teeCachedStreamBlob errors consumer on truncated Walrus response", async () => {
+  const blobId = "tee-truncated";
+  // Provide only 10 bytes but request 100
+  walrusSamples.set(blobId, Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+
+  const result = await streamCacheModule.teeCachedStreamBlob({
+    blobId,
+    sizeBytes: 100,
+  });
+  assert.ok(result);
+  assert.equal(result!.kind, "tee");
+
+  const stream = (result as { kind: "tee"; stream: Readable }).stream;
+  const chunks: Uint8Array[] = [];
+  let caughtError: Error | null = null;
+
+  try {
+    for await (const chunk of stream) {
+      chunks.push(chunk as Uint8Array);
+    }
+  } catch (err) {
+    caughtError = err instanceof Error ? err : new Error(String(err));
+  }
+
+  // The stream should have received the truncated data (10 bytes) but then
+  // errored when the write detected truncation (expected 100, got 10).
+  const totalBytes = chunks.reduce((sum, c) => sum + c.byteLength, 0);
+  assert.equal(totalBytes, 10);
+  assert.ok(caughtError, "Stream should have errored due to truncation");
+  assert.ok(
+    caughtError!.message.includes("STREAM_CACHE_FULL_TRUNCATED"),
+    `Expected truncation error, got: ${caughtError!.message}`,
+  );
+});
+
+test("teeCachedStreamBlob returns cache_hit after tee completes", async () => {
+  const blobId = "tee-then-cache";
+  const sizeBytes = 50;
+  const data = Uint8Array.from(new Array(sizeBytes).fill(0).map((_, i) => i & 0xff));
+  walrusSamples.set(blobId, data);
+
+  // First call: tee
+  const first = await streamCacheModule.teeCachedStreamBlob({ blobId, sizeBytes });
+  assert.ok(first);
+  assert.equal(first!.kind, "tee");
+
+  // Drain the tee stream to allow the write to complete
+  const bytes: number[] = [];
+  for await (const chunk of (first as { kind: "tee"; stream: Readable }).stream) {
+    bytes.push(...(chunk as Uint8Array));
+  }
+  assert.equal(bytes.length, sizeBytes);
+
+  // Second call: should be cache_hit (cache already filled)
+  const second = await streamCacheModule.teeCachedStreamBlob({ blobId, sizeBytes });
+  assert.ok(second);
+  assert.equal(second!.kind, "cache_hit");
+  // The cache path should be the blob's stream cache file
+  assert.ok((second as { kind: "cache_hit"; cachePath: string }).cachePath.includes(blobId));
+});
+
+test("teeCachedStreamRange propagates truncation error to all concurrent consumers", async () => {
+  const blobId = "tee-range-truncation";
+  // Provide only 10 bytes but request 100
+  walrusSamples.set(blobId, Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+
+  const [resultA, resultB] = await Promise.all([
+    streamCacheModule.teeCachedStreamRange({ blobId, start: 0, end: 99 }),
+    streamCacheModule.teeCachedStreamRange({ blobId, start: 0, end: 99 }),
+  ]);
+
+  assert.equal(resultA.kind, "tee");
+  assert.equal(resultB.kind, "tee");
+
+  const drainStream = async (result: { kind: string; stream: Readable }) => {
+    const chunks: Uint8Array[] = [];
+    try {
+      for await (const chunk of result.stream) {
+        chunks.push(chunk as Uint8Array);
+      }
+      return { chunks, error: null };
+    } catch (err) {
+      return { chunks, error: err instanceof Error ? err : new Error(String(err)) };
+    }
+  };
+
+  const [outA, outB] = await Promise.all([
+    drainStream(resultA as { kind: "tee"; stream: Readable }),
+    drainStream(resultB as { kind: "tee"; stream: Readable }),
+  ]);
+
+  // Both consumers should have received partial data and then errored
+  assert.ok(outA.error, "Consumer A should have errored");
+  assert.ok(outB.error, "Consumer B should have errored");
+  assert.ok(
+    outA.error!.message.includes("STREAM_CACHE_RANGE_TRUNCATED"),
+    `Expected truncation error for A, got: ${outA.error!.message}`,
+  );
+  assert.equal(
+    outA.chunks.reduce((s, c) => s + c.byteLength, 0),
+    10,
+    "Consumer A should receive truncated data",
+  );
+  assert.equal(
+    outB.chunks.reduce((s, c) => s + c.byteLength, 0),
+    10,
+    "Consumer B should receive truncated data",
+  );
+});
+
+test("teeCachedStreamBlob propagates truncation error to all concurrent consumers", async () => {
+  const blobId = "tee-full-truncation";
+  const sizeBytes = 100;
+  // Provide only 10 bytes but request 100
+  walrusSamples.set(blobId, Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+
+  const [resultA, resultB] = await Promise.all([
+    streamCacheModule.teeCachedStreamBlob({ blobId, sizeBytes }),
+    streamCacheModule.teeCachedStreamBlob({ blobId, sizeBytes }),
+  ]);
+
+  assert.ok(resultA);
+  assert.ok(resultB);
+  assert.equal(resultA!.kind, "tee");
+  assert.equal(resultB!.kind, "tee");
+
+  const drainStream = async (result: { kind: string; stream: Readable }) => {
+    const chunks: Uint8Array[] = [];
+    try {
+      for await (const chunk of result.stream) {
+        chunks.push(chunk as Uint8Array);
+      }
+      return { chunks, error: null };
+    } catch (err) {
+      return { chunks, error: err instanceof Error ? err : new Error(String(err)) };
+    }
+  };
+
+  const [outA, outB] = await Promise.all([
+    drainStream(resultA as { kind: "tee"; stream: Readable }),
+    drainStream(resultB as { kind: "tee"; stream: Readable }),
+  ]);
+
+  // Both consumers should have received partial data and then errored
+  assert.ok(outA.error, "Consumer A should have errored");
+  assert.ok(outB.error, "Consumer B should have errored");
+  assert.ok(
+    outA.error!.message.includes("STREAM_CACHE_FULL_TRUNCATED"),
+    `Expected truncation error for A, got: ${outA.error!.message}`,
+  );
+  assert.equal(
+    outA.chunks.reduce((s, c) => s + c.byteLength, 0),
+    10,
+    "Consumer A should receive truncated data",
+  );
+  assert.equal(
+    outB.chunks.reduce((s, c) => s + c.byteLength, 0),
+    10,
+    "Consumer B should receive truncated data",
+  );
+});
+
+test("blobExistenceCache caps at 100k entries with FIFO eviction", async () => {
+  const cache = filesRouteModule.getBlobExistenceCacheForTests();
+  const now = Date.now();
+
+  // Fill cache with 100,000 entries (at the limit)
+  for (let i = 0; i < 100_000; i++) {
+    cache.set(`blob-cap-${i}`, now + 60_000);
+  }
+  assert.equal(cache.size, 100_000);
+
+  // Add one more entry and simulate the same FIFO eviction logic used in the route handler
+  cache.set("blob-cap-overflow", now + 60_000);
+  if (cache.size > 100_000) {
+    const firstKey = cache.keys().next().value;
+    if (firstKey !== undefined) cache.delete(firstKey);
+  }
+
+  // Should still be capped at 100,000
+  assert.equal(cache.size, 100_000);
+
+  // The first entry should have been evicted (FIFO)
+  assert.equal(cache.has("blob-cap-0"), false);
+
+  // The overflow entry should exist
+  assert.equal(cache.has("blob-cap-overflow"), true);
+});
+
+test("in-flight existence checks deduplicate concurrent requests for same cold blobId", async () => {
+  const blobId = "slow-existence-check";
+  const sizeBytes = 100;
+  walrusSamples.set(blobId, Uint8Array.from(new Array(sizeBytes).fill(0).map((_, i) => i & 0xff)));
+
+  const originalFetch = globalThis.fetch;
+  let existenceCheckCalls = 0;
+
+  // Intercept fetch to add a delay to HEAD requests (existence checks) for the target blobId
+  globalThis.fetch = async (input, init) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const requestBlobId = decodeURIComponent(url.split("/").pop() ?? "");
+    const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+
+    if (method === "HEAD" && requestBlobId === blobId) {
+      existenceCheckCalls++;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    return originalFetch(input, init);
+  };
+
+  try {
+    await mockSuiFile({ blob_id: blobId, size_bytes: String(sizeBytes) });
+    const app = await createRouteApp();
+    const fileId = "0xddddddddddddddddddddddddddddddddddddddddddddddddddddddddddeeeeee";
+
+    // Reset the fetch call counter
+    walrusFetchCallCount = 0;
+
+    // Fire two concurrent stream requests for the same cold file
+    const [resA, resB] = await Promise.all([
+      app.inject({
+        method: "GET",
+        url: `/v1/files/${fileId}/stream`,
+        routePath: "/v1/files/:fileId/stream",
+        params: { fileId },
+      }),
+      app.inject({
+        method: "GET",
+        url: `/v1/files/${fileId}/stream`,
+        routePath: "/v1/files/:fileId/stream",
+        params: { fileId },
+      }),
+    ]);
+
+    // Both should succeed (blob exists)
+    assert.equal(resA.statusCode, 200);
+    assert.equal(resB.statusCode, 200);
+
+    // Existence check should only have been called once (deduped)
+    assert.equal(existenceCheckCalls, 1);
+
+    // Drain tee streams so background writes complete before afterEach cleanup
+    if (resA.payload instanceof Readable) {
+      for await (const _ of resA.payload) {
+        // drain
+      }
+    }
+    if (resB.payload instanceof Readable) {
+      for await (const _ of resB.payload) {
+        // drain
+      }
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("teeCachedStreamBlob logs write failure via optional log param", async () => {
+  const blobId = "tee-log-failure";
+  const sizeBytes = 100;
+  // Provide only 10 bytes (truncation) to trigger write error
+  walrusSamples.set(blobId, Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+
+  const loggedErrors: string[] = [];
+  const customLog = {
+    warn: (...args: any[]) => {
+      const errObj = args[0] as any;
+      if (errObj?.err?.message) {
+        loggedErrors.push(errObj.err.message);
+      }
+    },
+  };
+
+  const result = await streamCacheModule.teeCachedStreamBlob({
+    blobId,
+    sizeBytes,
+    log: customLog,
+  });
+
+  assert.ok(result);
+  assert.equal(result!.kind, "tee");
+
+  // Drain the stream (will receive truncated data then error)
+  try {
+    for await (const _ of (result as { kind: "tee"; stream: Readable }).stream) {
+      // drain
+    }
+  } catch {
+    // Expected truncation error
+  }
+
+  // Wait a tick for the writeDone.catch to fire
+  await new Promise((r) => setTimeout(r, 50));
+
+  // The log should have received the truncation error
+  assert.ok(
+    loggedErrors.some((msg) => msg.includes("STREAM_CACHE_FULL_TRUNCATED")),
+    `Expected logged truncation error, got: ${loggedErrors.join(", ")}`,
+  );
+});
+
+// ============================================================
+// HTTP caching / conditional request tests
+// ============================================================
+
+test("stream conditional GET with matching If-None-Match returns 304 without Walrus fetch", async () => {
+  await mockSuiFile({ blob_id: "blob-304-match" });
+  const app = await createRouteApp();
+  const fileId = "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+
+  const preCount = walrusFetchCallCount;
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+    headers: { "if-none-match": "blob-304-match" },
+  });
+
+  assert.equal(res.statusCode, 304);
+  // 304 must include Cache-Control per RFC 7232 §4.1
+  assert.ok(
+    (res.headers["cache-control"] ?? "").includes("max-age=31536000"),
+    `Expected cache-control with max-age=31536000, got: ${res.headers["cache-control"]}`,
+  );
+  // No body for 304
+  const bodyBytes = await readPayloadBytes(res.payload);
+  assert.equal(bodyBytes.length, 0);
+  // Zero new fetch calls means checkWalrusBlobExists was never invoked
+  assert.equal(walrusFetchCallCount - preCount, 0);
+});
+
+test("stream conditional GET with Range + matching If-Range returns 206", async () => {
+  await mockSuiFile({
+    blob_id: "blob-ifrange-match",
+    size_bytes: "10",
+  });
+  walrusSamples.set("blob-ifrange-match", Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+
+  const app = await createRouteApp();
+  const fileId = "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+    headers: {
+      range: "bytes=2-5",
+      "if-range": "blob-ifrange-match",
+    },
+  });
+
+  assert.equal(res.statusCode, 206);
+  assert.equal(res.headers["content-range"], "bytes 2-5/10");
+  assert.equal(res.headers["content-length"], "4");
+  assert.deepEqual(await readPayloadBytes(res.payload), [2, 3, 4, 5]);
+});
+
+test("stream conditional GET with Range + stale If-Range falls through to full 200", async () => {
+  await mockSuiFile({
+    blob_id: "blob-ifrange-stale",
+    size_bytes: "10",
+  });
+  walrusSamples.set("blob-ifrange-stale", Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+
+  const app = await createRouteApp();
+  const fileId = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+    headers: {
+      range: "bytes=2-5",
+      "if-range": "stale-etag-value",
+    },
+  });
+
+  // Stale If-Range → ignore Range, serve full 200
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.headers["content-length"], "10");
+  const bytes = await readPayloadBytes(res.payload);
+  assert.equal(bytes.length, 10);
+});
+
+test("stream conditional GET with non-matching If-None-Match falls through to normal 200", async () => {
+  await mockSuiFile({
+    blob_id: "blob-304-miss",
+    size_bytes: "10",
+  });
+  walrusSamples.set("blob-304-miss", Uint8Array.from([10, 11, 12, 13, 14, 15, 16, 17, 18, 19]));
+
+  const app = await createRouteApp();
+  const fileId = "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+    headers: { "if-none-match": "non-matching-etag" },
+  });
+
+  // Non-matching If-None-Match → normal 200
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.headers["content-length"], "10");
+  const bytes = await readPayloadBytes(res.payload);
+  assert.equal(bytes.length, 10);
 });

@@ -40,10 +40,47 @@ import {
 } from "../services/events/infrastructure.events.js";
 import {
   createCachedReadStream,
-  ensureCachedStreamBlob,
-  ensureCachedStreamRange,
   getCachedStreamPath,
+  teeCachedStreamBlob,
+  teeCachedStreamRange,
 } from "../services/stream/stream.cache.js";
+
+// In-memory cache for positive Walrus blob existence results.
+// Keyed by blobId, stores expiry timestamp. Negative results are NOT cached.
+// TTL is 60 seconds to avoid re-checking per-request during playback bursts.
+const blobExistenceCacheTTL = 60_000;
+const BLOB_EXISTENCE_CACHE_MAX_ENTRIES = 100_000;
+const blobExistenceCache = new Map<string, number>();
+
+/** In-flight dedup map: prevents concurrent requests for the same cold blobId
+ *  from issuing duplicate checkWalrusBlobExists upstream calls. */
+const inFlightExistenceChecks = new Map<string, Promise<{ exists: boolean }>>();
+
+/** Remove all expired entries from blobExistenceCache. */
+function pruneBlobExistenceCache() {
+  const now = Date.now();
+  for (const [blobId, expiry] of blobExistenceCache) {
+    if (expiry <= now) {
+      blobExistenceCache.delete(blobId);
+    }
+  }
+}
+
+/** @internal test-only hook */
+export function getBlobExistenceCacheForTests() {
+  return blobExistenceCache;
+}
+
+/**
+ * Normalize a client-provided ETag (possibly quoted or weak) and compare
+ * it against the server's raw blobId ETag value.
+ */
+function matchesETag(clientETag: string | undefined, serverBlobId: string): boolean {
+  if (!clientETag) return false;
+  // Strip optional weakness prefix W/ and surrounding quotes
+  const clean = clientETag.replace(/^(W\/)?"/, "").replace(/"$/, "");
+  return clean === serverBlobId;
+}
 
 function inferContainerFromMime(mimeType: string): string | null {
   const m = (mimeType ?? "").toLowerCase();
@@ -312,6 +349,7 @@ async function* cachedSegmentByteStream(params: {
   initialSegmentBytes: number;
   segmentBytes: number;
   signal: AbortSignal;
+  log?: { warn: (...args: any[]) => void };
 }): AsyncGenerator<Uint8Array> {
   let offset = params.start;
 
@@ -323,29 +361,44 @@ async function* cachedSegmentByteStream(params: {
     const segmentEnd = Math.min(params.end, offset + preferredSegmentBytes - 1);
     const expected = segmentEnd - offset + 1;
     try {
-      const cachePath = await ensureCachedStreamRange({
+      const fillResult = await teeCachedStreamRange({
         blobId: params.blobId,
         start: offset,
         end: segmentEnd,
         signal: params.signal,
+        log: params.log,
       });
 
-      const rs = createCachedReadStream({
-        filePath: cachePath,
-        start: 0,
-        end: segmentEnd - offset,
-      });
+      if (fillResult.kind === "tee") {
+        // Stream bytes directly from the tee stream while they're being cached.
+        let read = 0;
+        for await (const chunk of fillResult.stream) {
+          if (params.signal.aborted) return;
+          const buf = chunk as Uint8Array;
+          read += buf.byteLength;
+          yield buf;
+        }
+        if (read !== expected) {
+          throw new Error(`STREAM_CACHE_RANGE_TRUNCATED expected=${expected} read=${read}`);
+        }
+      } else {
+        const rs = createCachedReadStream({
+          filePath: fillResult.cachePath,
+          start: 0,
+          end: segmentEnd - offset,
+        });
 
-      let read = 0;
-      for await (const chunk of rs) {
-        if (params.signal.aborted) return;
-        const buf = chunk as Uint8Array;
-        read += buf.byteLength;
-        yield buf;
-      }
+        let read = 0;
+        for await (const chunk of rs) {
+          if (params.signal.aborted) return;
+          const buf = chunk as Uint8Array;
+          read += buf.byteLength;
+          yield buf;
+        }
 
-      if (read !== expected) {
-        throw new Error(`STREAM_CACHE_RANGE_TRUNCATED expected=${expected} read=${read}`);
+        if (read !== expected) {
+          throw new Error(`STREAM_CACHE_RANGE_TRUNCATED expected=${expected} read=${read}`);
+        }
       }
     } catch (err) {
       if ((err as Error)?.message !== "STREAM_CACHE_CAPACITY_EXCEEDED") {
@@ -841,6 +894,8 @@ export async function filesRoutes(app: FastifyInstance) {
       reply.header("ETag", blobId);
 
       const rangeHeader = (req.headers as any)?.range as string | undefined;
+      const ifNoneMatch = (req.headers as any)?.["if-none-match"] as string | undefined;
+      const ifRange = (req.headers as any)?.["if-range"] as string | undefined;
 
       let start = 0;
       let end = sizeBytes - 1;
@@ -860,6 +915,31 @@ export async function filesRoutes(app: FastifyInstance) {
         start = parsedOrErr.range.start;
         end = parsedOrErr.range.end;
         status = 206;
+      }
+
+      // ============================================================
+      // Conditional request handling (RFC 7232, RFC 7233)
+      // Ordered so If-Range (resume semantics) takes priority over
+      // If-None-Match (cache revalidation).
+      // ============================================================
+
+      // 1. If-Range: client resuming a partial download.
+      //    - If the ETag matches, proceed with normal range handling (206).
+      //    - If it doesn't match, ignore Range and serve full 200.
+      if (ifRange && rangeHeader) {
+        if (matchesETag(ifRange, blobId)) {
+          // If-Range matches → proceed with 206 as already parsed.
+        } else {
+          // If-Range stale → ignore Range, serve full entity.
+          start = 0;
+          end = sizeBytes - 1;
+          status = 200;
+        }
+      } else if (ifNoneMatch && matchesETag(ifNoneMatch, blobId)) {
+        // 2. If-None-Match: cache revalidation. Matching ETag → 304.
+        // applyFileReadCacheHeaders was already called above, setting
+        // the correct Cache-Control per public/private mode.
+        return reply.status(304).send();
       }
 
       const abortController = new AbortController();
@@ -885,15 +965,57 @@ export async function filesRoutes(app: FastifyInstance) {
       }
 
       // HEAD requests are satisfied from metadata but should still reflect range semantics.
+      // Cache-Control was already set by applyFileReadCacheHeaders above.
       if (req.method === "HEAD") {
         return reply.status(status).send();
       }
 
-      // Pre-flight HEAD check — if all Walrus aggregators report 404, avoid an
-      // expensive streaming attempt and surface a clear error page.
-      const blobExists = await checkWalrusBlobExists({ blobId }).catch(() => ({ exists: true }));
-      if (!blobExists.exists) {
-        const html = `<!DOCTYPE html>
+      // Check local disk cache first. If we already have the blob cached,
+      // we can skip the Walrus existence check entirely — the file on disk
+      // is proof the blob exists.
+      const cachedPath = await getCachedStreamPath(blobId, sizeBytes);
+
+      let blobExists: { exists: boolean } | null = null;
+
+      if (!cachedPath) {
+        // Check the short-TTL positive-result cache before hitting Walrus.
+        const cachedExpiry = blobExistenceCache.get(blobId);
+        if (cachedExpiry !== undefined && cachedExpiry > Date.now()) {
+          blobExists = { exists: true };
+        } else {
+          // Clean up expired entry if present
+          if (cachedExpiry !== undefined) {
+            blobExistenceCache.delete(blobId);
+          }
+
+          // Dedup concurrent existence checks for the same cold blobId
+          let pending = inFlightExistenceChecks.get(blobId);
+          if (!pending) {
+            pending = checkWalrusBlobExists({ blobId }).catch(() => ({ exists: true }));
+            inFlightExistenceChecks.set(blobId, pending);
+          }
+          blobExists = await pending;
+          inFlightExistenceChecks.delete(blobId);
+
+          if (blobExists.exists) {
+            // Cache positive results for 60s to avoid re-checking during
+            // playback bursts. Negative results are NOT cached.
+            blobExistenceCache.set(blobId, Date.now() + blobExistenceCacheTTL);
+
+            // Evict oldest entry if over capacity (FIFO eviction)
+            if (blobExistenceCache.size > BLOB_EXISTENCE_CACHE_MAX_ENTRIES) {
+              const firstKey = blobExistenceCache.keys().next().value;
+              if (firstKey !== undefined) blobExistenceCache.delete(firstKey);
+            }
+            // Opportunistic prune when > 80% full
+            if (blobExistenceCache.size > BLOB_EXISTENCE_CACHE_MAX_ENTRIES * 0.8) {
+              pruneBlobExistenceCache();
+            }
+          }
+        }
+
+        if (!blobExists.exists) {
+          const html = `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><title>Blob Not Available</title></head>
 <body style="font-family:sans-serif;padding:2rem;max-width:600px;margin:auto;text-align:center">
@@ -903,18 +1025,11 @@ export async function filesRoutes(app: FastifyInstance) {
   <p>Try refreshing the page in a minute.</p>
 </body>
 </html>`;
-        return reply.status(503).type("text/html").send(html);
+          return reply.status(503).type("text/html").send(html);
+        }
       }
 
-      const cachedPath =
-        (await getCachedStreamPath(blobId, sizeBytes)) ??
-        (status === 200
-          ? await ensureCachedStreamBlob({
-              blobId,
-              sizeBytes,
-            }).catch(() => null)
-          : null);
-
+      // Use cached file if available; otherwise try to tee-cache + stream.
       if (cachedPath) {
         const stat = await fs.stat(cachedPath).catch(() => null);
         if (stat?.isFile() && stat.size >= end + 1) {
@@ -980,6 +1095,30 @@ export async function filesRoutes(app: FastifyInstance) {
         }
       }
 
+      // Full-file tee cache: for status === 200 and small files, fetch and
+      // stream the entire blob at once (tee writes to disk concurrently).
+      if (status === 200) {
+        const teeResult = await teeCachedStreamBlob({ blobId, sizeBytes, log: req.log }).catch(
+          () => null,
+        );
+        if (teeResult) {
+          if (teeResult.kind === "tee") {
+            return reply.status(status).send(teeResult.stream);
+          }
+          // cache_hit: serve from the now-cached file
+          const stat = await fs.stat(teeResult.cachePath).catch(() => null);
+          if (stat?.isFile() && stat.size >= end + 1) {
+            return reply.status(status).send(
+              createCachedReadStream({
+                filePath: teeResult.cachePath,
+                start,
+                end,
+              }),
+            );
+          }
+        }
+      }
+
       const streamStartMs = Date.now();
       let firstByteObserved = false;
       let totalStreamedBytes = 0;
@@ -1009,6 +1148,7 @@ export async function filesRoutes(app: FastifyInstance) {
             initialSegmentBytes: readPlan.initialSegmentBytes,
             segmentBytes: readPlan.segmentBytes,
             signal: abortController.signal,
+            log: req.log,
           })) {
             if (!firstByteObserved && chunk.byteLength > 0) {
               firstByteObserved = true;
