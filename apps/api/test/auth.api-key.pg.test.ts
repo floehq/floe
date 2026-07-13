@@ -26,14 +26,15 @@ function hashSecret(secret: string): string {
   return crypto.createHash("sha256").update(secret).digest("hex");
 }
 
-function buildMockPg(overrides?: {
-  findByHashResult?: any[];
-  listActiveResult?: any[];
-}): PgPool {
+function buildMockPg(overrides?: { findByHashResult?: any[]; listActiveResult?: any[] }): PgPool {
   return {
     query: async (_sql: string, _values?: unknown[]) => {
       // findByHash has LIMIT 1; listActive has ORDER BY
-      if (_sql.includes("from floe_api_keys") && _sql.includes("secret_hash") && _sql.includes("limit")) {
+      if (
+        _sql.includes("from floe_api_keys") &&
+        _sql.includes("secret_hash") &&
+        _sql.includes("limit")
+      ) {
         return { rows: overrides?.findByHashResult ?? [] };
       }
       // listActive has ORDER BY; findByHash does not
@@ -67,7 +68,7 @@ test("PostgresApiKeyStore - findByHash returns StoredApiKey when hash matches", 
         },
       ],
     }),
-    true
+    true,
   );
 
   const { PostgresApiKeyStore } = await import(STORE_PATH);
@@ -138,7 +139,7 @@ test("PostgresApiKeyStore - listActive returns non-revoked keys only", async () 
         },
       ],
     }),
-    true
+    true,
   );
 
   const { PostgresApiKeyStore } = await import(STORE_PATH);
@@ -189,7 +190,7 @@ test("PostgresApiKeyStore - scopes array handles string format", async () => {
         },
       ],
     }),
-    true
+    true,
   );
 
   const { PostgresApiKeyStore } = await import(STORE_PATH);
@@ -211,7 +212,7 @@ test("PostgresApiKeyStore - ensureApiKeysTable creates table and indexes", async
       },
       end: async () => {},
     },
-    true
+    true,
   );
 
   const { ensureApiKeysTable } = await import(STORE_PATH);
@@ -243,17 +244,17 @@ test("PostgresApiKeyStore - EnvApiKeyStore findByHash returns correct key", asyn
   // Manually create the store and test that buildLocalAuthContext returns null
   // when no store is set (EnvApiKeyStore reads from AuthApiKeyConfig which was
   // already loaded without keys)
-  
+
   // Reset to default store
   setApiKeyStore(null);
 
   const { buildLocalAuthContext } = await import("../src/services/auth/auth.api-key.js");
-  
+
   const req = {
     ip: "127.0.0.1",
     headers: { "x-api-key": "some_key" },
   } as any;
-  
+
   // Default store (EnvApiKeyStore) with empty config
   const result = await buildLocalAuthContext(req);
   assert.equal(result, null);

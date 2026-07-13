@@ -238,9 +238,7 @@ const parsedAccessPolicy = parseAccessPolicy();
 const parsedApiKeyStoreBackend = parseApiKeyStoreBackend();
 
 if (parsedApiKeyStoreBackend === "postgres" && !process.env.DATABASE_URL?.trim()) {
-  throw new Error(
-    "FLOE_API_KEY_STORE=postgres requires DATABASE_URL to be configured"
-  );
+  throw new Error("FLOE_API_KEY_STORE=postgres requires DATABASE_URL to be configured");
 }
 
 const parsedAuthProviderKind = parseAuthProviderKind({

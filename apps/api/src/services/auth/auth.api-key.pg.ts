@@ -32,7 +32,7 @@ export class PostgresApiKeyStore implements ApiKeyStore {
         where secret_hash = $1 and revoked_at is null
         limit 1
       `,
-      [hex]
+      [hex],
     );
 
     const row = out.rows[0];
@@ -65,7 +65,7 @@ export class PostgresApiKeyStore implements ApiKeyStore {
         from floe_api_keys
         where revoked_at is null
         order by created_at asc
-      `
+      `,
     );
 
     return out.rows
@@ -107,7 +107,11 @@ function parseScopes(raw: unknown): string[] {
 }
 
 function parseTier(raw: unknown): RateLimitTier {
-  return String(raw ?? "").trim().toLowerCase() === "public" ? "public" : "authenticated";
+  return String(raw ?? "")
+    .trim()
+    .toLowerCase() === "public"
+    ? "public"
+    : "authenticated";
 }
 
 /**
