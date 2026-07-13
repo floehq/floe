@@ -81,7 +81,7 @@ test("s3 chunk store streams validated chunk bodies into put object", async () =
   assert.deepEqual(uploaded, chunk);
 });
 
-test("s3 chunk store rejects hash mismatch without buffering to a final object", async () => {
+test("s3 chunk store rejects hash mismatch before S3 PutObject", async () => {
   const chunk = Buffer.from("bad-hash");
   let putAttempted = false;
 
@@ -98,7 +98,9 @@ test("s3 chunk store rejects hash mismatch without buffering to a final object",
     /HASH_MISMATCH/,
   );
 
-  assert.equal(putAttempted, true);
+  // New spool-to-temp pattern validates hash AFTER writing to temp file
+  // but BEFORE any S3 PutObject call — so putAttempted is false.
+  assert.equal(putAttempted, false);
 });
 
 test("s3 chunk store validates existing chunk metadata before reusing it", async () => {
