@@ -224,7 +224,7 @@ test("PostgresApiKeyStore - ensureApiKeysTable creates table and indexes", async
 
 test("PostgresApiKeyStore - EnvApiKeyStore findByHash returns correct key", async () => {
   // Direct test of EnvApiKeyStore without relying on module-level config parsing
-  const { EnvApiKeyStore, setApiKeyStore, getApiKeyStore } = await import("../src/services/auth/auth.api-key.js");
+  const { setApiKeyStore } = await import("../src/services/auth/auth.api-key.js");
 
   process.env.FLOE_API_KEYS_JSON = JSON.stringify([
     {
