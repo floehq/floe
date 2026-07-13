@@ -87,3 +87,40 @@ Include:
 - expected vs actual behavior
 - impact assessment
 - logs or request samples if relevant
+
+## API Key Format and Timing-Safe Auth
+
+### Presented credential format
+
+API keys can be presented as `Authorization: Bearer <secret>` or `x-api-key: <secret>`.
+
+Floe supports two credential formats:
+
+**New format (recommended):** `floe_<keyId>_<secretPart>`
+- `keyId` is a short public identifier (e.g., `local-dev`, `key-1`) used for PK lookup
+- `secretPart` is the random secret portion hashed with SHA-256 at rest
+- Example: `floe_local-dev_aB3xY9zW8mNqR5vT2pL7cF4hJ1kD0sG6uE3wX`
+
+**Legacy format:** Any string without the `floe_` prefix (e.g., `sk_live_abc123`)
+- The entire string is hashed with SHA-256 and compared via SQL-level hash lookup
+
+### Auth flow (new format)
+
+1. `parseKeyId()` extracts `keyId` and `secretPart` from the presented credential.
+2. `store.findById(keyId)` does a PK lookup (`WHERE id = $1 AND revoked_at IS NULL`).
+3. The caller computes `SHA-256(secretPart)` and uses `crypto.timingSafeEqual` in-app.
+4. If no key-id is found, a dummy `timingSafeEqual` call normalizes timing.
+
+This avoids the timing side-channel of SQL-level hash comparison.
+
+### Auth flow (legacy format)
+
+1. The full credential is hashed with SHA-256.
+2. `store.findByHash(hash)` searches all stored hashes (SQL `WHERE secret_hash = $1` for Postgres, or iteration with `timingSafeEqual` for env-backed).
+
+Legacy format is silently supported for existing keys. New keys should use the new format.
+
+### Backend behavior
+
+- **Env-backed keys** (`FLOE_API_KEYS_JSON`): Keys with `floe_` prefix use the new fast path. Legacy format keys use iteration with `timingSafeEqual` (already constant-time).
+- **Postgres-backed keys** (`FLOE_API_KEY_STORE=postgres`): Keys with `floe_` prefix use `findById` (PK lookup, timing-safe). Legacy format keys use `findByHash` (SQL hash comparison — the timing side-channel this format was designed to replace).

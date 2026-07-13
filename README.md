@@ -80,6 +80,22 @@ SUI_PRIVATE_KEY=suiprivkey...
 SUI_PACKAGE_ID=0x<your-package-id>
 ```
 
+API key example (for `FLOE_API_KEYS_JSON`):
+
+```json
+[
+  {
+    "id": "local-dev",
+    "secret": "floe_local-dev_aB3xY9zW8mNqR5vT2pL7cF4hJ1kD0sG6uE3wX",
+    "owner": "0xf35568c562fd25dccd58e4e9240d8a6f864de0a9854ddd1f7d8aa6ff5f9722a4",
+    "tier": "authenticated",
+    "scopes": ["*"]
+  }
+]
+```
+
+Present this key as `x-api-key: floe_local-dev_aB3xY9zW8mNqR5vT2pL7cF4hJ1kD0sG6uE3wX` or `Authorization: Bearer floe_local-dev_aB3xY9zW8mNqR5vT2pL7cF4hJ1kD0sG6uE3wX`.
+
 Floe can also load a topology config file:
 
 ```bash
