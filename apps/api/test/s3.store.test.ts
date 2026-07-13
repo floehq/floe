@@ -1,9 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { Readable } from "node:stream";
 import { createHash } from "node:crypto";
 
 import { S3ChunkStore } from "../src/store/s3.ts";
+
+let envTmpDir: string | undefined;
+let benchTmpDir: string;
+
+test.before(() => {
+  envTmpDir = process.env.UPLOAD_TMP_DIR;
+  benchTmpDir = mkdtempSync(path.join(tmpdir(), "floe-s3-test-"));
+  process.env.UPLOAD_TMP_DIR = benchTmpDir;
+});
+
+test.after(() => {
+  if (envTmpDir !== undefined) {
+    process.env.UPLOAD_TMP_DIR = envTmpDir;
+  } else {
+    delete process.env.UPLOAD_TMP_DIR;
+  }
+  rmSync(benchTmpDir, { recursive: true, force: true });
+});
 
 class HeadObjectCommand {
   constructor(public readonly input: any) {}

@@ -2,11 +2,11 @@ import crypto from "crypto";
 import { createRequire } from "module";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { Readable, Transform } from "stream";
 import { pipeline } from "stream/promises";
 
+import { UploadConfig } from "../config/uploads.config.js";
 import type { ChunkStore } from "./chunk.js";
 
 const require = createRequire(import.meta.url);
@@ -63,7 +63,19 @@ type S3RuntimeConfig = {
  * caller (spoolStreamToTempFile) owns the hash and compares after
  * the stream completes.
  */
-function createValidationStream(expectedSize: number, maxChunkBytes: number, hash: crypto.Hash) {
+/**
+ * Create a Transform stream that validates chunk size and computes
+ * a running SHA-256 hash. Does NOT do final hash comparison — the
+ * caller (spoolStreamToTempFile) owns the hash and compares after
+ * the stream completes.
+ *
+ * Exported so the comparative benchmark can import it directly.
+ */
+export function createValidationStream(
+  expectedSize: number,
+  maxChunkBytes: number,
+  hash: crypto.Hash,
+) {
   let written = 0;
 
   return new Transform({
@@ -84,14 +96,20 @@ function createValidationStream(expectedSize: number, maxChunkBytes: number, has
  * Spool an upload stream to a temporary file on disk while validating
  * size bounds and computing a SHA-256 hash.
  *
+ * Writes into UPLOAD_TMP_DIR/_s3_spool (same volume operators already
+ * size and mount), not os.tmpdir(), so temp chunk data stays on the
+ * same disk as other Floe working files.
+ *
  * Returns the temp file path, actual size, sha256 hex digest, and a
  * cleanup function to remove the temp file when done.
  *
  * This decouples client-stream timing from S3 upload timing — the
  * chunk is fully written and validated before any S3 PutObject call,
  * so slow client uploads don't hold S3 connections open.
+ *
+ * Exported for comparative benchmark importing.
  */
-async function spoolStreamToTempFile(
+export async function spoolStreamToTempFile(
   stream: Readable,
   expectedSize: number,
   maxChunkBytes: number,
@@ -103,8 +121,9 @@ async function spoolStreamToTempFile(
 }> {
   const hash = crypto.createHash("sha256");
   const validator = createValidationStream(expectedSize, maxChunkBytes, hash);
-  const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), "floe-s3-chunk-"));
-  const tempPath = path.join(tempDir, `${crypto.randomUUID()}.chunk`);
+  const spoolDir = path.join(UploadConfig.tmpDir, "_s3_spool");
+  await fsp.mkdir(spoolDir, { recursive: true });
+  const tempPath = path.join(spoolDir, `${crypto.randomUUID()}.chunk`);
 
   try {
     await pipeline(stream, validator, fs.createWriteStream(tempPath, { flags: "wx" }));
@@ -114,12 +133,10 @@ async function spoolStreamToTempFile(
       actualSize,
       sha256: hash.digest("hex"),
       tempPath,
-      cleanup: async () => {
-        await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
-      },
+      cleanup: () => fsp.rm(tempPath, { force: true }).catch(() => {}),
     };
   } catch (err) {
-    await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.rm(tempPath, { force: true }).catch(() => {});
     throw err;
   }
 }
