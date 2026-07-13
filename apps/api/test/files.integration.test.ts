@@ -1045,7 +1045,6 @@ test("blobExistenceCache caps at 100k entries with FIFO eviction", async () => {
 
   // The overflow entry should exist
   assert.equal(cache.has("blob-cap-overflow"), true);
-
 });
 
 test("in-flight existence checks deduplicate concurrent requests for same cold blobId", async () => {
