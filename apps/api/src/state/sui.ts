@@ -2,6 +2,8 @@ import { SuiClient } from "@mysten/sui/client";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { decodeSuiPrivateKey } from "@mysten/sui/cryptography";
 import { fromB64, fromHEX } from "@mysten/sui/utils";
+import { EnvSuiSigner } from "../sui/sui.signer.js";
+import type { SuiSigner } from "../sui/sui.signer.js";
 
 const MAINNET_RPC = "https://fullnode.mainnet.sui.io:443";
 const TESTNET_RPC = "https://fullnode.testnet.sui.io:443";
@@ -94,7 +96,7 @@ function createSignerFromEnv(key: string): Ed25519Keypair {
 let _suiNetwork: "mainnet" | "testnet" | null = null;
 let _suiRpcUrl: string | null = null;
 let _suiClient: SuiClient | null = null;
-let _suiSigner: Ed25519Keypair | null = null;
+let _suiSigner: SuiSigner | null = null;
 
 /** @internal test-only hook — resets lazy singleton state so tests can re-parse env vars. */
 export function resetSuiStateForTests(): void {
@@ -119,10 +121,11 @@ export function getSuiClient(): SuiClient {
   return _suiClient;
 }
 
-export function getSuiSigner(): Ed25519Keypair {
+export function getSuiSigner(): SuiSigner {
   if (!_suiSigner) {
     const key = parseSuiPrivateKey();
-    _suiSigner = createSignerFromEnv(key);
+    const kp = createSignerFromEnv(key);
+    _suiSigner = new EnvSuiSigner(kp, getSuiClient());
   }
   return _suiSigner;
 }

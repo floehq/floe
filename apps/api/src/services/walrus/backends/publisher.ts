@@ -1,7 +1,7 @@
-import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { toB64 } from "@mysten/sui/utils";
 import { nodeToWeb } from "../../../utils/nodeToWeb.js";
-import { getSuiClient, getSuiNetwork, getSuiSigner } from "../../../state/sui.js";
+import { getSuiNetwork, getSuiSigner } from "../../../state/sui.js";
+import type { SuiSigner } from "../../../sui/sui.signer.js";
 import { WalrusUploadLimits } from "../../../config/walrus.config.js";
 import type { WalrusUploadParams, WalrusUploadResult } from "./types.js";
 
@@ -85,12 +85,12 @@ export function describeWalrusPublisherBackend() {
 }
 
 let lastBalanceCheck = 0;
-async function checkBalanceOnce(clientAddress: string) {
+async function checkBalanceOnce() {
   const now = Date.now();
   if (now - lastBalanceCheck < 60_000) return;
 
-  const bal = await getSuiClient().getBalance({ owner: clientAddress });
-  if (BigInt(bal.totalBalance) < MIN_BALANCE_MIST) {
+  const bal = await getSuiSigner().getBalance();
+  if (bal < MIN_BALANCE_MIST) {
     throw new Error("INSUFFICIENT_BALANCE");
   }
 
@@ -98,14 +98,14 @@ async function checkBalanceOnce(clientAddress: string) {
 }
 
 async function createAuthHeaders(
-  keypair: Ed25519Keypair,
+  signer: SuiSigner,
   apiBaseUrl: string,
 ): Promise<Record<string, string>> {
-  const address = keypair.getPublicKey().toSuiAddress();
+  const address = signer.address;
   const timestamp = Date.now();
   const msg = `${apiBaseUrl}:${address}:${timestamp}`;
 
-  const sig = await keypair.signPersonalMessage(new TextEncoder().encode(msg));
+  const sig = await signer.signPersonalMessage(new TextEncoder().encode(msg));
 
   return {
     "X-Sui-Address": address,
@@ -158,9 +158,9 @@ export async function uploadToWalrusViaPublisher(
     };
 
     if (getSuiNetwork() === "mainnet") {
-      const keypair = getSuiSigner();
-      await checkBalanceOnce(keypair.getPublicKey().toSuiAddress());
-      Object.assign(headers, await createAuthHeaders(keypair, baseUrl));
+      const signer = getSuiSigner();
+      await checkBalanceOnce();
+      Object.assign(headers, await createAuthHeaders(signer, baseUrl));
     }
 
     const controller = new AbortController();
