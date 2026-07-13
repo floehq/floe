@@ -49,7 +49,27 @@ import {
 // Keyed by blobId, stores expiry timestamp. Negative results are NOT cached.
 // TTL is 60 seconds to avoid re-checking per-request during playback bursts.
 const blobExistenceCacheTTL = 60_000;
+const BLOB_EXISTENCE_CACHE_MAX_ENTRIES = 100_000;
 const blobExistenceCache = new Map<string, number>();
+
+/** In-flight dedup map: prevents concurrent requests for the same cold blobId
+ *  from issuing duplicate checkWalrusBlobExists upstream calls. */
+const inFlightExistenceChecks = new Map<string, Promise<{ exists: boolean }>>();
+
+/** Remove all expired entries from blobExistenceCache. */
+function pruneBlobExistenceCache() {
+  const now = Date.now();
+  for (const [blobId, expiry] of blobExistenceCache) {
+    if (expiry <= now) {
+      blobExistenceCache.delete(blobId);
+    }
+  }
+}
+
+/** @internal test-only hook */
+export function getBlobExistenceCacheForTests() {
+  return blobExistenceCache;
+}
 
 /**
  * Normalize a client-provided ETag (possibly quoted or weak) and compare
@@ -329,6 +349,7 @@ async function* cachedSegmentByteStream(params: {
   initialSegmentBytes: number;
   segmentBytes: number;
   signal: AbortSignal;
+  log?: { warn: (...args: any[]) => void };
 }): AsyncGenerator<Uint8Array> {
   let offset = params.start;
 
@@ -345,6 +366,7 @@ async function* cachedSegmentByteStream(params: {
         start: offset,
         end: segmentEnd,
         signal: params.signal,
+        log: params.log,
       });
 
       if (fillResult.kind === "tee") {
@@ -961,11 +983,34 @@ export async function filesRoutes(app: FastifyInstance) {
         if (cachedExpiry !== undefined && cachedExpiry > Date.now()) {
           blobExists = { exists: true };
         } else {
-          blobExists = await checkWalrusBlobExists({ blobId }).catch(() => ({ exists: true }));
+          // Clean up expired entry if present
+          if (cachedExpiry !== undefined) {
+            blobExistenceCache.delete(blobId);
+          }
+
+          // Dedup concurrent existence checks for the same cold blobId
+          let pending = inFlightExistenceChecks.get(blobId);
+          if (!pending) {
+            pending = checkWalrusBlobExists({ blobId }).catch(() => ({ exists: true }));
+            inFlightExistenceChecks.set(blobId, pending);
+          }
+          blobExists = await pending;
+          inFlightExistenceChecks.delete(blobId);
+
           if (blobExists.exists) {
             // Cache positive results for 60s to avoid re-checking during
             // playback bursts. Negative results are NOT cached.
             blobExistenceCache.set(blobId, Date.now() + blobExistenceCacheTTL);
+
+            // Evict oldest entry if over capacity (FIFO eviction)
+            if (blobExistenceCache.size > BLOB_EXISTENCE_CACHE_MAX_ENTRIES) {
+              const firstKey = blobExistenceCache.keys().next().value;
+              if (firstKey !== undefined) blobExistenceCache.delete(firstKey);
+            }
+            // Opportunistic prune when > 80% full
+            if (blobExistenceCache.size > BLOB_EXISTENCE_CACHE_MAX_ENTRIES * 0.8) {
+              pruneBlobExistenceCache();
+            }
           }
         }
 
@@ -1053,7 +1098,9 @@ export async function filesRoutes(app: FastifyInstance) {
       // Full-file tee cache: for status === 200 and small files, fetch and
       // stream the entire blob at once (tee writes to disk concurrently).
       if (status === 200) {
-        const teeResult = await teeCachedStreamBlob({ blobId, sizeBytes }).catch(() => null);
+        const teeResult = await teeCachedStreamBlob({ blobId, sizeBytes, log: req.log }).catch(
+          () => null,
+        );
         if (teeResult) {
           if (teeResult.kind === "tee") {
             return reply.status(status).send(teeResult.stream);
@@ -1101,6 +1148,7 @@ export async function filesRoutes(app: FastifyInstance) {
             initialSegmentBytes: readPlan.initialSegmentBytes,
             segmentBytes: readPlan.segmentBytes,
             signal: abortController.signal,
+            log: req.log,
           })) {
             if (!firstByteObserved && chunk.byteLength > 0) {
               firstByteObserved = true;

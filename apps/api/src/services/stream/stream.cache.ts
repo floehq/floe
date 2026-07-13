@@ -35,8 +35,6 @@ interface InFlightTeeEntry {
   writeError: Error | null;
 }
 
-const inFlightCacheFill = new Map<string, Promise<string | null>>();
-const inFlightRangeFill = new Map<string, Promise<string>>();
 const inFlightTeeCacheFill = new Map<string, InFlightTeeEntry>();
 const inFlightTeeRangeFill = new Map<string, InFlightTeeEntry>();
 let reservedCacheBytes = 0;
@@ -245,6 +243,7 @@ export async function teeCachedStreamRange(params: {
   start: number;
   end: number;
   signal?: AbortSignal;
+  log?: { warn: (...args: any[]) => void };
 }): Promise<StreamFillResult> {
   const existing = await getCachedStreamRangePath(params);
   if (existing) return { kind: "cache_hit", cachePath: existing };
@@ -401,7 +400,13 @@ export async function teeCachedStreamRange(params: {
 
   // Suppress unhandled rejections: consumer streams are already destroyed
   // on error (above), and callers that need write success can await writeDone.
-  session.writeDone.catch(() => {});
+  session.writeDone.catch((err) => {
+    const logFn = params.log?.warn ?? console.warn;
+    logFn(
+      { err, blobId: params.blobId, rangeKey, cachePath: session.cachePath },
+      "Tee cache fill failed after stream start",
+    );
+  });
 
   return {
     kind: "tee",
@@ -422,6 +427,7 @@ export async function teeCachedStreamBlob(params: {
   blobId: string;
   sizeBytes: number;
   signal?: AbortSignal;
+  log?: { warn: (...args: any[]) => void };
 }): Promise<StreamFillResult | null> {
   if (!shouldCacheFullObjectPolicy(params.sizeBytes)) {
     recordStreamCacheAccess({ cacheType: "full", outcome: "bypass" });
@@ -578,198 +584,19 @@ export async function teeCachedStreamBlob(params: {
   })();
   // Suppress unhandled rejections: consumer streams are already destroyed
   // on error, and callers that need write success can await writeDone directly.
-  session.writeDone.catch(() => {});
+  session.writeDone.catch((err) => {
+    const logFn = params.log?.warn ?? console.warn;
+    logFn(
+      { err, blobId: params.blobId, cachePath: session.cachePath },
+      "Tee cache fill failed after stream start",
+    );
+  });
 
   return {
     kind: "tee",
     cachePath: filePath,
     stream: firstConsumer,
   };
-}
-
-/** @deprecated Use teeCachedStreamBlob instead for streaming-aware callers. */
-export async function ensureCachedStreamBlob(params: {
-  blobId: string;
-  sizeBytes: number;
-  signal?: AbortSignal;
-}): Promise<string | null> {
-  if (!shouldCacheFullObjectPolicy(params.sizeBytes)) {
-    recordStreamCacheAccess({ cacheType: "full", outcome: "bypass" });
-    return null;
-  }
-
-  const existing = await getCachedStreamPath(params.blobId, params.sizeBytes);
-  if (existing) return existing;
-
-  const inFlight = inFlightCacheFill.get(params.blobId);
-  if (inFlight) return inFlight;
-
-  const fillPromise = (async () => {
-    const releaseFillSlot = await acquireCacheFillSlot();
-    const releaseReservation = await reserveCacheBytes(params.sizeBytes);
-    if (!releaseReservation) {
-      recordStreamCacheAccess({ cacheType: "full", outcome: "rejected" });
-      releaseFillSlot();
-      return null;
-    }
-
-    await ensureStreamCacheDir();
-    const filePath = streamCachePath(params.blobId);
-    const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-    const fillStartedAt = Date.now();
-
-    try {
-      const { res } = await fetchWalrusBlob({
-        blobId: params.blobId,
-        rangeHeader: `bytes=0-${params.sizeBytes - 1}`,
-        signal: params.signal,
-      });
-
-      if (res.status !== 200 && res.status !== 206) {
-        const body = await res.text().catch(() => "");
-        throw new Error(
-          `WALRUS_CACHE_FILL_FAILED status=${res.status}${body ? ` body=${body.slice(0, 120)}` : ""}`,
-        );
-      }
-
-      const body = res.body;
-      if (!body) throw new Error("WALRUS_CACHE_FILL_MISSING_BODY");
-
-      let bytesWritten = 0;
-      await new Promise<void>((resolve, reject) => {
-        const ws = fs.createWriteStream(tempPath, { flags: "wx" });
-        const rs = Readable.fromWeb(body as any);
-        rs.on("data", (chunk: Uint8Array) => {
-          bytesWritten += chunk.byteLength;
-        });
-        rs.once("error", reject);
-        ws.once("error", reject);
-        ws.once("finish", resolve);
-        rs.pipe(ws);
-      }).catch(async (err) => {
-        await fsp.rm(tempPath, { force: true }).catch(() => {});
-        throw err;
-      });
-
-      if (bytesWritten !== params.sizeBytes) {
-        await fsp.rm(tempPath, { force: true }).catch(() => {});
-        throw new Error(
-          `STREAM_CACHE_FULL_TRUNCATED expected=${params.sizeBytes} read=${bytesWritten}`,
-        );
-      }
-
-      await fsp.rename(tempPath, filePath).catch(async (err) => {
-        await fsp.rm(tempPath, { force: true }).catch(() => {});
-        throw err;
-      });
-      await pruneStreamCacheIfNeeded();
-      recordStreamCacheAccess({ cacheType: "full", outcome: "filled" });
-      observeStreamCacheFill({
-        cacheType: "full",
-        durationMs: Date.now() - fillStartedAt,
-      });
-      return filePath;
-    } finally {
-      releaseReservation();
-      releaseFillSlot();
-    }
-  })().finally(() => {
-    inFlightCacheFill.delete(params.blobId);
-  });
-
-  inFlightCacheFill.set(params.blobId, fillPromise);
-  return fillPromise;
-}
-
-export async function ensureCachedStreamRange(params: {
-  blobId: string;
-  start: number;
-  end: number;
-  signal?: AbortSignal;
-}): Promise<string> {
-  const existing = await getCachedStreamRangePath(params);
-  if (existing) return existing;
-
-  const rangeKey = streamRangeCacheKey(params);
-  const inFlight = inFlightRangeFill.get(rangeKey);
-  if (inFlight) return inFlight;
-
-  const fillPromise = (async () => {
-    const releaseFillSlot = await acquireCacheFillSlot();
-    await ensureStreamCacheDir();
-    const cachePath = streamRangeCachePath(params);
-    await fsp.mkdir(path.dirname(cachePath), { recursive: true });
-    const tempPath = `${cachePath}.tmp-${process.pid}-${Date.now()}`;
-    const expectedSize = params.end - params.start + 1;
-    const releaseReservation = await reserveCacheBytes(expectedSize);
-    if (!releaseReservation) {
-      recordStreamCacheAccess({ cacheType: "range", outcome: "rejected" });
-      releaseFillSlot();
-      throw new Error("STREAM_CACHE_CAPACITY_EXCEEDED");
-    }
-    const fillStartedAt = Date.now();
-
-    try {
-      const { res } = await fetchWalrusBlob({
-        blobId: params.blobId,
-        rangeHeader: `bytes=${params.start}-${params.end}`,
-        signal: params.signal,
-      });
-
-      if (res.status !== 206 && !(res.status === 200 && params.start === 0)) {
-        const body = await res.text().catch(() => "");
-        throw new Error(
-          `WALRUS_CACHE_FILL_FAILED status=${res.status}${body ? ` body=${body.slice(0, 120)}` : ""}`,
-        );
-      }
-
-      const body = res.body;
-      if (!body) throw new Error("WALRUS_CACHE_FILL_MISSING_BODY");
-
-      let bytesWritten = 0;
-      await new Promise<void>((resolve, reject) => {
-        const ws = fs.createWriteStream(tempPath, { flags: "wx" });
-        const rs = Readable.fromWeb(body as any);
-        rs.on("data", (chunk: Uint8Array) => {
-          bytesWritten += chunk.byteLength;
-        });
-        rs.once("error", reject);
-        ws.once("error", reject);
-        ws.once("finish", resolve);
-        rs.pipe(ws);
-      }).catch(async (err) => {
-        await fsp.rm(tempPath, { force: true }).catch(() => {});
-        throw err;
-      });
-
-      if (bytesWritten !== expectedSize) {
-        await fsp.rm(tempPath, { force: true }).catch(() => {});
-        throw new Error(
-          `STREAM_CACHE_RANGE_TRUNCATED expected=${expectedSize} read=${bytesWritten}`,
-        );
-      }
-
-      await fsp.rename(tempPath, cachePath).catch(async (err) => {
-        await fsp.rm(tempPath, { force: true }).catch(() => {});
-        throw err;
-      });
-      await pruneStreamCacheIfNeeded();
-      recordStreamCacheAccess({ cacheType: "range", outcome: "filled" });
-      observeStreamCacheFill({
-        cacheType: "range",
-        durationMs: Date.now() - fillStartedAt,
-      });
-      return cachePath;
-    } finally {
-      releaseReservation();
-      releaseFillSlot();
-    }
-  })().finally(() => {
-    inFlightRangeFill.delete(rangeKey);
-  });
-
-  inFlightRangeFill.set(rangeKey, fillPromise);
-  return fillPromise;
 }
 
 export function createCachedReadStream(params: { filePath: string; start: number; end: number }) {
