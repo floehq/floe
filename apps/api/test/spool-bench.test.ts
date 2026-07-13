@@ -52,11 +52,7 @@ async function spoolStreamToTempFile(
   }
 }
 
-function createValidationStream(
-  expectedSize: number,
-  maxChunkBytes: number,
-  hash: crypto.Hash,
-) {
+function createValidationStream(expectedSize: number, maxChunkBytes: number, hash: crypto.Hash) {
   let written = 0;
   return new Transform({
     transform(chunk: Buffer, _enc, cb) {
@@ -99,10 +95,7 @@ test("spool-to-temp benchmark: 1MB chunk (timed)", async () => {
     const expectedHash = crypto.createHash("sha256").update(data).digest("hex");
     assert.equal(result.sha256, expectedHash);
     // Should complete well under 500ms for 1MB on any reasonable hardware
-    assert.ok(
-      elapsedMs < 500,
-      `1MB spool took ${elapsedMs.toFixed(1)}ms (expected < 500ms)`,
-    );
+    assert.ok(elapsedMs < 500, `1MB spool took ${elapsedMs.toFixed(1)}ms (expected < 500ms)`);
     console.log(`  1MB spool-to-temp: ${elapsedMs.toFixed(1)}ms`);
   } finally {
     await result.cleanup();
@@ -113,10 +106,7 @@ test("spool-to-temp benchmark: rejects oversized chunk", async () => {
   const data = crypto.randomBytes(1024);
   const stream = Readable.from(data);
   // maxChunkBytes is smaller than the data — should reject
-  await assert.rejects(
-    () => spoolStreamToTempFile(stream, data.length, 512),
-    /CHUNK_TOO_LARGE/,
-  );
+  await assert.rejects(() => spoolStreamToTempFile(stream, data.length, 512), /CHUNK_TOO_LARGE/);
 });
 
 test("spool-to-temp benchmark: 10MB chunk timing", async () => {
@@ -132,10 +122,7 @@ test("spool-to-temp benchmark: 10MB chunk timing", async () => {
     const expectedHash = crypto.createHash("sha256").update(data).digest("hex");
     assert.equal(result.sha256, expectedHash);
     // Should complete well under 2000ms for 10MB on any reasonable hardware
-    assert.ok(
-      elapsedMs < 2000,
-      `10MB spool took ${elapsedMs.toFixed(1)}ms (expected < 2000ms)`,
-    );
+    assert.ok(elapsedMs < 2000, `10MB spool took ${elapsedMs.toFixed(1)}ms (expected < 2000ms)`);
     console.log(` 10MB spool-to-temp: ${elapsedMs.toFixed(1)}ms`);
   } finally {
     await result.cleanup();

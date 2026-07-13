@@ -63,11 +63,7 @@ type S3RuntimeConfig = {
  * caller (spoolStreamToTempFile) owns the hash and compares after
  * the stream completes.
  */
-function createValidationStream(
-  expectedSize: number,
-  maxChunkBytes: number,
-  hash: crypto.Hash,
-) {
+function createValidationStream(expectedSize: number, maxChunkBytes: number, hash: crypto.Hash) {
   let written = 0;
 
   return new Transform({
