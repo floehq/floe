@@ -511,12 +511,25 @@ test("STREAM_CACHE_MIN_FREE_DISK_FRACTION is removed (only fixed byte floor rema
   // well above STREAM_CACHE_MIN_FREE_DISK_BYTES (default 1 GB).
   const blobId = "disk-fraction-regression";
   walrusSamples.set(blobId, Uint8Array.from([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
-  const cachedPath = await streamCacheModule.ensureCachedStreamRange({
+  const result = await streamCacheModule.teeCachedStreamRange({
     blobId,
     start: 0,
     end: 3,
   });
-  const bytes = await fs.readFile(cachedPath);
+  // Drain the tee stream so the cache write completes
+  if (result.kind === "tee") {
+    for await (const _ of (result as { kind: "tee"; stream: Readable }).stream) {
+      // drain
+    }
+  }
+  // Verify the cache was written correctly
+  const cachedPath = await streamCacheModule.getCachedStreamRangePath({
+    blobId,
+    start: 0,
+    end: 3,
+  });
+  assert.ok(cachedPath, "Expected cache path to exist after tee fill");
+  const bytes = await fs.readFile(cachedPath!);
   assert.deepEqual([...bytes], [0, 1, 2, 3]);
 });
 
