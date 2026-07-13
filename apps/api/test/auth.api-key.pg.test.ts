@@ -328,17 +328,7 @@ test("PostgresApiKeyStore - EnvApiKeyStore findByHash returns correct key", asyn
 });
 
 test("EnvApiKeyStore - findById returns StoredApiKey for matching id", async () => {
-  const { EnvApiKeyStore, parseKeyId } = await import(
-    "../src/services/auth/auth.api-key.js"
-  );
-
-  // Create keys with both new and legacy formats
-  const store = new EnvApiKeyStore();
-
-  // Use findById with a key that's in the hardcoded AuthApiKeyConfig
-  // (which was loaded from the cleared FLOE_API_KEYS_JSON — empty list)
-  // Instead, directly test the logic: parse a key and manually construct
-  // what findById would return.
+  const { parseKeyId } = await import("../src/services/auth/auth.api-key.js");
 
   // parseKeyId should parse floe_<id>_<secret> format
   const parsed = parseKeyId("floe_key1_aB3xY9zW");
@@ -402,9 +392,8 @@ test("verifyRequestApiKey - timing does not vary meaningfully between missing ke
   };
   authConfig.AuthApiKeyConfig.keys.push(testKey);
 
-  const { setApiKeyStore, buildLocalAuthContext } = await import(
-    "../src/services/auth/auth.api-key.js",
-  );
+  const { setApiKeyStore, buildLocalAuthContext } =
+    await import("../src/services/auth/auth.api-key.js");
   setApiKeyStore(null); // reset to EnvApiKeyStore
 
   async function measureAuth(keyValue: string, iterations = 100): Promise<number> {
@@ -426,14 +415,8 @@ test("verifyRequestApiKey - timing does not vary meaningfully between missing ke
 
   const ITERATIONS = 100;
 
-  const timeMissingKey = await measureAuth(
-    "floe_unknown-key_any-secret-suffix",
-    ITERATIONS,
-  );
-  const timeWrongSecret = await measureAuth(
-    "floe_test-key_wrong-secret-suffix",
-    ITERATIONS,
-  );
+  const timeMissingKey = await measureAuth("floe_unknown-key_any-secret-suffix", ITERATIONS);
+  const timeWrongSecret = await measureAuth("floe_test-key_wrong-secret-suffix", ITERATIONS);
 
   const maxTime = Math.max(timeMissingKey, timeWrongSecret);
   const minTime = Math.min(timeMissingKey, timeWrongSecret);
@@ -446,7 +429,7 @@ test("verifyRequestApiKey - timing does not vary meaningfully between missing ke
     ratio <= 3,
     `Timing variance too large: missing-key=${timeMissingKey.toFixed(1)}ms ` +
       `wrong-secret=${timeWrongSecret.toFixed(1)}ms ratio=${ratio.toFixed(2)}x ` +
-      `(expected <= 3x)`,
+      "(expected <= 3x)",
   );
 
   // Also verify the happy path (correct secret) produces a successful auth
