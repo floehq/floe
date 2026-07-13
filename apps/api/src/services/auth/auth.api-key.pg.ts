@@ -177,6 +177,8 @@ export async function ensureApiKeysTable(): Promise<void> {
     );
   `);
 
+  // Legacy lookup index — only used by findByHash (backward compat).
+  // New deployments using findById + key-id prefix lookup use the PK on id.
   await pg.query(`
     create index if not exists floe_api_keys_secret_hash_idx
     on floe_api_keys (secret_hash);

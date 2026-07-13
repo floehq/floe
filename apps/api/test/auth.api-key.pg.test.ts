@@ -327,10 +327,9 @@ test("PostgresApiKeyStore - EnvApiKeyStore findByHash returns correct key", asyn
   assert.equal(result, null);
 });
 
-test("EnvApiKeyStore - findById returns StoredApiKey for matching id", async () => {
+test("parseKeyId parses floe_<id>_<secret> format", async () => {
   const { parseKeyId } = await import("../src/services/auth/auth.api-key.js");
 
-  // parseKeyId should parse floe_<id>_<secret> format
   const parsed = parseKeyId("floe_key1_aB3xY9zW");
   assert.ok(parsed !== null);
   assert.equal(parsed.keyId, "key1");
