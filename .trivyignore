@@ -1,0 +1,78 @@
+# =============================================================================
+# Debian Bookworm (12.15) CVE suppressions
+# All 19 findings lack available fixes in the stable repos as of 2026-07-13.
+# OS-level CVEs will auto-resolve when Debian publishes point-release updates.
+# Review quarterly: apt-get upgrade output will show which are fixed.
+# No Node.js CVEs are suppressed — after npm@11 upgrade and lockfile removal,
+# the rebased image scans 0 Node.js vulnerabilities.
+# =============================================================================
+
+# --- CRITICAL ---
+
+# CVE-2023-45853  zlib1g (will_not_fix)
+# Vulnerable MiniZip code path is NOT built into Debian's zlib1g package.
+# Confirmed "ignored" in Debian security tracker. Safe to suppress.
+# https://security-tracker.debian.org/tracker/CVE-2023-45853
+CVE-2023-45853
+
+# CVE-2026-42496  perl-base (fix_deferred)
+# Archive::Tar symlink traversal. Debian postponed until upstream regression
+# issues are resolved. Not exploitable without direct untrusted archive
+# processing in the application — this image serves HTTP API, not tar files.
+# https://security-tracker.debian.org/tracker/CVE-2026-42496
+CVE-2026-42496
+
+# CVE-2026-8376  perl-base (affected)
+# Heap buffer overflow in regex compilation, affects 32-bit builds only.
+# This image is amd64 (64-bit). Not exploitable.
+# https://security-tracker.debian.org/tracker/CVE-2026-8376
+CVE-2026-8376
+
+# --- HIGH ---
+
+# CVE-2026-53615  bsdutils / libblkid1 / libmount1 / libsmartcols1 / libuuid1 /
+#                 mount / util-linux / util-linux-extra (affected)
+# Integer overflow in libblkid's DOS partition parser. Requires physical or
+# emulated volume access to exploit. Not reachable in this application.
+# https://security-tracker.debian.org/tracker/CVE-2026-53615
+CVE-2026-53615
+
+# CVE-2026-41992  gzip (fix_deferred)
+# Global buffer overflow in LZH decompression. Exploitable only if attackers
+# can supply crafted LZH-compressed input to gzip. The image does not run
+# gzip on untrusted data.
+# https://security-tracker.debian.org/tracker/CVE-2026-41992
+CVE-2026-41992
+
+# CVE-2026-54369  libacl1 (fix_deferred)
+# Symlink traversal privilege escalation via libacl functions. Requires local
+# access to exploit. The image runs as non-root (USER node) with minimal
+# filesystem access.
+# https://security-tracker.debian.org/tracker/CVE-2026-54369
+CVE-2026-54369
+
+# CVE-2025-69720  libtinfo6 / ncurses-base / ncurses-bin (affected)
+# Buffer overflow in ncurses. Requires local terminal interaction to exploit.
+# The image runs as a headless HTTP server — no terminal access.
+# https://security-tracker.debian.org/tracker/CVE-2025-69720
+CVE-2025-69720
+
+# CVE-2026-42497  perl-base (fix_deferred)
+# Archive::Tar hardlink file modification. Companion to CVE-2026-42496.
+# Not exploitable without direct archive extraction in the application.
+# https://security-tracker.debian.org/tracker/CVE-2026-42497
+CVE-2026-42497
+
+# CVE-2026-48962  perl-base (affected)
+# IO-Compress arbitrary code execution via attacker-controlled output glob.
+# Requires Perl IO-Compress operations on untrusted data. Perl is present in
+# the base image but is not used by the Node.js application at runtime.
+# https://security-tracker.debian.org/tracker/CVE-2026-48962
+CVE-2026-48962
+
+# CVE-2026-9538  perl-base (fix_deferred)
+# Archive::Tar DoS via crafted tar header with large entry size. Companion
+# to CVE-2026-42496 / CVE-2026-42497. Same rationale: not exploitable
+# without direct archive processing in the application.
+# https://security-tracker.debian.org/tracker/CVE-2026-9538
+CVE-2026-9538
