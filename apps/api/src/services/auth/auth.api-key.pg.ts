@@ -13,12 +13,15 @@ import { type ApiKeyStore, type StoredApiKey } from "./auth.api-key-store.js";
  * later admin API writes to this table directly.
  */
 export class PostgresApiKeyStore implements ApiKeyStore {
+  /**
+   * Legacy lookup by full SHA-256 hash of the entire credential.
+   * Prefer findById for new deployments to avoid the timing side-channel
+   * of SQL-level hash comparison.
+   */
   async findByHash(hash: Buffer): Promise<StoredApiKey | null> {
     const pg = getPostgres();
     if (!pg) return null;
 
-    // hash is already a SHA-256 digest (32 bytes) computed by the caller.
-    // The DB stores the same digest as a hex string — no second hash needed.
     const hex = hash.toString("hex");
     const out = await pg.query(
       `
@@ -33,6 +36,46 @@ export class PostgresApiKeyStore implements ApiKeyStore {
         limit 1
       `,
       [hex],
+    );
+
+    const row = out.rows[0];
+    if (!row) return null;
+
+    const storedHash = Buffer.from(String(row.secret_hash), "hex");
+    if (storedHash.length !== 32) return null;
+
+    return {
+      id: String(row.id),
+      secretHash: storedHash,
+      owner: row.owner ? String(row.owner) : undefined,
+      scopes: parseScopes(row.scopes),
+      tier: parseTier(row.tier),
+    };
+  }
+
+  /**
+   * Look up a key by its public id (PK lookup).
+   * The caller independently verifies the secret hash via
+   * crypto.timingSafeEqual — this avoids the timing side-channel of
+   * comparing hashes inside the SQL query.
+   */
+  async findById(id: string): Promise<StoredApiKey | null> {
+    const pg = getPostgres();
+    if (!pg) return null;
+
+    const out = await pg.query(
+      `
+        select
+          id,
+          secret_hash,
+          owner,
+          scopes,
+          tier
+        from floe_api_keys
+        where id = $1 and revoked_at is null
+        limit 1
+      `,
+      [id],
     );
 
     const row = out.rows[0];
