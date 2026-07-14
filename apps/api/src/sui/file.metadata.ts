@@ -3,7 +3,7 @@ import { getSuiSigner } from "../state/sui.js";
 import { suiCircuit } from "../services/circuit-breaker/instances.js";
 import { CircuitBreakerError } from "../services/circuit-breaker/index.js";
 
-const SUI_GAS_OBJECT_ID = (process.env.FLOE_SUI_GAS_OBJECT_ID ?? "0x6").trim();
+const SUI_CLOCK_OBJECT_ID = "0x6";
 
 let _suiPackageId: string | null = null;
 
@@ -55,7 +55,7 @@ export async function finalizeFileMetadata(input: FinalizeFileInput): Promise<Fi
       input.walrusEndEpoch !== undefined
         ? tx.pure.option("u64", input.walrusEndEpoch)
         : tx.pure.option("u64", null),
-      tx.object(SUI_GAS_OBJECT_ID),
+      tx.object(SUI_CLOCK_OBJECT_ID),
     ],
   });
 
