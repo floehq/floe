@@ -293,7 +293,7 @@ async function* walrusByteStream(params: {
           requestId: params.requestId,
         }));
       } catch (err) {
-        if (params.signal.aborted || (err as any)?.name === "AbortError") {
+        if (params.signal.aborted || (err as Error)?.name === "AbortError") {
           return;
         }
 
@@ -326,7 +326,7 @@ async function* walrusByteStream(params: {
         );
       }
 
-      const rs = Readable.fromWeb(body as any);
+      const rs = Readable.fromWeb(body as ReadableStream<Uint8Array>);
       const expected = segEnd - offset + 1;
       let read = 0;
 
@@ -476,7 +476,23 @@ export function chooseStreamReadPlan(params: {
 }
 
 export async function filesRoutes(app: FastifyInstance) {
-  app.get("/v1/files/:fileId/metadata", async (req, res) => {
+  app.get("/v1/files/:fileId/metadata", {
+    schema: {
+      tags: ["Files"],
+      summary: "Get file metadata",
+      description: "Fetch metadata about a stored file, including size, MIME type, and storage details.",
+      params: {
+        type: "object",
+        required: ["fileId"],
+        properties: {
+          fileId: {
+            type: "string",
+            description: "Sui object ID, blob ID, or file UUID",
+          },
+        },
+      },
+    },
+  }, async (req, res) => {
     const readLimit = await req.server.authProvider.checkRateLimit({
       req,
       scope: "file_meta_read",
@@ -595,7 +611,37 @@ export async function filesRoutes(app: FastifyInstance) {
     };
   });
 
-  app.post("/v1/files/:fileId/renew", async (req, res) => {
+  app.post("/v1/files/:fileId/renew", {
+    bodyLimit: 64 * 1024,
+    schema: {
+      tags: ["Files"],
+      summary: "Renew file storage",
+      description:
+        "Extend the Walrus storage duration for a stored file. Requires the file owner's authorization.",
+      params: {
+        type: "object",
+        required: ["fileId"],
+        properties: {
+          fileId: {
+            type: "string",
+            description: "Sui object ID of the file",
+          },
+        },
+      },
+      body: {
+        type: "object",
+        required: ["epochs"],
+        properties: {
+          epochs: {
+            type: "integer",
+            description: "Number of Walrus epochs to extend by",
+            minimum: 1,
+            maximum: 53,
+          },
+        },
+      },
+    },
+  }, async (req, res) => {
     const { fileId: rawFileId } = req.params as { fileId: string };
     const { epochs } = req.body as { epochs: number };
 
@@ -633,7 +679,8 @@ export async function filesRoutes(app: FastifyInstance) {
     let blobObjectId = normalized.blobObjectId;
     if (!blobObjectId) {
       // For beta, we allow the user to provide it in the body if missing from metadata.
-      blobObjectId = (req.body as any).blobObjectId || (req.body as any).blob_object_id;
+      const b = req.body as Record<string, unknown>;
+      blobObjectId = (b.blobObjectId as string | undefined) ?? (b.blob_object_id as string | undefined) ?? null;
     }
     if (!blobObjectId) {
       const indexed = await getIndexedFile(fileId).catch(() => null);
@@ -717,7 +764,21 @@ export async function filesRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/files/:fileId/manifest", async (req, res) => {
+  app.get("/v1/files/:fileId/manifest", {
+    schema: {
+      tags: ["Files"],
+      summary: "Get file manifest",
+      description:
+        "Get the storage manifest for a file, describing the blob layout for direct Walrus access.",
+      params: {
+        type: "object",
+        required: ["fileId"],
+        properties: {
+          fileId: { type: "string", description: "Sui object ID of the file" },
+        },
+      },
+    },
+  }, async (req, res) => {
     const readLimit = await req.server.authProvider.checkRateLimit({
       req,
       scope: "file_meta_read",
@@ -824,6 +885,46 @@ export async function filesRoutes(app: FastifyInstance) {
   app.route({
     method: ["GET", "HEAD"],
     url: "/v1/files/:fileId/stream",
+    schema: {
+      tags: ["Files"],
+      summary: "Stream file content",
+      description:
+        "Stream a stored file's content. Supports HTTP range requests (partial content). Returns the raw file bytes with appropriate Content-Type.",
+      params: {
+        type: "object",
+        required: ["fileId"],
+        properties: {
+          fileId: {
+            type: "string",
+            description: "Sui object ID, blob ID, or file UUID",
+          },
+        },
+      },
+      querystring: {
+        type: "object",
+        properties: {
+          skipBlobCheck: {
+            type: "string",
+            description:
+              "Bypass Walrus aggregator HEAD check (requires admin:uploads scope)",
+          },
+        },
+      },
+      headers: {
+        type: "object",
+        properties: {
+          range: { type: "string", description: "HTTP Range header for partial content" },
+          "if-none-match": {
+            type: "string",
+            description: "Conditional request ETag",
+          },
+          "if-range": {
+            type: "string",
+            description: "Conditional range request ETag",
+          },
+        },
+      },
+    },
     handler: async (req, reply) => {
       const readLimit = await req.server.authProvider.checkRateLimit({
         req,
@@ -909,9 +1010,9 @@ export async function filesRoutes(app: FastifyInstance) {
       reply.header("Accept-Ranges", "bytes");
       reply.header("ETag", blobId);
 
-      const rangeHeader = (req.headers as any)?.range as string | undefined;
-      const ifNoneMatch = (req.headers as any)?.["if-none-match"] as string | undefined;
-      const ifRange = (req.headers as any)?.["if-range"] as string | undefined;
+      const rangeHeader = req.headers.range as string | undefined;
+      const ifNoneMatch = req.headers["if-none-match"] as string | undefined;
+      const ifRange = req.headers["if-range"] as string | undefined;
 
       let start = 0;
       let end = sizeBytes - 1;
@@ -990,9 +1091,10 @@ export async function filesRoutes(app: FastifyInstance) {
       // aggregator HEAD check and go straight to streaming. The 503 blob
       // guard is useful for freshly-published blobs but adds latency.
       // Only allowed when the request identity has admin:uploads scope.
+      const q = req.query as Record<string, string | undefined>;
       const rawSkipBlobCheck: boolean =
-        (req.query as any)?.skipBlobCheck === "1" ||
-        (req.query as any)?.skip_blob_check === "1";
+        q.skipBlobCheck === "1" ||
+        q.skip_blob_check === "1";
       const hasAdminScopes = req.authContext?.scopes?.includes("admin:uploads") ?? false;
       const skipBlobCheck: boolean = rawSkipBlobCheck && hasAdminScopes;
       if (rawSkipBlobCheck && !hasAdminScopes) {
@@ -1105,7 +1207,7 @@ export async function filesRoutes(app: FastifyInstance) {
               },
             });
           });
-          cachedStream.once("error", (err: any) => {
+          cachedStream.once("error", (err: Error) => {
             emitInfrastructureEvent(req.log, {
               event: "stream_failed",
               requestId: eventContext.requestId,
@@ -1113,7 +1215,7 @@ export async function filesRoutes(app: FastifyInstance) {
               fileId,
               blobId,
               outcome: "failure",
-              statusCode: (err as any)?.statusCode,
+              statusCode: (err as { statusCode?: number })?.statusCode,
               metadata: {
                 range: rangeHeader ?? null,
                 start,
@@ -1220,7 +1322,7 @@ export async function filesRoutes(app: FastifyInstance) {
       stream.once("end", detachAbortHooks);
       stream.once("close", detachAbortHooks);
       stream.once("error", detachAbortHooks);
-      stream.once("error", (err: any) => {
+      stream.once("error", (err: Error) => {
         if (err?.message === "FILE_CONTENT_NOT_FOUND") {
           err.message = "FILE_BLOB_UNAVAILABLE";
         }
@@ -1246,7 +1348,7 @@ export async function filesRoutes(app: FastifyInstance) {
           fileId,
           blobId,
           outcome: "failure",
-          statusCode: (err as any)?.statusCode,
+          statusCode: (err as { statusCode?: number })?.statusCode,
           bytes: totalStreamedBytes,
           durationMs: Date.now() - streamStartMs,
           metadata: {

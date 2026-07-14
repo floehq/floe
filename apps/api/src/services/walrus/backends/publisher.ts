@@ -75,6 +75,44 @@ function getSendObjectTo(): string | undefined {
   return _sendObjectTo;
 }
 
+/**
+ * Response shape from the Walrus publisher API's PUT /v1/blobs endpoint.
+ * Fields appear in either camelCase or snake_case depending on API version.
+ */
+interface WalrusBlobStoreInfo {
+  blobId?: string;
+  blob_id?: string;
+  id?: string;
+  objectId?: string;
+  object_id?: string;
+  storage?: { endEpoch?: number; end_epoch?: number };
+}
+
+interface WalrusBlobInfo {
+  blobId?: string;
+  blob_id?: string;
+  blobObject?: WalrusBlobStoreInfo;
+  blob_object?: WalrusBlobStoreInfo;
+  blobObjectId?: string;
+  blob_object_id?: string;
+  endEpoch?: number;
+  end_epoch?: number;
+  cost?: number;
+  storageCost?: number;
+  storage_cost?: number;
+}
+
+interface WalrusPublisherResponse {
+  newlyCreated?: WalrusBlobInfo;
+  newly_created?: WalrusBlobInfo;
+  alreadyCertified?: WalrusBlobInfo;
+  already_certified?: WalrusBlobInfo;
+  blobId?: string;
+  blob_id?: string;
+  blobObject?: WalrusBlobStoreInfo;
+  blob_object?: WalrusBlobStoreInfo;
+}
+
 export function describeWalrusPublisherBackend() {
   const urls = getPublisherBaseUrls();
   return {
@@ -185,7 +223,7 @@ export async function uploadToWalrusViaPublisher(
         throw err;
       }
 
-      const json = (await res.json()) as any;
+      const json = (await res.json()) as WalrusPublisherResponse;
       const newlyCreated = json?.newlyCreated ?? json?.newly_created;
       const alreadyCertified = json?.alreadyCertified ?? json?.already_certified;
       const blobObject =

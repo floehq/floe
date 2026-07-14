@@ -37,10 +37,44 @@ interface InFlightTeeEntry {
 
 const inFlightTeeCacheFill = new Map<string, InFlightTeeEntry>();
 const inFlightTeeRangeFill = new Map<string, InFlightTeeEntry>();
+/**
+ * In-memory cache index: maps file path -> { size, mtimeMs }.
+ * This avoids recursive directory scans on every prune/reservation call.
+ * Rebuilt on initStreamCache() and updated on every cache write/delete.
+ */
+const cacheIndex = new Map<string, { size: number; mtimeMs: number }>();
+
 let reservedCacheBytes = 0;
 let activeCacheFills = 0;
 const pendingFillWaiters: Array<() => void> = [];
 let cacheReservationLock: Promise<void> = Promise.resolve();
+
+function updateCacheIndexInsert(filePath: string, size: number, mtimeMs: number) {
+  cacheIndex.set(filePath, { size, mtimeMs });
+}
+
+function updateCacheIndexDelete(filePath: string) {
+  cacheIndex.delete(filePath);
+}
+
+async function rebuildCacheIndex() {
+  cacheIndex.clear();
+  const scanDir = async (dir: string) => {
+    const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const filePath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await scanDir(filePath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const stat = await fsp.stat(filePath).catch(() => null);
+      if (!stat) continue;
+      cacheIndex.set(filePath, { size: stat.size, mtimeMs: stat.mtimeMs });
+    }
+  };
+  await scanDir(STREAM_CACHE_DIR);
+}
 
 function sanitizeBlobId(blobId: string): string {
   return blobId.replace(/[^a-zA-Z0-9._-]/g, "_");
@@ -67,25 +101,16 @@ async function ensureStreamCacheDir() {
   await fsp.mkdir(STREAM_CACHE_RANGE_DIR, { recursive: true });
 }
 
-async function listCacheFiles() {
-  const scanDir = async (dir: string) => {
-    const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
-    const out: Array<{ path: string; size: number; mtimeMs: number }> = [];
-    for (const entry of entries) {
-      const filePath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        out.push(...(await scanDir(filePath)));
-        continue;
-      }
-      if (!entry.isFile()) continue;
-      const stat = await fsp.stat(filePath).catch(() => null);
-      if (!stat) continue;
-      out.push({ path: filePath, size: stat.size, mtimeMs: stat.mtimeMs });
-    }
-    return out;
-  };
-
-  return scanDir(STREAM_CACHE_DIR);
+/**
+ * Returns cached file entries, sorted by mtimeMs ascending (oldest first).
+ * Uses the in-memory cacheIndex instead of scanning the directory.
+ */
+function listCachedFiles(): Array<{ path: string; size: number; mtimeMs: number }> {
+  const out: Array<{ path: string; size: number; mtimeMs: number }> = [];
+  for (const [filePath, meta] of cacheIndex) {
+    out.push({ path: filePath, size: meta.size, mtimeMs: meta.mtimeMs });
+  }
+  return out;
 }
 
 async function ensureFreeDiskSpace(): Promise<void> {
@@ -105,11 +130,11 @@ async function ensureFreeDiskSpace(): Promise<void> {
 }
 
 async function pruneStreamCacheByBytes(targetFreeBytes: number) {
-  const files = await listCacheFiles();
-  files.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  const files = listCachedFiles().sort((a, b) => a.mtimeMs - b.mtimeMs);
   let freed = 0;
   for (const file of files) {
     await fsp.rm(file.path, { force: true }).catch(() => {});
+    updateCacheIndexDelete(file.path);
     recordStreamCacheEviction({ reason: "size", bytes: file.size });
     freed += file.size;
     if (freed >= targetFreeBytes) break;
@@ -118,12 +143,13 @@ async function pruneStreamCacheByBytes(targetFreeBytes: number) {
 
 async function pruneStreamCacheIfNeeded() {
   if (!Number.isFinite(STREAM_CACHE_MAX_BYTES) || STREAM_CACHE_MAX_BYTES <= 0) return;
-  const files = await listCacheFiles();
+  const files = listCachedFiles();
   let totalBytes = files.reduce((sum, file) => sum + file.size, 0);
   if (totalBytes > STREAM_CACHE_MAX_BYTES) {
     files.sort((a, b) => a.mtimeMs - b.mtimeMs);
     for (const file of files) {
       await fsp.rm(file.path, { force: true }).catch(() => {});
+      updateCacheIndexDelete(file.path);
       recordStreamCacheEviction({ reason: "size", bytes: file.size });
       totalBytes -= file.size;
       if (totalBytes <= STREAM_CACHE_MAX_BYTES) break;
@@ -134,11 +160,12 @@ async function pruneStreamCacheIfNeeded() {
 
 async function sweepExpiredStreamCache() {
   if (!Number.isFinite(STREAM_CACHE_TTL_MS) || STREAM_CACHE_TTL_MS <= 0) return;
-  const files = await listCacheFiles();
+  const files = listCachedFiles();
   const cutoff = Date.now() - STREAM_CACHE_TTL_MS;
   for (const file of files) {
     if (file.mtimeMs > cutoff) continue;
     await fsp.rm(file.path, { force: true }).catch(() => {});
+    updateCacheIndexDelete(file.path);
   }
 }
 
@@ -174,11 +201,13 @@ async function expireStreamCacheIfNeeded(filePath: string) {
   if (!stat) return;
   if (Date.now() - stat.mtimeMs <= STREAM_CACHE_TTL_MS) return;
   await fsp.rm(filePath, { force: true }).catch(() => {});
+  updateCacheIndexDelete(filePath);
   recordStreamCacheEviction({ reason: "ttl", bytes: stat.size });
 }
 
 export async function initStreamCache() {
   await ensureStreamCacheDir();
+  await rebuildCacheIndex();
   await cleanupOrphanedTempFiles();
   await sweepExpiredStreamCache();
   await pruneStreamCacheIfNeeded();
@@ -198,6 +227,7 @@ export async function getCachedStreamPath(
   }
   if (expectedSize !== undefined && stat.size !== expectedSize) {
     await fsp.rm(filePath, { force: true }).catch(() => {});
+    updateCacheIndexDelete(filePath);
     recordStreamCacheEviction({ reason: "invalid", bytes: stat.size });
     recordStreamCacheAccess({ cacheType: "full", outcome: "miss" });
     return null;
@@ -220,6 +250,7 @@ export async function getCachedStreamRangePath(params: {
   if (!stat?.isFile() || stat.size !== expectedSize) {
     if (stat) {
       await fsp.rm(filePath, { force: true }).catch(() => {});
+      updateCacheIndexDelete(filePath);
       recordStreamCacheEviction({ reason: "invalid", bytes: stat.size });
     }
     recordStreamCacheAccess({ cacheType: "range", outcome: "miss" });
@@ -340,7 +371,7 @@ export async function teeCachedStreamRange(params: {
       let bytesWritten = 0;
       const writeDone = new Promise<void>((resolveWrite, rejectWrite) => {
         const ws = fs.createWriteStream(tempPath, { flags: "wx" });
-        const rs = Readable.fromWeb(writeLeg as any);
+        const rs = Readable.fromWeb(writeLeg);
         rs.on("data", (chunk: Uint8Array) => {
           bytesWritten += chunk.byteLength;
         });
@@ -350,7 +381,7 @@ export async function teeCachedStreamRange(params: {
         rs.pipe(ws);
       });
 
-      const broadcastNode = Readable.fromWeb(broadcastLeg as any);
+      const broadcastNode = Readable.fromWeb(broadcastLeg);
       broadcastNode.pipe(broadcastStream);
 
       await writeDone;
@@ -372,6 +403,7 @@ export async function teeCachedStreamRange(params: {
         await fsp.rm(tempPath, { force: true }).catch(() => {});
         throw err;
       });
+      updateCacheIndexInsert(cachePath, bytesWritten, Date.now());
       await pruneStreamCacheIfNeeded();
       recordStreamCacheAccess({ cacheType: "range", outcome: "filled" });
       observeStreamCacheFill({
@@ -557,6 +589,7 @@ export async function teeCachedStreamBlob(params: {
         await fsp.rm(tempPath, { force: true }).catch(() => {});
         throw err;
       });
+      updateCacheIndexInsert(filePath, bytesWritten, Date.now());
       await pruneStreamCacheIfNeeded();
       recordStreamCacheAccess({ cacheType: "full", outcome: "filled" });
       observeStreamCacheFill({
@@ -637,7 +670,7 @@ async function reserveCacheBytes(expectedBytes: number): Promise<null | (() => v
 
   return withCacheReservationLock(async () => {
     await pruneStreamCacheIfNeeded();
-    const files = await listCacheFiles();
+    const files = listCachedFiles();
     const currentBytes = files.reduce((sum, file) => sum + file.size, 0);
     if (currentBytes + reservedCacheBytes + expectedBytes > STREAM_CACHE_MAX_BYTES) {
       return null;

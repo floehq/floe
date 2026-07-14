@@ -1,3 +1,5 @@
+import { parsePositiveIntEnv } from "../utils/parseEnv.js";
+
 function parseUrlList(raw: string | undefined): string[] {
   if (!raw) return [];
   return raw
@@ -10,16 +12,6 @@ function assertHttpUrl(name: string, url: string) {
   if (!/^https?:\/\//.test(url)) {
     throw new Error(`${name} must start with http:// or https://`);
   }
-}
-
-function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < min) {
-    throw new Error(`${name} must be an integer >= ${min}`);
-  }
-  return n;
 }
 
 function requireEnv(name: string): string {

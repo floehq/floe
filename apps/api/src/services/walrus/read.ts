@@ -1,5 +1,6 @@
 import { Agent, type Dispatcher } from "undici";
 import { WalrusEnv, WalrusReadLimits } from "../../config/walrus.config.js";
+import { parsePositiveIntEnv } from "../../utils/parseEnv.js";
 import {
   observeWalrusSegmentFetch,
   setWalrusConnectionPoolMetrics,
@@ -7,16 +8,6 @@ import {
 
 const BODY_IDLE_TIMEOUT_MS = 30_000;
 const HEAD_CHECK_TIMEOUT_MS = 15_000;
-
-function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < min) {
-    throw new Error(`${name} must be an integer >= ${min}`);
-  }
-  return n;
-}
 
 function normalizeBaseUrl(url: string): string {
   return url.replace(/\/$/, "");
@@ -55,12 +46,15 @@ export function startWalrusPoolMetrics(intervalMs = 5000): void {
     if (!walrusPool) return;
     try {
       let activeConns = 0;
-      const poolMap = (walrusPool as any)._poolMap as Map<string, Dispatcher> | undefined;
+      interface AgentInternal {
+        _poolMap?: Map<string, Dispatcher>;
+      }
+      const poolMap = (walrusPool as unknown as AgentInternal)._poolMap as Map<string, Dispatcher> | undefined;
       if (poolMap) {
         for (const [, client] of poolMap) {
-          const c = client as any;
-          if (Number.isFinite(c.busyConnections)) activeConns += c.busyConnections;
-          else if (Number.isFinite(c.pending)) activeConns += c.pending;
+          const c = client as { busyConnections?: number; pending?: number };
+          if (Number.isFinite(c.busyConnections)) activeConns += c.busyConnections!;
+          else if (Number.isFinite(c.pending)) activeConns += c.pending!;
         }
       }
       setWalrusConnectionPoolMetrics({
@@ -86,8 +80,8 @@ export function stopWalrusPoolMetrics(): void {
 let lastGoodAggregatorIdx = 0;
 
 function isRetryableNetworkError(err: unknown): boolean {
-  const msg = (err as any)?.message ? String((err as any).message) : "";
-  const causeMsg = (err as any)?.cause?.message ? String((err as any).cause?.message) : "";
+  const msg = (err as Error)?.message ? String((err as Error).message) : "";
+  const causeMsg = (err as { cause?: Error })?.cause?.message ? String((err as { cause?: Error })?.cause?.message) : "";
 
   return (
     msg.includes("fetch failed") ||
@@ -156,7 +150,7 @@ async function fetchWithTimeout(params: {
       method: "GET",
       headers: params.headers,
       signal: controller.signal,
-      dispatcher: getWalrusPool() as any,
+      dispatcher: getWalrusPool() as Dispatcher,
     });
   } finally {
     clearTimeout(timeout);
@@ -216,7 +210,7 @@ export async function checkWalrusBlobExists(params: {
         method: "HEAD",
         headers: reqHeaders,
         signal: controller.signal,
-        dispatcher: getWalrusPool() as any,
+        dispatcher: getWalrusPool() as Dispatcher,
       });
       return { exists: res.status === 200 || res.status === 206, status: res.status };
     } catch {
@@ -398,7 +392,7 @@ export async function fetchWalrusBlob(params: {
         const durationMs = Date.now() - attemptStartedAt;
         lastErr = err;
 
-        if ((params.signal && params.signal.aborted) || (err as any)?.name === "AbortError") {
+        if ((params.signal && params.signal.aborted) || (err as Error)?.name === "AbortError") {
           observeWalrusSegmentFetch({
             outcome: "aborted",
             durationMs,

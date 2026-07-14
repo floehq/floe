@@ -21,7 +21,19 @@ type ExternalVerifyResponse = {
   expiresAt?: string;
 };
 
+const EXTERNAL_AUTH_CACHE_MAX = 10_000;
 const externalAuthCache = new Map<string, { expiresAt: number; context: AuthContext }>();
+
+function evictExternalAuthCacheIfNeeded() {
+  if (externalAuthCache.size <= EXTERNAL_AUTH_CACHE_MAX) return;
+  let over = externalAuthCache.size - EXTERNAL_AUTH_CACHE_MAX;
+  const entries = [...externalAuthCache.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+  for (const [k] of entries) {
+    if (over <= 0) break;
+    externalAuthCache.delete(k);
+    over -= 1;
+  }
+}
 
 function computeCacheExpiryMs(context: AuthContext): number {
   const ttlExpiryMs = Date.now() + AuthExternalConfig.cacheTtlMs;
@@ -157,6 +169,7 @@ async function verifyExternalCredential(req: FastifyRequest): Promise<AuthContex
         expiresAt: cacheExpiryMs,
         context: parsed,
       });
+      evictExternalAuthCacheIfNeeded();
     }
     return parsed;
   } catch {

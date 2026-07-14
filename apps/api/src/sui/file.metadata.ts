@@ -1,10 +1,18 @@
 import { Transaction } from "@mysten/sui/transactions";
 import { getSuiSigner } from "../state/sui.js";
 
-const SUI_PACKAGE_ID = process.env.SUI_PACKAGE_ID;
+const SUI_GAS_OBJECT_ID = (process.env.FLOE_SUI_GAS_OBJECT_ID ?? "0x6").trim();
 
-if (!SUI_PACKAGE_ID) {
-  throw new Error("SUI_PACKAGE_ID is not set");
+let _suiPackageId: string | null = null;
+
+function getSuiPackageId(): string {
+  if (_suiPackageId) return _suiPackageId;
+  const value = process.env.SUI_PACKAGE_ID?.trim();
+  if (!value) {
+    throw new Error("SUI_PACKAGE_ID is not set");
+  }
+  _suiPackageId = value;
+  return value;
 }
 
 export interface FinalizeFileInput {
@@ -25,7 +33,7 @@ export async function finalizeFileMetadata(input: FinalizeFileInput): Promise<Fi
   const tx = new Transaction();
 
   tx.moveCall({
-    target: `${SUI_PACKAGE_ID}::file::create_with_owner`,
+    target: `${getSuiPackageId()}::file::create_with_owner`,
     arguments: [
       tx.pure.string(input.blobId),
       input.blobObjectId
@@ -38,7 +46,7 @@ export async function finalizeFileMetadata(input: FinalizeFileInput): Promise<Fi
       input.walrusEndEpoch !== undefined
         ? tx.pure.option("u64", input.walrusEndEpoch)
         : tx.pure.option("u64", null),
-      tx.object("0x6"),
+      tx.object(SUI_GAS_OBJECT_ID),
     ],
   });
 
@@ -74,7 +82,7 @@ export async function renewFileMetadata(params: {
 
   if (params.blobObjectId) {
     tx.moveCall({
-      target: `${SUI_PACKAGE_ID}::file::update_walrus_info`,
+      target: `${getSuiPackageId()}::file::update_walrus_info`,
       arguments: [
         tx.object(params.fileId),
         tx.pure.address(params.blobObjectId),
@@ -83,7 +91,7 @@ export async function renewFileMetadata(params: {
     });
   } else {
     tx.moveCall({
-      target: `${SUI_PACKAGE_ID}::file::update_expiry`,
+      target: `${getSuiPackageId()}::file::update_expiry`,
       arguments: [tx.object(params.fileId), tx.pure.u64(params.walrusEndEpoch)],
     });
   }

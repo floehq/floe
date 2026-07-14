@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 
 import { UploadConfig } from "../../config/uploads.config.js";
-import { UploadSession } from "../../types/upload.js";
+import { UploadSession, type UploadStatus } from "../../types/upload.js";
 import { getRedis } from "../../state/redis.js";
 import { uploadKeys } from "../../state/keys.js";
 import { chunkStore } from "../../store/index.js";
@@ -231,7 +231,7 @@ export async function getSession(uploadId: string): Promise<InternalSession | nu
     totalChunks,
     receivedChunks: [],
     resolvedEpochs: epochs,
-    status: data.status as any,
+    status: data.status as UploadStatus,
     targetChain: data.targetChain,
     createdAt,
     expiresAt,

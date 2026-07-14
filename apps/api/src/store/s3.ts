@@ -7,7 +7,7 @@ import { Readable, Transform } from "stream";
 import { pipeline } from "stream/promises";
 
 import { parseBoolEnv } from "../utils/parseEnv.js";
-import { UploadConfig } from "../config/uploads.config.js";
+import { UploadConfig, ChunkConfig } from "../config/uploads.config.js";
 import type { ChunkStore } from "./chunk.js";
 
 const require = createRequire(import.meta.url);
@@ -30,16 +30,6 @@ function loadAwsS3(): AwsS3Module {
       "S3 chunk store requires @aws-sdk/client-s3. Install it with: npm install --workspace=apps/api @aws-sdk/client-s3",
     );
   }
-}
-
-function parseIntEnv(name: string, fallback: number, min = 1): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < min) {
-    throw new Error(`${name} must be an integer >= ${min}`);
-  }
-  return n;
 }
 
 type S3RuntimeConfig = {
@@ -147,7 +137,7 @@ export class S3ChunkStore implements ChunkStore {
     const endpoint = (process.env.FLOE_S3_ENDPOINT ?? "").trim();
     const forcePathStyle = parseBoolEnv("FLOE_S3_FORCE_PATH_STYLE", true);
     const prefix = (process.env.FLOE_S3_PREFIX ?? "floe/chunks").replace(/\/+$/, "");
-    const maxChunkBytes = parseIntEnv("FLOE_CHUNK_MAX_BYTES", 20 * 1024 * 1024);
+    const maxChunkBytes = ChunkConfig.maxBytes;
     const accessKeyId = (process.env.FLOE_S3_ACCESS_KEY_ID ?? "").trim();
     const secretAccessKey = (process.env.FLOE_S3_SECRET_ACCESS_KEY ?? "").trim();
     const sessionToken = (process.env.FLOE_S3_SESSION_TOKEN ?? "").trim();

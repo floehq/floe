@@ -1,4 +1,5 @@
 import { parseBoolEnv } from "../utils/parseEnv.js";
+import { isUuid } from "../utils/validation.js";
 import { FastifyInstance } from "fastify";
 import crypto from "node:crypto";
 import { getSession } from "../services/uploads/session.js";
@@ -106,13 +107,6 @@ function requireMetricsToken(req: any, reply: any): boolean {
   }
 
   return true;
-}
-
-function isUuid(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
-  );
 }
 
 function parseBoolQuery(raw: unknown): boolean {
@@ -315,7 +309,7 @@ export default async function healthRoute(app: FastifyInstance) {
             .filter(Number.isInteger)
             .sort((a, b) => a - b)
         : [];
-      const includeReceivedIndexes = parseBoolQuery((req as any).query?.includeReceivedIndexes);
+      const includeReceivedIndexes = parseBoolQuery((req.query as Record<string, unknown>)?.includeReceivedIndexes);
       const operatorSummary = buildOperatorUploadSummary({
         session,
         meta: metaObject,
@@ -357,14 +351,15 @@ export default async function healthRoute(app: FastifyInstance) {
   app.get("/health", async (req, reply) => {
     const snapshot = await getCachedHealthSnapshot(req);
     if (!PUBLIC_HEALTH_DETAILS) {
+      const p = snapshot.payload as Record<string, unknown>;
       return reply.status(snapshot.statusCode).send({
-        service: (snapshot.payload as any).service,
-        apiVersion: (snapshot.payload as any).apiVersion,
-        serverVersion: (snapshot.payload as any).serverVersion,
-        status: (snapshot.payload as any).status,
-        ready: (snapshot.payload as any).ready,
-        degraded: (snapshot.payload as any).degraded,
-        timestamp: (snapshot.payload as any).timestamp,
+        service: p.service as string,
+        apiVersion: p.apiVersion as string,
+        serverVersion: p.serverVersion as string,
+        status: p.status as string,
+        ready: p.ready as boolean,
+        degraded: p.degraded as boolean,
+        timestamp: p.timestamp as string,
       });
     }
     return reply.status(snapshot.statusCode).send(snapshot.payload);

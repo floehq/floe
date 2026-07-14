@@ -12,64 +12,124 @@ export type IndexedFileRecord = {
   createdAtMs: number;
 };
 
+const MIGRATIONS_TABLE = `
+  create table if not exists floe_migrations (
+    version integer primary key,
+    name text not null,
+    applied_at timestamptz not null default now()
+  );
+`;
+
+type Migration = {
+  version: number;
+  name: string;
+  up: (pg: NonNullable<Awaited<ReturnType<typeof getPostgres>>>) => Promise<void>;
+};
+
+const MIGRATIONS: Migration[] = [
+  {
+    version: 1,
+    name: "create_floe_files",
+    up: async (pg) => {
+      await pg.query(`
+        create table if not exists floe_files (
+          file_id text primary key,
+          blob_id text not null,
+          blob_object_id text null,
+          checksum text null,
+          owner_address text null,
+          size_bytes bigint not null,
+          mime_type text not null,
+          walrus_end_epoch bigint null,
+          created_at_ms bigint not null,
+          created_at timestamptz not null default now(),
+          updated_at timestamptz not null default now()
+        );
+      `);
+
+      await pg.query(`
+        create index if not exists floe_files_owner_created_idx
+        on floe_files (owner_address, created_at desc);
+      `);
+
+      await pg.query(`
+        create index if not exists floe_files_checksum_idx
+        on floe_files (checksum, updated_at desc);
+      `);
+    },
+  },
+  {
+    version: 2,
+    name: "create_floe_blob_objects",
+    up: async (pg) => {
+      await pg.query(`
+        create table if not exists floe_blob_objects (
+          blob_id text primary key,
+          blob_object_id text not null,
+          checksum text null,
+          updated_at timestamptz not null default now()
+        );
+      `);
+
+      await pg.query(`
+        create index if not exists floe_blob_objects_checksum_idx
+        on floe_blob_objects (checksum, updated_at desc);
+      `);
+
+      // Migration for existing tables: add columns that may not exist yet
+      await pg
+        .query(
+          `
+        alter table floe_files add column if not exists blob_object_id text;
+      `,
+        )
+        .catch(() => {});
+      await pg
+        .query(
+          `
+        alter table floe_files add column if not exists checksum text;
+      `,
+        )
+        .catch(() => {});
+    },
+  },
+];
+
 export async function ensureFilesTable(): Promise<void> {
   const pg = getPostgres();
   if (!pg) return;
-  await pg.query(`
-    create table if not exists floe_files (
-      file_id text primary key,
-      blob_id text not null,
-      blob_object_id text null,
-      checksum text null,
-      owner_address text null,
-      size_bytes bigint not null,
-      mime_type text not null,
-      walrus_end_epoch bigint null,
-      created_at_ms bigint not null,
-      created_at timestamptz not null default now(),
-      updated_at timestamptz not null default now()
-    );
-  `);
 
-  await pg.query(`
-    create index if not exists floe_files_owner_created_idx
-    on floe_files (owner_address, created_at desc);
-  `);
+  // Ensure the migrations table exists
+  await pg.query(MIGRATIONS_TABLE);
 
-  await pg.query(`
-    create index if not exists floe_files_checksum_idx
-    on floe_files (checksum, updated_at desc);
-  `);
+  // Get applied versions
+  const result = await pg.query(
+    "select version from floe_migrations order by version asc",
+  );
+  const applied = new Set(
+    (result.rows as Array<{ version: number }>).map((r) => r.version),
+  );
 
-  // Migration for existing table
-  await pg
-    .query(
-      `
-    alter table floe_files add column if not exists blob_object_id text;
-  `,
-    )
-    .catch(() => {});
-  await pg
-    .query(
-      `
-    alter table floe_files add column if not exists checksum text;
-  `,
-    )
-    .catch(() => {});
+  // Apply pending migrations in order
+  for (const migration of MIGRATIONS) {
+    if (applied.has(migration.version)) continue;
 
-  await pg.query(`
-    create table if not exists floe_blob_objects (
-      blob_id text primary key,
-      blob_object_id text not null,
-      checksum text null,
-      updated_at timestamptz not null default now()
-    );
-  `);
-
-  await pg.query(`
-    create index if not exists floe_blob_objects_checksum_idx
-    on floe_blob_objects (checksum, updated_at desc);
-  `);
+    try {
+      await migration.up(pg);
+      await pg.query(
+        "insert into floe_migrations (version, name) values ($1, $2)",
+        [migration.version, migration.name],
+      );
+    } catch (err) {
+      console.error(
+        "Migration %d (%s) failed:",
+        migration.version,
+        migration.name,
+        err,
+      );
+      throw err;
+    }
+  }
 }
 
 export async function upsertIndexedFile(record: IndexedFileRecord): Promise<void> {

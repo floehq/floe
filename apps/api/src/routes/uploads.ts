@@ -3,6 +3,8 @@ import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
 import { sendApiError } from "../utils/apiError.js";
+import { validateFilename, validateContentType, isUuid } from "../utils/validation.js";
+import { parsePositiveIntEnv } from "../utils/parseEnv.js";
 import { ChunkConfig, UploadConfig } from "../config/uploads.config.js";
 import { WalrusEpochLimits } from "../config/walrus.config.js";
 import { AuthUploadPolicyConfig } from "../config/auth.config.js";
@@ -24,24 +26,17 @@ import type { RedisClient } from "../state/redis.types.js";
 import { getRedis } from "../state/redis.js";
 import { uploadKeys } from "../state/keys.js";
 
-function isUuid(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
-  );
-}
-
 function finalBinPath(uploadId: string) {
   return path.join(UploadConfig.tmpDir, `${uploadId}.bin`);
 }
 
-function shouldExposeBlobId(query: any): boolean {
+function shouldExposeBlobId(query: Record<string, unknown>): boolean {
   if (process.env.FLOE_EXPOSE_BLOB_ID === "1") return true;
   const raw = query?.includeBlobId ?? query?.include_blob_id ?? query?.includeStorage;
   return raw === "1" || raw === "true" || raw === true;
 }
 
-function shouldExposeWalrusDebug(query: any): boolean {
+function shouldExposeWalrusDebug(query: Record<string, unknown>): boolean {
   const raw = query?.debug ?? query?.includeDebug ?? query?.includeWalrusDebug;
   return raw === "1" || raw === "true" || raw === true;
 }
@@ -54,16 +49,6 @@ function parseOptionalSuiAddressEnv(name: string): string | undefined {
     throw new Error(`${name} must be a valid 32-byte Sui address`);
   }
   return `0x${raw.replace(/^0x/i, "").toLowerCase()}`;
-}
-
-function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < min) {
-    throw new Error(`${name} must be an integer >= ${min}`);
-  }
-  return n;
 }
 
 const DEFAULT_OWNER_ADDRESS = parseOptionalSuiAddressEnv("FLOE_DEFAULT_OWNER_ADDRESS");
@@ -458,9 +443,33 @@ async function persistUploadActionIdempotencyRecord(params: {
 }
 
 export default async function uploadRoutes(app: FastifyInstance) {
-  app.post("/v1/uploads/create", async (req, reply) => {
+  app.post("/v1/uploads/create", {
+    bodyLimit: 64 * 1024,
+    schema: {
+      tags: ["Uploads"],
+      summary: "Create an upload session",
+      description:
+        "Initialize a new resumable chunk upload. Returns an uploadId, chunkSize, and totalChunks. The client then uploads chunks via PUT /v1/uploads/:uploadId/chunk/:index.",
+      body: {
+        type: "object",
+        required: ["filename", "contentType", "sizeBytes"],
+        properties: {
+          filename: { type: "string", description: "Original file name", maxLength: 255 },
+          contentType: { type: "string", description: "MIME type of the file" },
+          sizeBytes: { type: "number", description: "Total file size in bytes", minimum: 1 },
+          chunkSize: { type: "number", description: "Preferred chunk size in bytes" },
+          epochs: { type: "number", description: "Walrus storage duration in epochs" },
+          checksum: {
+            type: "string",
+            pattern: "^[a-f0-9]{64}$",
+            description: "Optional SHA-256 checksum of the file content",
+          },
+        },
+      },
+    },
+  }, async (req, reply) => {
     const log = req.log;
-    const body = req.body as any;
+    const body = req.body as Record<string, unknown>;
     const createLimit = await req.server.authProvider.checkRateLimit({
       req,
       scope: "upload_control",
@@ -496,18 +505,29 @@ export default async function uploadRoutes(app: FastifyInstance) {
       return sendApiError(reply, 400, "INVALID_REQUEST_BODY", "Request body must be JSON");
     }
 
-    const { filename, contentType, sizeBytes, chunkSize, epochs, checksum } = body;
+    const { filename: rawFilename, contentType: rawContentType, sizeBytes, chunkSize, epochs, checksum } = body;
 
-    if (!filename || !contentType || !sizeBytes) {
+    if (!rawFilename || !rawContentType || !sizeBytes) {
       return sendApiError(reply, 400, "INVALID_CREATE_UPLOAD_REQUEST", "Missing required fields");
     }
 
-    if (typeof filename !== "string" || filename.length > 512) {
-      return sendApiError(reply, 400, "INVALID_FILENAME", "filename must be <= 512 chars");
+    let filename: string;
+    try {
+      filename = validateFilename(rawFilename);
+    } catch (err: any) {
+      return sendApiError(reply, 400, "INVALID_FILENAME", err.message ?? "Invalid filename");
     }
 
-    if (typeof contentType !== "string" || contentType.length > 128) {
-      return sendApiError(reply, 400, "INVALID_CONTENT_TYPE", "contentType must be <= 128 chars");
+    let contentType: string;
+    try {
+      contentType = validateContentType(rawContentType);
+    } catch (err: any) {
+      return sendApiError(
+        reply,
+        400,
+        "INVALID_CONTENT_TYPE",
+        err.message ?? "Invalid content type",
+      );
     }
 
     let checksumValue: string | undefined;
@@ -763,9 +783,30 @@ export default async function uploadRoutes(app: FastifyInstance) {
     }
   });
 
-  app.put("/v1/uploads/:uploadId/chunk/:index", async (req, reply) => {
+  app.put("/v1/uploads/:uploadId/chunk/:index", {
+    schema: {
+      tags: ["Uploads"],
+      summary: "Upload a chunk",
+      description:
+        "Upload a single chunk of the file. Chunks are uploaded sequentially or out of order. Must provide x-chunk-sha256 header with the SHA-256 hash of the chunk content.",
+      params: {
+        type: "object",
+        required: ["uploadId", "index"],
+        properties: {
+          uploadId: { type: "string", format: "uuid", description: "Upload session ID" },
+          index: { type: "integer", description: "Chunk index (0-based)", minimum: 0 },
+        },
+      },
+      headers: {
+        type: "object",
+        properties: {
+          "x-chunk-sha256": { type: "string", description: "SHA-256 hash of chunk content" },
+        },
+      },
+    },
+  }, async (req, reply) => {
     const log = req.log;
-    const { uploadId, index } = req.params as any;
+    const { uploadId, index } = req.params as Record<string, string>;
     const chunkLimit = await req.server.authProvider.checkRateLimit({
       req,
       scope: "upload_chunk",
@@ -944,10 +985,32 @@ export default async function uploadRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/uploads/:uploadId/status", async (req, reply) => {
+  app.get("/v1/uploads/:uploadId/status", {
+    schema: {
+      tags: ["Uploads"],
+      summary: "Get upload status",
+      description:
+        "Poll the status of an upload session. Returns chunk progress, finalization state, and optional storage debug info.",
+      params: {
+        type: "object",
+        required: ["uploadId"],
+        properties: {
+          uploadId: { type: "string", format: "uuid", description: "Upload session ID" },
+        },
+      },
+      querystring: {
+        type: "object",
+        properties: {
+          includeBlobId: { type: "string", description: "Set to '1' to expose blob ID" },
+          includeStorage: { type: "string", description: "Alias for includeBlobId" },
+          debug: { type: "string", description: "Set to '1' for Walrus debug info" },
+        },
+      },
+    },
+  }, async (req, reply) => {
     const { uploadId } = req.params as { uploadId: string };
-    const exposeBlobId = shouldExposeBlobId((req as any).query);
-    const exposeWalrusDebug = shouldExposeWalrusDebug((req as any).query);
+    const exposeBlobId = shouldExposeBlobId(req.query as Record<string, unknown>);
+    const exposeWalrusDebug = shouldExposeWalrusDebug(req.query as Record<string, unknown>);
 
     if (!isUuid(uploadId)) {
       return sendApiError(reply, 400, "INVALID_UPLOAD_ID", "uploadId must be a UUID");
@@ -1124,11 +1187,26 @@ export default async function uploadRoutes(app: FastifyInstance) {
     };
   });
 
-  app.post("/v1/uploads/:uploadId/complete", async (req, reply) => {
+  app.post("/v1/uploads/:uploadId/complete", {
+    bodyLimit: 64 * 1024,
+    schema: {
+      tags: ["Uploads"],
+      summary: "Finalize upload",
+      description:
+        "Request finalization of a completed upload. All chunks must have been uploaded first. Returns a status indicating whether the upload is being finalized.",
+      params: {
+        type: "object",
+        required: ["uploadId"],
+        properties: {
+          uploadId: { type: "string", format: "uuid", description: "Upload session ID" },
+        },
+      },
+    },
+  }, async (req, reply) => {
     const log = req.log;
     const { uploadId } = req.params as { uploadId: string };
-    const exposeBlobId = shouldExposeBlobId((req as any).query);
-    const exposeWalrusDebug = shouldExposeWalrusDebug((req as any).query);
+    const exposeBlobId = shouldExposeBlobId(req.query as Record<string, unknown>);
+    const exposeWalrusDebug = shouldExposeWalrusDebug(req.query as Record<string, unknown>);
     const completeLimit = await req.server.authProvider.checkRateLimit({
       req,
       scope: "upload_control",
@@ -1393,7 +1471,21 @@ export default async function uploadRoutes(app: FastifyInstance) {
     return reply.code(202).send(responseBody);
   });
 
-  app.delete("/v1/uploads/:uploadId", async (req, reply) => {
+  app.delete("/v1/uploads/:uploadId", {
+    bodyLimit: 64 * 1024,
+    schema: {
+      tags: ["Uploads"],
+      summary: "Cancel upload",
+      description: "Cancel an in-progress upload and clean up all stored chunks.",
+      params: {
+        type: "object",
+        required: ["uploadId"],
+        properties: {
+          uploadId: { type: "string", format: "uuid", description: "Upload session ID" },
+        },
+      },
+    },
+  }, async (req, reply) => {
     const log = req.log;
     const { uploadId } = req.params as { uploadId: string };
     const cancelLimit = await req.server.authProvider.checkRateLimit({

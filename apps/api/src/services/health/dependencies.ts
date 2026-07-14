@@ -1,3 +1,4 @@
+import type { Dispatcher } from "undici";
 import {
   checkPostgresHealth,
   isPostgresConfigured,
@@ -56,7 +57,7 @@ export async function checkWalrusDependencyHealth(): Promise<WalrusDependencyHea
       const res = await fetch(primaryUrl + "/v1", {
         method: "HEAD",
         signal: controller.signal,
-        dispatcher: getWalrusPool() as any,
+        dispatcher: getWalrusPool() as Dispatcher,
       });
       const ok = res.status >= 200 && res.status < 500;
       return {

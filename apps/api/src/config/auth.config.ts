@@ -1,14 +1,4 @@
-import { parseBoolEnv } from "../utils/parseEnv.js";
-
-function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < min) {
-    throw new Error(`${name} must be an integer >= ${min}`);
-  }
-  return n;
-}
+import { parseBoolEnv, parsePositiveIntEnv } from "../utils/parseEnv.js";
 
 const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
 
