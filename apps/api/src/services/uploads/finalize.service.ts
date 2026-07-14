@@ -31,7 +31,10 @@ import {
   normalizeFinalizeFailure,
   shouldPersistFinalizeFailure,
 } from "./finalize.shared.js";
-import { emitInfrastructureEvent } from "../events/infrastructure.events.js";
+import {
+  emitAuditEvent,
+  emitInfrastructureEvent,
+} from "../events/infrastructure.events.js";
 
 const finalFilePath = (uploadId: string) => path.join(UploadConfig.tmpDir, `${uploadId}.bin`);
 
@@ -608,13 +611,23 @@ export async function finalizeUpload(
       mimeType: session.contentType ?? "application/octet-stream",
       walrusEndEpoch: walrusEndEpoch ?? null,
       createdAtMs: Date.now(),
-    }).catch(() => {});
+    }).catch((pgErr) => {
+      context.log?.warn(
+        { uploadId, fileId, blobId, err: pgErr },
+        "Failed to persist indexed file metadata to Postgres during finalize — Redis and Postgres are now divergent",
+      );
+    });
     if (walrusObjectId) {
       await upsertBlobObjectMapping({
         blobId,
         blobObjectId: walrusObjectId,
         checksum: checksum ?? null,
-      }).catch(() => {});
+      }).catch((pgErr) => {
+        context.log?.warn(
+          { uploadId, blobId, blobObjectId: walrusObjectId, err: pgErr },
+          "Failed to persist blob-object mapping to Postgres during finalize — Redis and Postgres are now divergent",
+        );
+      });
     }
 
     const cleanupStartedAt = Date.now();
@@ -682,6 +695,34 @@ export async function finalizeUpload(
         queueWaitMs: context.queueWaitMs ?? 0,
         walrusEndEpoch: walrusEndEpoch ?? null,
         walrusSource: walrusSource ?? null,
+        stageDurationsMs,
+      },
+    });
+
+    emitAuditEvent(context.log ?? console, {
+      action: "finalize_completed",
+      resource: `upload:${uploadId}`,
+      actor: {
+        authenticated: true,
+        method: "external",
+        subject: `system:finalize_worker`,
+        apiKeyId: null,
+        owner: session.owner ?? null,
+      },
+      before: {
+        status: "finalizing",
+      },
+      after: {
+        status: "completed",
+        fileId,
+        blobId,
+        walrusEndEpoch: walrusEndEpoch ?? null,
+        sizeBytes: session.sizeBytes,
+      },
+      metadata: {
+        uploadId,
+        attempt: context.attempt ?? 1,
+        queueWaitMs: context.queueWaitMs ?? 0,
         stageDurationsMs,
       },
     });
@@ -765,6 +806,31 @@ export async function finalizeUpload(
         failedStage: wrapped.finalizeStage ?? currentStage ?? "unknown",
         reasonCode: failure.reasonCode,
         retryable: failure.retryable,
+      },
+    });
+
+    emitAuditEvent(context.log ?? console, {
+      action: "finalize_failed",
+      resource: `upload:${uploadId}`,
+      actor: {
+        authenticated: true,
+        method: "external",
+        subject: `system:finalize_worker`,
+        apiKeyId: null,
+        owner: session.owner ?? null,
+      },
+      before: {
+        status: "finalizing",
+      },
+      after: null,
+      metadata: {
+        uploadId,
+        attempt: context.attempt ?? 1,
+        queueWaitMs: context.queueWaitMs ?? 0,
+        failedStage: wrapped.finalizeStage ?? currentStage ?? "unknown",
+        reasonCode: failure.reasonCode,
+        retryable: failure.retryable,
+        errorMessage: message.slice(0, 500),
       },
     });
 

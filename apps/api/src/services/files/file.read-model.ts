@@ -169,7 +169,7 @@ export function isFileFieldsDebugEnabled(): boolean {
   return FILE_FIELDS_DEBUG;
 }
 
-class LruMap<V> {
+export class LruMap<V> {
   private readonly max: number;
   private readonly map = new Map<string, V>();
 
@@ -198,6 +198,22 @@ class LruMap<V> {
 
   delete(key: string): boolean {
     return this.map.delete(key);
+  }
+
+  /**
+   * Iterate entries from least-recently-used to most-recently-used.
+   * Supports for...of destructuring: for (const [key, value] of map)
+   */
+  *[Symbol.iterator](): IterableIterator<[string, V]> {
+    yield* this.map.entries();
+  }
+
+  entries(): IterableIterator<[string, V]> {
+    return this.map.entries();
+  }
+
+  keys(): IterableIterator<string> {
+    return this.map.keys();
   }
 
   private evictIfNeeded(): void {

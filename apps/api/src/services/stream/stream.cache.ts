@@ -5,6 +5,24 @@ import { PassThrough, Readable } from "node:stream";
 
 import { UploadConfig } from "../../config/uploads.config.js";
 import { fetchWalrusBlob } from "../walrus/read.js";
+
+/**
+ * Error thrown when the stream cache cannot accommodate a new cache fill
+ * because the total cache size would exceed STREAM_CACHE_MAX_BYTES or
+ * available disk space is below STREAM_CACHE_MIN_FREE_DISK_BYTES.
+ *
+ * Use `instanceof StreamCacheCapacityError` for type-safe error handling
+ * instead of fragile string matching on error.message.
+ */
+export class StreamCacheCapacityError extends Error {
+  readonly expectedBytes: number;
+
+  constructor(expectedBytes: number) {
+    super("STREAM_CACHE_CAPACITY_EXCEEDED");
+    this.name = "StreamCacheCapacityError";
+    this.expectedBytes = expectedBytes;
+  }
+}
 import {
   STREAM_CACHE_FILL_CONCURRENCY,
   STREAM_CACHE_MAX_BYTES,
@@ -338,11 +356,12 @@ export async function teeCachedStreamRange(params: {
     const releaseReservation = await reserveCacheBytes(expectedSize);
     if (!releaseReservation) {
       recordStreamCacheAccess({ cacheType: "range", outcome: "rejected" });
+      const capErr = new StreamCacheCapacityError(expectedSize);
       for (const cs of consumerStreams) {
-        if (!cs.destroyed) cs.destroy(new Error("STREAM_CACHE_CAPACITY_EXCEEDED"));
+        if (!cs.destroyed) cs.destroy(capErr);
       }
       cleanupSession();
-      throw new Error("STREAM_CACHE_CAPACITY_EXCEEDED");
+      throw capErr;
     }
 
     let innerError: Error | null = null;
@@ -525,8 +544,9 @@ export async function teeCachedStreamBlob(params: {
     const releaseReservation = await reserveCacheBytes(params.sizeBytes);
     if (!releaseReservation) {
       recordStreamCacheAccess({ cacheType: "full", outcome: "rejected" });
+      const capErr = new StreamCacheCapacityError(params.sizeBytes);
       for (const cs of consumerStreams) {
-        if (!cs.destroyed) cs.destroy(new Error("STREAM_CACHE_CAPACITY_EXCEEDED"));
+        if (!cs.destroyed) cs.destroy(capErr);
       }
       cleanupSession();
       return;

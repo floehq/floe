@@ -23,6 +23,7 @@ import {
   getFileFieldsCached,
   getPublicStreamUrl,
   isFileFieldsDebugEnabled,
+  LruMap,
   normalizeFileFields,
   normalizeFileIdParam,
   type CachedFileFieldsResult,
@@ -43,6 +44,7 @@ import {
 import {
   createCachedReadStream,
   getCachedStreamPath,
+  StreamCacheCapacityError,
   teeCachedStreamBlob,
   teeCachedStreamRange,
 } from "../services/stream/stream.cache.js";
@@ -52,7 +54,7 @@ import {
 // TTL is 60 seconds to avoid re-checking per-request during playback bursts.
 const blobExistenceCacheTTL = 60_000;
 const BLOB_EXISTENCE_CACHE_MAX_ENTRIES = 100_000;
-const blobExistenceCache = new Map<string, number>();
+const blobExistenceCache = new LruMap<number>(BLOB_EXISTENCE_CACHE_MAX_ENTRIES);
 
 /** In-flight dedup map: prevents concurrent requests for the same cold blobId
  *  from issuing duplicate checkWalrusBlobExists upstream calls. */
@@ -418,7 +420,7 @@ async function* cachedSegmentByteStream(params: {
         }
       }
     } catch (err) {
-      if ((err as Error)?.message !== "STREAM_CACHE_CAPACITY_EXCEEDED") {
+      if (!(err instanceof StreamCacheCapacityError)) {
         throw err;
       }
 
@@ -1178,14 +1180,10 @@ export async function filesRoutes(app: FastifyInstance) {
           if (blobExists.exists) {
             // Cache positive results for 60s to avoid re-checking during
             // playback bursts. Negative results are NOT cached.
+            // LruMap handles LRU eviction automatically on set().
             blobExistenceCache.set(blobId, Date.now() + blobExistenceCacheTTL);
 
-            // Evict oldest entry if over capacity (FIFO eviction)
-            if (blobExistenceCache.size > BLOB_EXISTENCE_CACHE_MAX_ENTRIES) {
-              const firstKey = blobExistenceCache.keys().next().value;
-              if (firstKey !== undefined) blobExistenceCache.delete(firstKey);
-            }
-            // Opportunistic prune when > 80% full
+            // Opportunistic prune of expired entries at > 80% capacity
             if (blobExistenceCache.size > BLOB_EXISTENCE_CACHE_MAX_ENTRIES * 0.8) {
               pruneBlobExistenceCache();
             }
