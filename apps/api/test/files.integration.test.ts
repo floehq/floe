@@ -9,7 +9,9 @@ process.env.SUI_PRIVATE_KEY = `[${new Array(32).fill(0).join(",")}]`;
 process.env.SUI_PACKAGE_ID = "0x2";
 process.env.WALRUS_AGGREGATOR_URL = "http://127.0.0.1:1";
 process.env.UPLOAD_TMP_DIR = "/tmp/floe-test-upload";
-delete process.env.DATABASE_URL;
+// Keep DATABASE_URL from the environment (needed for auth.config.ts module-level
+// initialization when FLOE_API_KEY_STORE=postgres is set globally in CI).
+// Tests that need a specific Postgres state use postgresModule.setPostgresForTests().
 
 type FilesRouteModule = typeof import("../src/routes/files.ts") & {
   getBlobExistenceCacheForTests: () => Map<string, number>;
@@ -247,7 +249,9 @@ before(async () => {
 });
 
 afterEach(() => {
-  delete process.env.DATABASE_URL;
+  // Keep DATABASE_URL from the environment (needed for auth.config.ts module-level
+// initialization when FLOE_API_KEY_STORE=postgres is set globally in CI).
+// Tests that need a specific Postgres state use postgresModule.setPostgresForTests().
   delete process.env.FLOE_PUBLIC_STREAM_BASE_URL;
   postgresModule.setPostgresForTests(null, false);
   suiModule.getSuiClient().getObject = originalGetObject;

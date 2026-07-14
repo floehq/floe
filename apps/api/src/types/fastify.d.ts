@@ -1,13 +1,29 @@
-import "fastify";
+import type { FastifyBaseLogger, FastifyInstance } from "fastify";
+import type { AuthContext } from "../services/auth/auth.context.js";
 import type { AuthProvider } from "../services/auth/auth.provider.js";
-import type { RequestIdentity } from "../services/auth/auth.context.js";
 
 declare module "fastify" {
-  interface FastifyInstance {
-    authProvider: AuthProvider;
+  interface FastifyRequest {
+    /**
+     * A child logger with request-scoped context (requestId, authMethod,
+     * subject, owner) baked in. Created in the onRequest hook.
+     * Use instead of `req.log` to get structured log output with
+     * request-level correlation fields.
+     */
+    childLogger: FastifyBaseLogger;
+
+    /**
+     * The resolved authentication identity for this request.
+     * Set by the onRequest hook via authProvider.resolveIdentity().
+     */
+    authContext: AuthContext;
   }
 
-  interface FastifyRequest {
-    authContext?: RequestIdentity;
+  interface FastifyInstance {
+    /**
+     * The configured auth provider. Provides identity resolution,
+     * authorization checks, and rate limiting for all routes.
+     */
+    authProvider: AuthProvider;
   }
 }

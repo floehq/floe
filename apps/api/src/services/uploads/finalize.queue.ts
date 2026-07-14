@@ -1,5 +1,6 @@
 import type { FastifyBaseLogger } from "fastify";
 
+import { parsePositiveIntEnv } from "../../utils/parseEnv.js";
 import { getRedis } from "../../state/redis.js";
 import { uploadKeys } from "../../state/keys.js";
 import { getSession } from "./session.js";
@@ -70,16 +71,6 @@ class LocalAsyncQueue {
       this.idleResolvers.shift()?.();
     }
   }
-}
-
-function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < min) {
-    throw new Error(`${name} must be an integer >= ${min}`);
-  }
-  return n;
 }
 
 const FINALIZE_CONCURRENCY = parsePositiveIntEnv("FLOE_FINALIZE_CONCURRENCY", 4);
@@ -339,14 +330,9 @@ async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
   try {
     const processPromise = processFinalizeImpl({ uploadId, log, attempt, queueWaitMs });
     activeFinalizeProcesses.add(processPromise);
-    void processPromise.then(
-      () => {
-        activeFinalizeProcesses.delete(processPromise);
-      },
-      () => {
-        activeFinalizeProcesses.delete(processPromise);
-      },
-    );
+    void processPromise.finally(() => {
+      activeFinalizeProcesses.delete(processPromise);
+    });
     void processPromise.then(
       () => {
         if (timedOut) {

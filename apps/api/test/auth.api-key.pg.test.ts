@@ -320,7 +320,7 @@ test("PostgresApiKeyStore - EnvApiKeyStore findByHash returns correct key", asyn
   const req = {
     ip: "127.0.0.1",
     headers: { "x-api-key": "some_key" },
-  } as any;
+  } as Record<string, unknown>;
 
   // Default store (EnvApiKeyStore) with empty config
   const result = await buildLocalAuthContext(req);
@@ -401,7 +401,7 @@ test("verifyRequestApiKey - timing does not vary meaningfully between missing ke
       const req = {
         ip: "127.0.0.1",
         headers: { "x-api-key": keyValue },
-      } as any;
+      } as Record<string, unknown>;
       const result = await buildLocalAuthContext(req);
       // Path A: null expected (missing key-id → dummy timingSafeEqual → null)
       // Path B: null expected (key-id found, wrong secret → real timingSafeEqual → false → null)
@@ -435,7 +435,7 @@ test("verifyRequestApiKey - timing does not vary meaningfully between missing ke
   const req = {
     ip: "127.0.0.1",
     headers: { "x-api-key": "floe_test-key_real-secret-suffix" },
-  } as any;
+  } as Record<string, unknown>;
   const success = await buildLocalAuthContext(req);
   assert.ok(success !== null, "correct secret should authenticate");
   assert.equal(success.keyId, "test-key");

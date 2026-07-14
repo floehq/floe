@@ -34,7 +34,9 @@ import {
   observeStreamTtfb,
   recordStreamReadError,
 } from "../services/metrics/runtime.metrics.js";
+import { recordStreamSli } from "../services/reliability/sli.js";
 import {
+  emitAuditEvent,
   emitInfrastructureEvent,
   requestEventContext,
 } from "../services/events/infrastructure.events.js";
@@ -64,6 +66,19 @@ function pruneBlobExistenceCache() {
       blobExistenceCache.delete(blobId);
     }
   }
+}
+
+/**
+ * Escape a string for safe embedding in HTML text content or attributes.
+ * Replaces &, <, >, ", and ' with their corresponding HTML entities.
+ */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
 }
 
 /** @internal test-only hook */
@@ -224,6 +239,7 @@ async function* walrusByteStream(params: {
   maxSegmentBytes: number;
   initialSegmentBytes?: number;
   signal: AbortSignal;
+  requestId?: string;
 }): AsyncGenerator<Uint8Array> {
   const safeUpstreamSnippet = (body: string): string => {
     const trimmed = (body ?? "").trim();
@@ -276,9 +292,10 @@ async function* walrusByteStream(params: {
           blobId: params.blobId,
           rangeHeader: `bytes=${offset}-${segEnd}`,
           signal: params.signal,
+          requestId: params.requestId,
         }));
       } catch (err) {
-        if (params.signal.aborted || (err as any)?.name === "AbortError") {
+        if (params.signal.aborted || (err as Error)?.name === "AbortError") {
           return;
         }
 
@@ -311,7 +328,7 @@ async function* walrusByteStream(params: {
         );
       }
 
-      const rs = Readable.fromWeb(body as any);
+      const rs = Readable.fromWeb(body as ReadableStream<Uint8Array>);
       const expected = segEnd - offset + 1;
       let read = 0;
 
@@ -345,10 +362,10 @@ async function* walrusByteStream(params: {
 async function* cachedSegmentByteStream(params: {
   blobId: string;
   start: number;
-  end: number;
-  initialSegmentBytes: number;
+  end: number;    initialSegmentBytes: number;
   segmentBytes: number;
   signal: AbortSignal;
+  requestId?: string;
   log?: { warn: (...args: any[]) => void };
 }): AsyncGenerator<Uint8Array> {
   let offset = params.start;
@@ -412,6 +429,7 @@ async function* cachedSegmentByteStream(params: {
         maxSegmentBytes: params.segmentBytes,
         initialSegmentBytes: expected,
         signal: params.signal,
+        requestId: params.requestId,
       })) {
         yield chunk;
       }
@@ -460,7 +478,23 @@ export function chooseStreamReadPlan(params: {
 }
 
 export async function filesRoutes(app: FastifyInstance) {
-  app.get("/v1/files/:fileId/metadata", async (req, res) => {
+  app.get("/v1/files/:fileId/metadata", {
+    schema: {
+      tags: ["Files"],
+      summary: "Get file metadata",
+      description: "Fetch metadata about a stored file, including size, MIME type, and storage details.",
+      params: {
+        type: "object",
+        required: ["fileId"],
+        properties: {
+          fileId: {
+            type: "string",
+            description: "Sui object ID, blob ID, or file UUID",
+          },
+        },
+      },
+    },
+  }, async (req, res) => {
     const readLimit = await req.server.authProvider.checkRateLimit({
       req,
       scope: "file_meta_read",
@@ -475,7 +509,7 @@ export async function filesRoutes(app: FastifyInstance) {
     const { fileId: rawFileId } = req.params as { fileId: string };
     const fileId = normalizeFileIdParam(rawFileId);
     if (!fileId) {
-      req.log.warn({ fileId: rawFileId }, "Invalid file id");
+      req.childLogger.warn({ fileId: rawFileId }, "Invalid file id");
       return sendApiError(res, 400, "INVALID_FILE_ID", "fileId must be a valid Sui object id");
     }
 
@@ -498,7 +532,7 @@ export async function filesRoutes(app: FastifyInstance) {
       fieldsSource = out.source;
       postgresState = out.postgresState;
     } catch (_err) {
-      req.log.error({ err: _err, fileId }, "Sui read failed");
+      req.childLogger.error({ err: _err, fileId }, "Sui read failed");
       return sendApiError(res, 503, "SUI_UNAVAILABLE", "Failed to fetch file metadata from Sui", {
         retryable: true,
       });
@@ -511,12 +545,12 @@ export async function filesRoutes(app: FastifyInstance) {
 
     const normalized = normalizeFileFields(fields);
     if (!normalized) {
-      req.log.error({ fileId, fields }, "Invalid file metadata fields");
+      req.childLogger.error({ fileId, fields }, "Invalid file metadata fields");
       return sendApiError(res, 502, "INVALID_FILE_METADATA", "File metadata is invalid");
     }
 
     if (isFileFieldsDebugEnabled()) {
-      req.log.info(
+      req.childLogger.info(
         { fileId, source: fieldsSource ?? "unknown", durationMs: Date.now() - t0 },
         "metadata fields lookup",
       );
@@ -549,7 +583,7 @@ export async function filesRoutes(app: FastifyInstance) {
           };
         }
       } catch (err) {
-        req.log.warn({ err }, "Failed to fetch Walrus epoch for expiry estimation");
+        req.childLogger.warn({ err }, "Failed to fetch Walrus epoch for expiry estimation");
       }
     }
 
@@ -579,7 +613,37 @@ export async function filesRoutes(app: FastifyInstance) {
     };
   });
 
-  app.post("/v1/files/:fileId/renew", async (req, res) => {
+  app.post("/v1/files/:fileId/renew", {
+    bodyLimit: 64 * 1024,
+    schema: {
+      tags: ["Files"],
+      summary: "Renew file storage",
+      description:
+        "Extend the Walrus storage duration for a stored file. Requires the file owner's authorization.",
+      params: {
+        type: "object",
+        required: ["fileId"],
+        properties: {
+          fileId: {
+            type: "string",
+            description: "Sui object ID of the file",
+          },
+        },
+      },
+      body: {
+        type: "object",
+        required: ["epochs"],
+        properties: {
+          epochs: {
+            type: "integer",
+            description: "Number of Walrus epochs to extend by",
+            minimum: 1,
+            maximum: 53,
+          },
+        },
+      },
+    },
+  }, async (req, res) => {
     const { fileId: rawFileId } = req.params as { fileId: string };
     const { epochs } = req.body as { epochs: number };
 
@@ -617,7 +681,8 @@ export async function filesRoutes(app: FastifyInstance) {
     let blobObjectId = normalized.blobObjectId;
     if (!blobObjectId) {
       // For beta, we allow the user to provide it in the body if missing from metadata.
-      blobObjectId = (req.body as any).blobObjectId || (req.body as any).blob_object_id;
+      const b = req.body as Record<string, unknown>;
+      blobObjectId = (b.blobObjectId as string | undefined) ?? (b.blob_object_id as string | undefined) ?? null;
     }
     if (!blobObjectId) {
       const indexed = await getIndexedFile(fileId).catch(() => null);
@@ -636,7 +701,23 @@ export async function filesRoutes(app: FastifyInstance) {
       blobObjectId = byChecksum?.blobObjectId ?? null;
     }
 
+    // Capture before-state for audit trail
+    const auditBefore = {
+      fileId,
+      blobObjectId: normalized.blobObjectId ?? null,
+      walrusEndEpoch: normalized.walrusEndEpoch,
+    };
+
     if (!blobObjectId) {
+      emitAuditEvent(req.childLogger, {
+        action: "file_renew_missing_blob_object_id",
+        resource: `file:${fileId}`,
+        actor: requestEventContext(req).actor,
+        requestId: req.id,
+        before: auditBefore,
+        after: null,
+        metadata: { error: "Missing blob object ID", epochs },
+      });
       return sendApiError(
         res,
         400,
@@ -665,7 +746,7 @@ export async function filesRoutes(app: FastifyInstance) {
           metadataMessage.includes("SUI_RENEW_SUBMIT_FAILED") &&
           metadataMessage.includes("notExists")
         ) {
-          req.log.warn(
+          req.childLogger.warn(
             { err: metadataErr, fileId },
             "Skipping Sui renewal metadata update because the file object is missing",
           );
@@ -685,13 +766,39 @@ export async function filesRoutes(app: FastifyInstance) {
         createdAtMs: normalized.createdAt,
       }).catch(() => {});
 
+      // Emit audit event on successful renewal
+      const auditAfter = {
+        fileId,
+        blobObjectId: normalized.blobObjectId ?? blobObjectId,
+        walrusEndEpoch: walrusResult.endEpoch,
+        endEpochDelta: normalized.walrusEndEpoch !== null ? walrusResult.endEpoch - normalized.walrusEndEpoch : epochs,
+      };
+      emitAuditEvent(req.childLogger, {
+        action: "file_renew",
+        resource: `file:${fileId}`,
+        actor: requestEventContext(req).actor,
+        requestId: req.id,
+        before: auditBefore,
+        after: auditAfter,
+        metadata: { epochs },
+      });
+
       return {
         success: true,
         fileId,
         walrusEndEpoch: walrusResult.endEpoch,
       };
     } catch (err) {
-      req.log.error({ err, fileId }, "Renewal failed");
+      req.childLogger.error({ err, fileId }, "Renewal failed");
+      emitAuditEvent(req.childLogger, {
+        action: "file_renew_failed",
+        resource: `file:${fileId}`,
+        actor: requestEventContext(req).actor,
+        requestId: req.id,
+        before: auditBefore,
+        after: null,
+        metadata: { error: (err as Error)?.message ?? "unknown", epochs },
+      });
       return sendApiError(
         res,
         500,
@@ -701,7 +808,21 @@ export async function filesRoutes(app: FastifyInstance) {
     }
   });
 
-  app.get("/v1/files/:fileId/manifest", async (req, res) => {
+  app.get("/v1/files/:fileId/manifest", {
+    schema: {
+      tags: ["Files"],
+      summary: "Get file manifest",
+      description:
+        "Get the storage manifest for a file, describing the blob layout for direct Walrus access.",
+      params: {
+        type: "object",
+        required: ["fileId"],
+        properties: {
+          fileId: { type: "string", description: "Sui object ID of the file" },
+        },
+      },
+    },
+  }, async (req, res) => {
     const readLimit = await req.server.authProvider.checkRateLimit({
       req,
       scope: "file_meta_read",
@@ -716,7 +837,7 @@ export async function filesRoutes(app: FastifyInstance) {
     const { fileId: rawFileId } = req.params as { fileId: string };
     const fileId = normalizeFileIdParam(rawFileId);
     if (!fileId) {
-      req.log.warn({ fileId: rawFileId }, "Invalid file id");
+      req.childLogger.warn({ fileId: rawFileId }, "Invalid file id");
       return sendApiError(res, 400, "INVALID_FILE_ID", "fileId must be a valid Sui object id");
     }
 
@@ -739,7 +860,7 @@ export async function filesRoutes(app: FastifyInstance) {
       fieldsSource = out.source;
       postgresState = out.postgresState;
     } catch (_err) {
-      req.log.error({ err: _err, fileId }, "Sui read failed");
+      req.childLogger.error({ err: _err, fileId }, "Sui read failed");
       return sendApiError(res, 503, "SUI_UNAVAILABLE", "Failed to fetch file metadata from Sui", {
         retryable: true,
       });
@@ -752,12 +873,12 @@ export async function filesRoutes(app: FastifyInstance) {
 
     const normalized = normalizeFileFields(fields);
     if (!normalized) {
-      req.log.error({ fileId, fields }, "Invalid file metadata fields");
+      req.childLogger.error({ fileId, fields }, "Invalid file metadata fields");
       return sendApiError(res, 502, "INVALID_FILE_METADATA", "File metadata is invalid");
     }
 
     if (isFileFieldsDebugEnabled()) {
-      req.log.info(
+      req.childLogger.info(
         { fileId, source: fieldsSource ?? "unknown", durationMs: Date.now() - t0 },
         "manifest fields lookup",
       );
@@ -808,6 +929,46 @@ export async function filesRoutes(app: FastifyInstance) {
   app.route({
     method: ["GET", "HEAD"],
     url: "/v1/files/:fileId/stream",
+    schema: {
+      tags: ["Files"],
+      summary: "Stream file content",
+      description:
+        "Stream a stored file's content. Supports HTTP range requests (partial content). Returns the raw file bytes with appropriate Content-Type.",
+      params: {
+        type: "object",
+        required: ["fileId"],
+        properties: {
+          fileId: {
+            type: "string",
+            description: "Sui object ID, blob ID, or file UUID",
+          },
+        },
+      },
+      querystring: {
+        type: "object",
+        properties: {
+          skipBlobCheck: {
+            type: "string",
+            description:
+              "Bypass Walrus aggregator HEAD check (requires admin:uploads scope)",
+          },
+        },
+      },
+      headers: {
+        type: "object",
+        properties: {
+          range: { type: "string", description: "HTTP Range header for partial content" },
+          "if-none-match": {
+            type: "string",
+            description: "Conditional request ETag",
+          },
+          "if-range": {
+            type: "string",
+            description: "Conditional range request ETag",
+          },
+        },
+      },
+    },
     handler: async (req, reply) => {
       const readLimit = await req.server.authProvider.checkRateLimit({
         req,
@@ -827,7 +988,7 @@ export async function filesRoutes(app: FastifyInstance) {
         : await findFileByBlobId(rawFileId).catch(() => null);
       const fileId = normalizedFileId ?? indexedByBlob?.fileId ?? null;
       if (!fileId) {
-        req.log.warn({ fileId: rawFileId }, "Invalid file id");
+        req.childLogger.warn({ fileId: rawFileId }, "Invalid file id");
         return sendApiError(
           reply,
           400,
@@ -858,12 +1019,12 @@ export async function filesRoutes(app: FastifyInstance) {
 
       const normalized = normalizeFileFields(fields);
       if (!normalized) {
-        req.log.error({ fileId, fields }, "Invalid file metadata fields");
+        req.childLogger.error({ fileId, fields }, "Invalid file metadata fields");
         return sendApiError(reply, 502, "INVALID_FILE_METADATA", "File metadata is invalid");
       }
 
       if (isFileFieldsDebugEnabled()) {
-        req.log.info(
+        req.childLogger.info(
           { fileId, source: fieldsSource ?? "unknown", durationMs: Date.now() - t0 },
           "stream fields lookup",
         );
@@ -893,9 +1054,9 @@ export async function filesRoutes(app: FastifyInstance) {
       reply.header("Accept-Ranges", "bytes");
       reply.header("ETag", blobId);
 
-      const rangeHeader = (req.headers as any)?.range as string | undefined;
-      const ifNoneMatch = (req.headers as any)?.["if-none-match"] as string | undefined;
-      const ifRange = (req.headers as any)?.["if-range"] as string | undefined;
+      const rangeHeader = req.headers.range as string | undefined;
+      const ifNoneMatch = req.headers["if-none-match"] as string | undefined;
+      const ifRange = req.headers["if-range"] as string | undefined;
 
       let start = 0;
       let end = sizeBytes - 1;
@@ -970,12 +1131,29 @@ export async function filesRoutes(app: FastifyInstance) {
         return reply.status(status).send();
       }
 
+      // Trusted clients can pass ?skipBlobCheck=1 to bypass the Walrus
+      // aggregator HEAD check and go straight to streaming. The 503 blob
+      // guard is useful for freshly-published blobs but adds latency.
+      // Only allowed when the request identity has admin:uploads scope.
+      const q = req.query as Record<string, string | undefined>;
+      const rawSkipBlobCheck: boolean =
+        q.skipBlobCheck === "1" ||
+        q.skip_blob_check === "1";
+      const hasAdminScopes = req.authContext?.scopes?.includes("admin:uploads") ?? false;
+      const skipBlobCheck: boolean = rawSkipBlobCheck && hasAdminScopes;
+      if (rawSkipBlobCheck && !hasAdminScopes) {
+        req.childLogger.warn(
+          { fileId },
+          "skipBlobCheck requested but denied — caller lacks admin:uploads scope",
+        );
+      }
+
       // Check local disk cache first. If we already have the blob cached,
       // we can skip the Walrus existence check entirely — the file on disk
       // is proof the blob exists.
       const cachedPath = await getCachedStreamPath(blobId, sizeBytes);
 
-      let blobExists: { exists: boolean } | null = null;
+      let blobExists: { exists: boolean } | null = skipBlobCheck ? { exists: true } : null;
 
       if (!cachedPath) {
         // Check the short-TTL positive-result cache before hitting Walrus.
@@ -991,7 +1169,7 @@ export async function filesRoutes(app: FastifyInstance) {
           // Dedup concurrent existence checks for the same cold blobId
           let pending = inFlightExistenceChecks.get(blobId);
           if (!pending) {
-            pending = checkWalrusBlobExists({ blobId }).catch(() => ({ exists: true }));
+            pending = checkWalrusBlobExists({ blobId, requestId: req.id }).catch(() => ({ exists: true }));
             inFlightExistenceChecks.set(blobId, pending);
           }
           blobExists = await pending;
@@ -1020,7 +1198,7 @@ export async function filesRoutes(app: FastifyInstance) {
 <head><meta charset="UTF-8"><title>Blob Not Available</title></head>
 <body style="font-family:sans-serif;padding:2rem;max-width:600px;margin:auto;text-align:center">
   <h1>503 — Blob Not Yet Available</h1>
-  <p>The blob <code>${blobId}</code> has been submitted to the Walrus network but has not
+  <p>The blob <code>${escapeHtml(blobId)}</code> has been submitted to the Walrus network but has not
   been fully indexed by storage aggregators yet. This is usually temporary.</p>
   <p>Try refreshing the page in a minute.</p>
 </body>
@@ -1033,7 +1211,7 @@ export async function filesRoutes(app: FastifyInstance) {
       if (cachedPath) {
         const stat = await fs.stat(cachedPath).catch(() => null);
         if (stat?.isFile() && stat.size >= end + 1) {
-          emitInfrastructureEvent(req.log, {
+          emitInfrastructureEvent(req.childLogger, {
             event: "stream_started",
             requestId: eventContext.requestId,
             actor: eventContext.actor,
@@ -1056,7 +1234,7 @@ export async function filesRoutes(app: FastifyInstance) {
             end,
           });
           cachedStream.once("end", () => {
-            emitInfrastructureEvent(req.log, {
+            emitInfrastructureEvent(req.childLogger, {
               event: "stream_completed",
               requestId: eventContext.requestId,
               actor: eventContext.actor,
@@ -1073,15 +1251,15 @@ export async function filesRoutes(app: FastifyInstance) {
               },
             });
           });
-          cachedStream.once("error", (err: any) => {
-            emitInfrastructureEvent(req.log, {
+          cachedStream.once("error", (err: Error) => {
+            emitInfrastructureEvent(req.childLogger, {
               event: "stream_failed",
               requestId: eventContext.requestId,
               actor: eventContext.actor,
               fileId,
               blobId,
               outcome: "failure",
-              statusCode: (err as any)?.statusCode,
+              statusCode: (err as { statusCode?: number })?.statusCode,
               metadata: {
                 range: rangeHeader ?? null,
                 start,
@@ -1098,7 +1276,7 @@ export async function filesRoutes(app: FastifyInstance) {
       // Full-file tee cache: for status === 200 and small files, fetch and
       // stream the entire blob at once (tee writes to disk concurrently).
       if (status === 200) {
-        const teeResult = await teeCachedStreamBlob({ blobId, sizeBytes, log: req.log }).catch(
+        const teeResult = await teeCachedStreamBlob({ blobId, sizeBytes, log: req.childLogger }).catch(
           () => null,
         );
         if (teeResult) {
@@ -1122,7 +1300,7 @@ export async function filesRoutes(app: FastifyInstance) {
       const streamStartMs = Date.now();
       let firstByteObserved = false;
       let totalStreamedBytes = 0;
-      emitInfrastructureEvent(req.log, {
+      emitInfrastructureEvent(req.childLogger, {
         event: "stream_started",
         requestId: eventContext.requestId,
         actor: eventContext.actor,
@@ -1148,7 +1326,8 @@ export async function filesRoutes(app: FastifyInstance) {
             initialSegmentBytes: readPlan.initialSegmentBytes,
             segmentBytes: readPlan.segmentBytes,
             signal: abortController.signal,
-            log: req.log,
+            requestId: req.id,
+            log: req.childLogger,
           })) {
             if (!firstByteObserved && chunk.byteLength > 0) {
               firstByteObserved = true;
@@ -1167,7 +1346,7 @@ export async function filesRoutes(app: FastifyInstance) {
         })(),
       );
       stream.once("end", () => {
-        emitInfrastructureEvent(req.log, {
+        emitInfrastructureEvent(req.childLogger, {
           event: "stream_completed",
           requestId: eventContext.requestId,
           actor: eventContext.actor,
@@ -1187,11 +1366,11 @@ export async function filesRoutes(app: FastifyInstance) {
       stream.once("end", detachAbortHooks);
       stream.once("close", detachAbortHooks);
       stream.once("error", detachAbortHooks);
-      stream.once("error", (err: any) => {
+      stream.once("error", (err: Error) => {
         if (err?.message === "FILE_CONTENT_NOT_FOUND") {
           err.message = "FILE_BLOB_UNAVAILABLE";
         }
-        req.log.warn(
+        req.childLogger.warn(
           {
             err,
             fileId,
@@ -1206,14 +1385,14 @@ export async function filesRoutes(app: FastifyInstance) {
           "Stream failed",
         );
         recordStreamReadError(classifyStreamErrorReason(String(err?.message ?? "")));
-        emitInfrastructureEvent(req.log, {
+        emitInfrastructureEvent(req.childLogger, {
           event: "stream_failed",
           requestId: eventContext.requestId,
           actor: eventContext.actor,
           fileId,
           blobId,
           outcome: "failure",
-          statusCode: (err as any)?.statusCode,
+          statusCode: (err as { statusCode?: number })?.statusCode,
           bytes: totalStreamedBytes,
           durationMs: Date.now() - streamStartMs,
           metadata: {
@@ -1224,6 +1403,14 @@ export async function filesRoutes(app: FastifyInstance) {
             reason: classifyStreamErrorReason(String(err?.message ?? "")),
           },
         });
+      });
+
+      // Record stream SLI on completion or error
+      stream.once("end", () => {
+        recordStreamSli(true, Date.now() - streamStartMs);
+      });
+      stream.once("error", () => {
+        recordStreamSli(false, Date.now() - streamStartMs);
       });
 
       return reply.status(status).send(stream);

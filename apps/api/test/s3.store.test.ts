@@ -1,9 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { Readable } from "node:stream";
 import { createHash } from "node:crypto";
 
 import { S3ChunkStore } from "../src/store/s3.ts";
+
+let envTmpDir: string | undefined;
+let benchTmpDir: string;
+
+test.before(() => {
+  envTmpDir = process.env.UPLOAD_TMP_DIR;
+  benchTmpDir = mkdtempSync(path.join(tmpdir(), "floe-s3-test-"));
+  process.env.UPLOAD_TMP_DIR = benchTmpDir;
+});
+
+test.after(() => {
+  if (envTmpDir !== undefined) {
+    process.env.UPLOAD_TMP_DIR = envTmpDir;
+  } else {
+    delete process.env.UPLOAD_TMP_DIR;
+  }
+  rmSync(benchTmpDir, { recursive: true, force: true });
+});
 
 class HeadObjectCommand {
   constructor(public readonly input: any) {}
@@ -81,7 +102,7 @@ test("s3 chunk store streams validated chunk bodies into put object", async () =
   assert.deepEqual(uploaded, chunk);
 });
 
-test("s3 chunk store rejects hash mismatch without buffering to a final object", async () => {
+test("s3 chunk store rejects hash mismatch before S3 PutObject", async () => {
   const chunk = Buffer.from("bad-hash");
   let putAttempted = false;
 
@@ -98,7 +119,9 @@ test("s3 chunk store rejects hash mismatch without buffering to a final object",
     /HASH_MISMATCH/,
   );
 
-  assert.equal(putAttempted, true);
+  // New spool-to-temp pattern validates hash AFTER writing to temp file
+  // but BEFORE any S3 PutObject call — so putAttempted is false.
+  assert.equal(putAttempted, false);
 });
 
 test("s3 chunk store validates existing chunk metadata before reusing it", async () => {

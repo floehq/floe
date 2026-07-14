@@ -1,5 +1,12 @@
+import { Agent, type Dispatcher } from "undici";
 import { WalrusEnv, WalrusReadLimits } from "../../config/walrus.config.js";
-import { observeWalrusSegmentFetch } from "../metrics/runtime.metrics.js";
+import { parsePositiveIntEnv } from "../../utils/parseEnv.js";
+import {
+  observeWalrusSegmentFetch,
+  setWalrusConnectionPoolMetrics,
+} from "../metrics/runtime.metrics.js";
+import { walrusReadCircuit } from "../circuit-breaker/instances.js";
+import { CircuitBreakerError } from "../circuit-breaker/index.js";
 
 const BODY_IDLE_TIMEOUT_MS = 30_000;
 const HEAD_CHECK_TIMEOUT_MS = 15_000;
@@ -8,11 +15,75 @@ function normalizeBaseUrl(url: string): string {
   return url.replace(/\/$/, "");
 }
 
+// ============================================================
+// HTTP connection pooling via undici
+//
+// Creates a shared Agent that pools TCP connections across
+// requests to Walrus aggregator URLs, reducing connection
+// setup overhead per request.
+// ============================================================
+const WALRUS_FETCH_POOL_SIZE = parsePositiveIntEnv("FLOE_WALRUS_FETCH_POOL_SIZE", 8, 1);
+
+let walrusPool: Agent | null = null;
+let walrusPoolMetricsInterval: ReturnType<typeof setInterval> | null = null;
+
+export function getWalrusPool(): Agent {
+  if (!walrusPool) {
+    walrusPool = new Agent({
+      connections: WALRUS_FETCH_POOL_SIZE,
+      keepAliveTimeout: 60_000,
+      keepAliveMaxTimeout: 120_000,
+    });
+  }
+  return walrusPool;
+}
+
+/**
+ * Start a periodic metric collection for the Walrus connection pool.
+ * Emits active-connection count once per second.
+ */
+export function startWalrusPoolMetrics(intervalMs = 5000): void {
+  if (walrusPoolMetricsInterval) return;
+  walrusPoolMetricsInterval = setInterval(() => {
+    if (!walrusPool) return;
+    try {
+      let activeConns = 0;
+      interface AgentInternal {
+        _poolMap?: Map<string, Dispatcher>;
+      }
+      const poolMap = (walrusPool as unknown as AgentInternal)._poolMap as Map<string, Dispatcher> | undefined;
+      if (poolMap) {
+        for (const [, client] of poolMap) {
+          const c = client as { busyConnections?: number; pending?: number };
+          if (Number.isFinite(c.busyConnections)) activeConns += c.busyConnections!;
+          else if (Number.isFinite(c.pending)) activeConns += c.pending!;
+        }
+      }
+      setWalrusConnectionPoolMetrics({
+        activeConnections: activeConns,
+      });
+    } catch {
+      // Best-effort metric collection
+    }
+  }, intervalMs);
+  walrusPoolMetricsInterval.unref();
+}
+
+/**
+ * Stop periodic pool metric collection.
+ */
+export function stopWalrusPoolMetrics(): void {
+  if (walrusPoolMetricsInterval) {
+    clearInterval(walrusPoolMetricsInterval);
+    walrusPoolMetricsInterval = null;
+  }
+}
+
 let lastGoodAggregatorIdx = 0;
 
 function isRetryableNetworkError(err: unknown): boolean {
-  const msg = (err as any)?.message ? String((err as any).message) : "";
-  const causeMsg = (err as any)?.cause?.message ? String((err as any).cause?.message) : "";
+  const msg = (err as Error)?.message ? String((err as Error).message) : "";
+  const causeMsg = (err as { cause?: Error })?.cause?.message ? String((err as { cause?: Error })?.cause?.message) : "";
 
   return (
     msg.includes("fetch failed") ||
@@ -81,6 +152,7 @@ async function fetchWithTimeout(params: {
       method: "GET",
       headers: params.headers,
       signal: controller.signal,
+      dispatcher: getWalrusPool() as Dispatcher,
     });
   } finally {
     clearTimeout(timeout);
@@ -94,10 +166,29 @@ async function fetchWithTimeout(params: {
   }
 }
 
+/**
+ * Check whether a blob exists on ANY configured Walrus aggregator.
+ *
+ * Instead of falling back sequentially, this sends HEAD requests to
+ * ALL aggregators in parallel and succeeds on the first 200/206.
+ * Only returns { exists: false } when every aggregator fails.
+ *
+ * If a `requestId` is provided, it is propagated as an x-request-id
+ * header on the upstream HEAD request for log correlation.
+ *
+ * Protected by the walrusReadCircuit breaker — if the circuit is OPEN
+ * the blob is assumed to exist (optimistic pass-through) so streaming
+ * doesn't degrate to hard failures during an aggregator outage.
+ */
 export async function checkWalrusBlobExists(params: {
   blobId: string;
+  requestId?: string;
 }): Promise<{ exists: boolean; reason?: string }> {
   const urls = WalrusEnv.aggregatorUrls;
+  if (urls.length === 0) {
+    return { exists: false, reason: "no_aggregators_configured" };
+  }
+
   const startIdx =
     Number.isInteger(lastGoodAggregatorIdx) &&
     lastGoodAggregatorIdx >= 0 &&
@@ -105,41 +196,103 @@ export async function checkWalrusBlobExists(params: {
       ? lastGoodAggregatorIdx
       : 0;
 
-  for (let aggAttempt = 0; aggAttempt < urls.length; aggAttempt++) {
-    const idx = (startIdx + aggAttempt) % urls.length;
-    const base = normalizeBaseUrl(urls[idx]);
-    const url = `${base}/v1/blobs/${encodeURIComponent(params.blobId)}`;
+  // Re-order so the best aggregator is tried first, then the rest in parallel
+  const ordered: string[] = [];
+  for (let i = 0; i < urls.length; i++) {
+    const idx = (startIdx + i) % urls.length;
+    ordered.push(urls[idx]);
+  }
 
+  // Helper to do a HEAD check on a single aggregator
+  const headCheck = async (base: string): Promise<{ exists: boolean; status: number }> => {
+    const normalized = normalizeBaseUrl(base);
+    const url = `${normalized}/v1/blobs/${encodeURIComponent(params.blobId)}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), HEAD_CHECK_TIMEOUT_MS);
+    const reqHeaders: Record<string, string> = {};
+    if (params.requestId) reqHeaders["x-request-id"] = params.requestId;
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), HEAD_CHECK_TIMEOUT_MS);
-      try {
-        const res = await fetch(url, { method: "HEAD", signal: controller.signal });
-        if (res.status === 200 || res.status === 206) {
-          return { exists: true };
-        }
-        if (res.status !== 404) {
-          return { exists: true, reason: `unexpected_status:${res.status}` };
-        }
-      } finally {
-        clearTimeout(timeout);
-      }
+      const res = await fetch(url, {
+        method: "HEAD",
+        headers: reqHeaders,
+        signal: controller.signal,
+        dispatcher: getWalrusPool() as Dispatcher,
+      });
+      return { exists: res.status === 200 || res.status === 206, status: res.status };
     } catch {
-      // Try next aggregator
+      return { exists: false, status: 0 };
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  // Run HEAD check through the circuit breaker.
+  // If the circuit is OPEN, optimistically assume exists so streaming
+  // doesn't hard-fail — the fetch path has its own circuit protection.
+  let primaryResult: { exists: boolean; status: number };
+  try {
+    primaryResult = await walrusReadCircuit.call(() => headCheck(ordered[0]));
+  } catch (err) {
+    if (err instanceof CircuitBreakerError) {
+      return { exists: true, reason: "circuit_open_optimistic_pass" };
+    }
+    return { exists: false, reason: "head_check_failed" };
+  }
+  if (primaryResult.exists) {
+    lastGoodAggregatorIdx = 0;
+    return { exists: true };
+  }
+  if (primaryResult.status !== 0 && primaryResult.status !== 404) {
+    return { exists: true, reason: `unexpected_status:${primaryResult.status}` };
+  }
+
+  // Fire HEAD requests to ALL remaining aggregators in parallel.
+  // Succeed on first 200/206; fail only after all have responded or timed out.
+  const fallbackBases = ordered.slice(1);
+  if (fallbackBases.length === 0) {
+    return { exists: false, reason: "not_found_on_aggregator" };
+  }
+
+  const results = await Promise.allSettled(
+    fallbackBases.map(async (base) => {
+      const r = await headCheck(base);
+      if (!r.exists && r.status !== 0 && r.status !== 404) {
+        return { exists: true, aggregatorIdx: urls.indexOf(base), reason: `unexpected_status:${r.status}` };
+      }
+      return { exists: r.exists, aggregatorIdx: r.exists ? urls.indexOf(base) : -1 };
+    }),
+  );
+
+  for (const result of results) {
+    if (result.status === "fulfilled" && result.value.exists) {
+      const idx = result.value.aggregatorIdx;
+      if (Number.isInteger(idx) && idx >= 0) {
+        lastGoodAggregatorIdx = idx;
+      }
+      return { exists: true, reason: result.value.reason };
     }
   }
 
   return { exists: false, reason: "not_found_on_all_aggregators" };
 }
 
+/**
+ * Fetch a blob range from Walrus aggregators with circuit breaker protection.
+ *
+ * If the walrusReadCircuit is OPEN, throws CircuitBreakerError immediately
+ * instead of burning time on attempted connections.
+ */
 export async function fetchWalrusBlob(params: {
   blobId: string;
   rangeHeader?: string;
   signal?: AbortSignal;
+  requestId?: string;
 }): Promise<{ res: Response; aggregatorUrl: string }> {
-  const urls = WalrusEnv.aggregatorUrls;
+  return walrusReadCircuit.call(async () => {
+    const urls = WalrusEnv.aggregatorUrls;
   const headers: Record<string, string> = {};
   if (params.rangeHeader) headers["Range"] = params.rangeHeader;
+  if (params.requestId) headers["x-request-id"] = params.requestId;
 
   const startIdx =
     Number.isInteger(lastGoodAggregatorIdx) &&
@@ -261,7 +414,7 @@ export async function fetchWalrusBlob(params: {
         const durationMs = Date.now() - attemptStartedAt;
         lastErr = err;
 
-        if ((params.signal && params.signal.aborted) || (err as any)?.name === "AbortError") {
+        if ((params.signal && params.signal.aborted) || (err as Error)?.name === "AbortError") {
           observeWalrusSegmentFetch({
             outcome: "aborted",
             durationMs,
@@ -297,4 +450,5 @@ export async function fetchWalrusBlob(params: {
     throw new Error(`WALRUS_FETCH_FAILED status=${lastStatus}`);
   }
   throw new Error("WALRUS_FETCH_FAILED");
+  });
 }

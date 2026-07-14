@@ -4,6 +4,8 @@ import { getSuiNetwork, getSuiSigner } from "../../../state/sui.js";
 import type { SuiSigner } from "../../../sui/sui.signer.js";
 import { WalrusUploadLimits } from "../../../config/walrus.config.js";
 import type { WalrusUploadParams, WalrusUploadResult } from "./types.js";
+import { walrusPublishCircuit } from "../../circuit-breaker/instances.js";
+import { CircuitBreakerError } from "../../circuit-breaker/index.js";
 
 const FETCH_TIMEOUT_MS = WalrusUploadLimits.timeoutMs;
 const MIN_BALANCE_MIST = 1_000_000_000n;
@@ -75,6 +77,44 @@ function getSendObjectTo(): string | undefined {
   return _sendObjectTo;
 }
 
+/**
+ * Response shape from the Walrus publisher API's PUT /v1/blobs endpoint.
+ * Fields appear in either camelCase or snake_case depending on API version.
+ */
+interface WalrusBlobStoreInfo {
+  blobId?: string;
+  blob_id?: string;
+  id?: string;
+  objectId?: string;
+  object_id?: string;
+  storage?: { endEpoch?: number; end_epoch?: number };
+}
+
+interface WalrusBlobInfo {
+  blobId?: string;
+  blob_id?: string;
+  blobObject?: WalrusBlobStoreInfo;
+  blob_object?: WalrusBlobStoreInfo;
+  blobObjectId?: string;
+  blob_object_id?: string;
+  endEpoch?: number;
+  end_epoch?: number;
+  cost?: number;
+  storageCost?: number;
+  storage_cost?: number;
+}
+
+interface WalrusPublisherResponse {
+  newlyCreated?: WalrusBlobInfo;
+  newly_created?: WalrusBlobInfo;
+  alreadyCertified?: WalrusBlobInfo;
+  already_certified?: WalrusBlobInfo;
+  blobId?: string;
+  blob_id?: string;
+  blobObject?: WalrusBlobStoreInfo;
+  blob_object?: WalrusBlobStoreInfo;
+}
+
 export function describeWalrusPublisherBackend() {
   const urls = getPublisherBaseUrls();
   return {
@@ -122,15 +162,22 @@ async function safeReadText(res: Response): Promise<string> {
   }
 }
 
+/**
+ * Publish a blob via the Walrus publisher API with circuit breaker protection.
+ *
+ * If the walrusPublishCircuit is OPEN, throws CircuitBreakerError immediately
+ * instead of attempting upstream requests that are likely to fail.
+ */
 export async function uploadToWalrusViaPublisher(
   params: WalrusUploadParams,
 ): Promise<WalrusUploadResult> {
-  const urls = getPublisherBaseUrls();
-  if (urls.length === 0) {
-    throw new Error(
-      "FLOE_WALRUS_PUBLISHER_BASE_URL or FLOE_WALRUS_PUBLISHER_BASE_URLS must be set to http(s) URL when FLOE_WALRUS_STORE_MODE=publisher",
-    );
-  }
+  return walrusPublishCircuit.call(async () => {
+    const urls = getPublisherBaseUrls();
+    if (urls.length === 0) {
+      throw new Error(
+        "FLOE_WALRUS_PUBLISHER_BASE_URL or FLOE_WALRUS_PUBLISHER_BASE_URLS must be set to http(s) URL when FLOE_WALRUS_STORE_MODE=publisher",
+      );
+    }
   for (const baseUrl of urls) {
     if (!/^https?:\/\//.test(baseUrl)) {
       throw new Error(
@@ -185,7 +232,7 @@ export async function uploadToWalrusViaPublisher(
         throw err;
       }
 
-      const json = (await res.json()) as any;
+      const json = (await res.json()) as WalrusPublisherResponse;
       const newlyCreated = json?.newlyCreated ?? json?.newly_created;
       const alreadyCertified = json?.alreadyCertified ?? json?.already_certified;
       const blobObject =
@@ -285,4 +332,5 @@ export async function uploadToWalrusViaPublisher(
   }
 
   throw lastError ?? new Error("WALRUS_UPLOAD_FAILED");
+  });
 }

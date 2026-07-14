@@ -3,6 +3,8 @@ import type { FastifyRequest } from "fastify";
 import { AuthExternalConfig } from "../../config/auth.config.js";
 import { extractPresentedCredential } from "./auth.credentials.js";
 import type { AuthContext, AuthSubjectType } from "./auth.context.js";
+import { externalAuthCircuit } from "../circuit-breaker/instances.js";
+import { CircuitBreakerError } from "../circuit-breaker/index.js";
 
 type ExternalVerifyResponse = {
   valid?: boolean;
@@ -21,7 +23,19 @@ type ExternalVerifyResponse = {
   expiresAt?: string;
 };
 
+const EXTERNAL_AUTH_CACHE_MAX = 10_000;
 const externalAuthCache = new Map<string, { expiresAt: number; context: AuthContext }>();
+
+function evictExternalAuthCacheIfNeeded() {
+  if (externalAuthCache.size <= EXTERNAL_AUTH_CACHE_MAX) return;
+  let over = externalAuthCache.size - EXTERNAL_AUTH_CACHE_MAX;
+  const entries = [...externalAuthCache.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+  for (const [k] of entries) {
+    if (over <= 0) break;
+    externalAuthCache.delete(k);
+    over -= 1;
+  }
+}
 
 function computeCacheExpiryMs(context: AuthContext): number {
   const ttlExpiryMs = Date.now() + AuthExternalConfig.cacheTtlMs;
@@ -121,48 +135,60 @@ async function verifyExternalCredential(req: FastifyRequest): Promise<AuthContex
     return cached.context;
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), AuthExternalConfig.timeoutMs);
+  // Wrap the verify call in the circuit breaker.
+  // If the circuit is OPEN we return null (fail-closed for auth),
+  // causing the request to fall through to the next auth provider
+  // rather than blocking callers waiting for a timeout.
   try {
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-      accept: "application/json",
-    };
-    if (AuthExternalConfig.sharedSecret) {
-      headers["x-floe-shared-secret"] = AuthExternalConfig.sharedSecret;
-    }
-    if (AuthExternalConfig.authToken) {
-      headers.authorization = `Bearer ${AuthExternalConfig.authToken}`;
-    }
-    const body =
-      presented.type === "api_key"
-        ? { apiKey: presented.value }
-        : { delegatedToken: presented.value };
+    return await externalAuthCircuit.call(async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), AuthExternalConfig.timeoutMs);
+      try {
+        const headers: Record<string, string> = {
+          "content-type": "application/json",
+          accept: "application/json",
+        };
+        if (AuthExternalConfig.sharedSecret) {
+          headers["x-floe-shared-secret"] = AuthExternalConfig.sharedSecret;
+        }
+        if (AuthExternalConfig.authToken) {
+          headers.authorization = `Bearer ${AuthExternalConfig.authToken}`;
+        }
+        const body =
+          presented.type === "api_key"
+            ? { apiKey: presented.value }
+            : { delegatedToken: presented.value };
 
-    const response = await fetch(verifyUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
+        const response = await fetch(verifyUrl, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        if (!response.ok) return null;
+        const payload = (await response.json().catch(() => null)) as ExternalVerifyResponse | null;
+        if (!payload) return null;
+        const parsed = parseExternalResponse(presented.type, payload);
+        if (!parsed) return null;
+
+        const cacheExpiryMs = computeCacheExpiryMs(parsed);
+        if (cacheExpiryMs > Date.now()) {
+          externalAuthCache.set(cacheKey, {
+            expiresAt: cacheExpiryMs,
+            context: parsed,
+          });
+          evictExternalAuthCacheIfNeeded();
+        }
+        return parsed;
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(timeout);
+      }
     });
-    if (!response.ok) return null;
-    const payload = (await response.json().catch(() => null)) as ExternalVerifyResponse | null;
-    if (!payload) return null;
-    const parsed = parseExternalResponse(presented.type, payload);
-    if (!parsed) return null;
-
-    const cacheExpiryMs = computeCacheExpiryMs(parsed);
-    if (cacheExpiryMs > Date.now()) {
-      externalAuthCache.set(cacheKey, {
-        expiresAt: cacheExpiryMs,
-        context: parsed,
-      });
-    }
-    return parsed;
-  } catch {
+  } catch (err) {
+    // CircuitBreakerError or any other throw from the circuit breaker
     return null;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

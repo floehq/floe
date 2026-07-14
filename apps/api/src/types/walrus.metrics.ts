@@ -35,7 +35,7 @@ export function recordWalrusUploadMetric(metric: WalrusUploadMetric) {
 export function classifyWalrusError(err: Error): WalrusUploadOutcome {
   const msg = (err.message ?? "").toUpperCase();
 
-  if ((err as any)?.name === "AbortError") return "timeout";
+  if (err?.name === "AbortError") return "timeout";
 
   const m = msg.match(/WALRUS_UPLOAD_FAILED:(\d{3})\b/);
   if (m) {
