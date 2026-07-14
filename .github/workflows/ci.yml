@@ -63,7 +63,6 @@ jobs:
     name: npm audit
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    continue-on-error: true
 
     steps:
       - name: Check out repository
@@ -85,7 +84,6 @@ jobs:
     name: Trivy (Docker image)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
 
     steps:
       - name: Check out repository

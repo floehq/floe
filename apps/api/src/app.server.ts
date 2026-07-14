@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import multipart from "@fastify/multipart";
 import cors from "@fastify/cors";
+import helmet from "@fastify/helmet";
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
@@ -17,6 +18,7 @@ import {
   startUploadFinalizeWorker,
   stopUploadFinalizeWorker,
 } from "./services/uploads/finalize.queue.js";
+import { startWalrusPoolMetrics, stopWalrusPoolMetrics } from "./services/walrus/read.js";
 import { ChunkConfig, UploadConfig } from "./config/uploads.config.js";
 import { createDefaultAuthProvider, type AuthProvider } from "./services/auth/auth.provider.js";
 import {
@@ -29,12 +31,28 @@ import { recordHttpRequest } from "./services/metrics/runtime.metrics.js";
 import { ensureFilesTable } from "./db/files.repository.js";
 import { chunkStore } from "./store/index.js";
 import { initStreamCache } from "./services/stream/stream.cache.js";
+import { dumpConfig } from "./utils/configDump.js";
+import {
+  initErrorReporter,
+  closeErrorReporter,
+  captureException,
+} from "./services/errors/error.reporter.js";
+
+// Initialize before any other handlers so Sentry can hook into
+// unhandledRejection / uncaughtException from the start.
+initErrorReporter({
+  info: (msg: string) => console.error("[error-reporter]", msg),
+});
 
 process.on("unhandledRejection", (reason) => {
+  captureException(reason instanceof Error ? reason : new Error(String(reason)), {
+    event: "unhandledRejection",
+  });
   console.error("Unhandled promise rejection:", reason);
 });
 
 process.on("uncaughtException", (err) => {
+  captureException(err, { event: "uncaughtException" });
   console.error("Uncaught exception:", err);
   process.exit(1);
 });
@@ -143,6 +161,38 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
     maxAge: 600,
   });
 
+  await app.register(helmet, {
+    // Disable cross-origin embedder policy to avoid breaking clients that
+    // stream media from Floe through a web page.
+    crossOriginEmbedderPolicy: false,
+
+    // CSP: very restrictive for an API that serves no scripts or resources.
+    // Inline styles are allowed for the 503 blob-unavailable error page.
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'none'"],
+        styleSrc: ["'unsafe-inline'"],
+        frameAncestors: ["'none'"],
+        formAction: ["'none'"],
+        baseUri: ["'none'"],
+        scriptSrc: ["'none'"],
+        imgSrc: ["'none'"],
+        objectSrc: ["'none'"],
+        upgradeInsecureRequests: [],
+      },
+    },
+
+    // HSTS: 1 year, include subdomains, preload
+    hsts: {
+      maxAge: 365 * 24 * 60 * 60,
+      includeSubDomains: true,
+      preload: true,
+    },
+
+    // Referrer policy: no referrer info in downstream requests
+    referrerPolicy: { policy: "no-referrer" },
+  });
+
   await app.register(multipart, {
     attachFieldsToBody: false,
     throwFileSizeLimit: false,
@@ -161,6 +211,11 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
     if (TopologyConfig.features.streamCache) {
       await initStreamCache();
     }
+    // Start periodic Walrus connection pool metrics collection
+    startWalrusPoolMetrics();
+
+    app.log.info({ config: dumpConfig() }, "Resolved FLOE_* configuration");
+
     app.log.info(
       {
         role: TopologyConfig.role,
@@ -216,10 +271,12 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
   await app.register(healthRoute);
 
   app.addHook("onClose", async () => {
+    stopWalrusPoolMetrics();
     await stopUploadGc();
     await stopUploadFinalizeWorker();
     await closePostgres();
     await closeRedis();
+    await closeErrorReporter();
   });
 
   app.setErrorHandler((err, req, reply) => {

@@ -1,3 +1,4 @@
+import { parseBoolEnv } from "../../utils/parseEnv.js";
 import type { FastifyBaseLogger, FastifyRequest } from "fastify";
 
 import { buildPublicAuthContext, type RequestIdentity } from "../auth/auth.context.js";
@@ -36,14 +37,6 @@ export type InfrastructureEvent = {
   bytes?: number;
   metadata?: Record<string, unknown>;
 };
-
-function parseBoolEnv(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  if (raw === "1" || raw.toLowerCase() === "true") return true;
-  if (raw === "0" || raw.toLowerCase() === "false") return false;
-  return fallback;
-}
 
 const EVENT_LOG_ENABLED = parseBoolEnv("FLOE_EVENT_LOG_ENABLED", true);
 

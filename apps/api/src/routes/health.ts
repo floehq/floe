@@ -1,3 +1,4 @@
+import { parseBoolEnv } from "../utils/parseEnv.js";
 import { FastifyInstance } from "fastify";
 import crypto from "node:crypto";
 import { getSession } from "../services/uploads/session.js";
@@ -13,20 +14,14 @@ import { sendApiError } from "../utils/apiError.js";
 import {
   checkPostgresDependencyHealth,
   checkRedisDependencyHealth,
+  checkS3Health,
+  checkWalrusDependencyHealth,
 } from "../services/health/dependencies.js";
 import { buildOperatorUploadSummary } from "../services/ops/upload.summary.js";
 import { TopologyConfig } from "../config/topology.config.js";
 import { describeWalrusReaders } from "../config/walrus.config.js";
 import { describeWalrusWriters } from "../services/walrus/upload.js";
 import { buildVersionInfo } from "../version.js";
-
-function parseBoolEnv(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  if (raw === "1" || raw.toLowerCase() === "true") return true;
-  if (raw === "0" || raw.toLowerCase() === "false") return false;
-  return fallback;
-}
 
 const METRICS_ENABLED = parseBoolEnv("FLOE_ENABLE_METRICS", true);
 const METRICS_TOKEN = (process.env.FLOE_METRICS_TOKEN ?? "").trim();
@@ -135,8 +130,12 @@ async function buildHealthSnapshot(req: any): Promise<HealthSnapshot> {
     oldestQueuedAt: number | null;
     oldestQueuedAgeMs: number | null;
   } | null = null;
-  const redis = await checkRedisDependencyHealth();
-  const postgres = await checkPostgresDependencyHealth();
+  const [redis, postgres, s3, walrus] = await Promise.all([
+    checkRedisDependencyHealth(),
+    checkPostgresDependencyHealth(),
+    checkS3Health(),
+    checkWalrusDependencyHealth(),
+  ]);
 
   if (!redis.ok) {
     req.log.error("Redis Health Check Failed");
@@ -189,6 +188,8 @@ async function buildHealthSnapshot(req: any): Promise<HealthSnapshot> {
       checks: {
         redis,
         postgres,
+        s3,
+        walrus,
         finalizeQueue: finalizeQueue ?? {
           depth: null,
           pendingUnique: null,

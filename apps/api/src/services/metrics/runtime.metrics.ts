@@ -291,6 +291,12 @@ export function recordStreamCacheEviction(params: {
   });
 }
 
+export function setWalrusConnectionPoolMetrics(params: {
+  activeConnections: number;
+}): void {
+  setGauge("floe_walrus_pool_active_connections", params.activeConnections);
+}
+
 export function recordUploadTotalDuration(params: {
   durationMs: number;
   outcome: "succeeded" | "failed";

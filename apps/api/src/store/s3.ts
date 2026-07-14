@@ -6,6 +6,7 @@ import path from "node:path";
 import { Readable, Transform } from "stream";
 import { pipeline } from "stream/promises";
 
+import { parseBoolEnv } from "../utils/parseEnv.js";
 import { UploadConfig } from "../config/uploads.config.js";
 import type { ChunkStore } from "./chunk.js";
 
@@ -29,14 +30,6 @@ function loadAwsS3(): AwsS3Module {
       "S3 chunk store requires @aws-sdk/client-s3. Install it with: npm install --workspace=apps/api @aws-sdk/client-s3",
     );
   }
-}
-
-function parseBoolEnv(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  if (raw === "1" || raw.toLowerCase() === "true") return true;
-  if (raw === "0" || raw.toLowerCase() === "false") return false;
-  throw new Error(`${name} must be one of: 1, 0, true, false`);
 }
 
 function parseIntEnv(name: string, fallback: number, min = 1): number {

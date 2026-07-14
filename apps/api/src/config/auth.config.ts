@@ -1,3 +1,5 @@
+import { parseBoolEnv } from "../utils/parseEnv.js";
+
 function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
   const raw = process.env[name];
   if (raw === undefined || raw === "") return fallback;
@@ -6,14 +8,6 @@ function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
     throw new Error(`${name} must be an integer >= ${min}`);
   }
   return n;
-}
-
-function parseBoolEnv(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  if (raw === "1" || raw.toLowerCase() === "true") return true;
-  if (raw === "0" || raw.toLowerCase() === "false") return false;
-  throw new Error(`${name} must be one of: 1, 0, true, false`);
 }
 
 const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
@@ -205,7 +199,7 @@ function parseApiKeys(): StaticApiKeyConfig[] {
       ? candidate.scopes
           .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
           .map((value) => value.trim())
-      : ["*"];
+      : ["uploads:write", "files:read"];
     const owner = normalizeOptionalSuiAddress(candidate.owner);
 
     if (!id) throw new Error(`FLOE_API_KEYS_JSON[${index}].id is required`);
@@ -224,7 +218,7 @@ function parseApiKeys(): StaticApiKeyConfig[] {
       id,
       secret,
       owner,
-      scopes: scopes.length > 0 ? scopes : ["*"],
+      scopes: scopes.length > 0 ? scopes : ["uploads:write", "files:read"],
       tier,
     } satisfies StaticApiKeyConfig;
   });
@@ -272,7 +266,7 @@ export const AuthUploadPolicyConfig = {
 } as const;
 
 export const AuthOwnerPolicyConfig = {
-  enforceUploadOwner: parseBoolEnv("FLOE_ENFORCE_UPLOAD_OWNER", false),
+  enforceUploadOwner: parseBoolEnv("FLOE_ENFORCE_UPLOAD_OWNER", true),
 } as const;
 
 export const AuthAccessPolicyConfig = {

@@ -1,3 +1,4 @@
+import { parseBoolEnv } from "../utils/parseEnv.js";
 import { createRequire } from "module";
 import type { FastifyBaseLogger } from "fastify";
 
@@ -10,14 +11,6 @@ type PgPool = {
 
 let pool: PgPool | null = null;
 let enabled = false;
-
-function parseBoolEnv(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  if (raw === "1" || raw.toLowerCase() === "true") return true;
-  if (raw === "0" || raw.toLowerCase() === "false") return false;
-  throw new Error(`${name} must be one of: 1, 0, true, false`);
-}
 
 function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
   const raw = process.env[name];

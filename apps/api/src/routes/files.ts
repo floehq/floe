@@ -66,6 +66,19 @@ function pruneBlobExistenceCache() {
   }
 }
 
+/**
+ * Escape a string for safe embedding in HTML text content or attributes.
+ * Replaces &, <, >, ", and ' with their corresponding HTML entities.
+ */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#x27;");
+}
+
 /** @internal test-only hook */
 export function getBlobExistenceCacheForTests() {
   return blobExistenceCache;
@@ -224,6 +237,7 @@ async function* walrusByteStream(params: {
   maxSegmentBytes: number;
   initialSegmentBytes?: number;
   signal: AbortSignal;
+  requestId?: string;
 }): AsyncGenerator<Uint8Array> {
   const safeUpstreamSnippet = (body: string): string => {
     const trimmed = (body ?? "").trim();
@@ -276,6 +290,7 @@ async function* walrusByteStream(params: {
           blobId: params.blobId,
           rangeHeader: `bytes=${offset}-${segEnd}`,
           signal: params.signal,
+          requestId: params.requestId,
         }));
       } catch (err) {
         if (params.signal.aborted || (err as any)?.name === "AbortError") {
@@ -345,10 +360,10 @@ async function* walrusByteStream(params: {
 async function* cachedSegmentByteStream(params: {
   blobId: string;
   start: number;
-  end: number;
-  initialSegmentBytes: number;
+  end: number;    initialSegmentBytes: number;
   segmentBytes: number;
   signal: AbortSignal;
+  requestId?: string;
   log?: { warn: (...args: any[]) => void };
 }): AsyncGenerator<Uint8Array> {
   let offset = params.start;
@@ -412,6 +427,7 @@ async function* cachedSegmentByteStream(params: {
         maxSegmentBytes: params.segmentBytes,
         initialSegmentBytes: expected,
         signal: params.signal,
+        requestId: params.requestId,
       })) {
         yield chunk;
       }
@@ -970,12 +986,28 @@ export async function filesRoutes(app: FastifyInstance) {
         return reply.status(status).send();
       }
 
+      // Trusted clients can pass ?skipBlobCheck=1 to bypass the Walrus
+      // aggregator HEAD check and go straight to streaming. The 503 blob
+      // guard is useful for freshly-published blobs but adds latency.
+      // Only allowed when the request identity has admin:uploads scope.
+      const rawSkipBlobCheck: boolean =
+        (req.query as any)?.skipBlobCheck === "1" ||
+        (req.query as any)?.skip_blob_check === "1";
+      const hasAdminScopes = req.authContext?.scopes?.includes("admin:uploads") ?? false;
+      const skipBlobCheck: boolean = rawSkipBlobCheck && hasAdminScopes;
+      if (rawSkipBlobCheck && !hasAdminScopes) {
+        req.log.warn(
+          { fileId },
+          "skipBlobCheck requested but denied — caller lacks admin:uploads scope",
+        );
+      }
+
       // Check local disk cache first. If we already have the blob cached,
       // we can skip the Walrus existence check entirely — the file on disk
       // is proof the blob exists.
       const cachedPath = await getCachedStreamPath(blobId, sizeBytes);
 
-      let blobExists: { exists: boolean } | null = null;
+      let blobExists: { exists: boolean } | null = skipBlobCheck ? { exists: true } : null;
 
       if (!cachedPath) {
         // Check the short-TTL positive-result cache before hitting Walrus.
@@ -991,7 +1023,7 @@ export async function filesRoutes(app: FastifyInstance) {
           // Dedup concurrent existence checks for the same cold blobId
           let pending = inFlightExistenceChecks.get(blobId);
           if (!pending) {
-            pending = checkWalrusBlobExists({ blobId }).catch(() => ({ exists: true }));
+            pending = checkWalrusBlobExists({ blobId, requestId: req.id }).catch(() => ({ exists: true }));
             inFlightExistenceChecks.set(blobId, pending);
           }
           blobExists = await pending;
@@ -1020,7 +1052,7 @@ export async function filesRoutes(app: FastifyInstance) {
 <head><meta charset="UTF-8"><title>Blob Not Available</title></head>
 <body style="font-family:sans-serif;padding:2rem;max-width:600px;margin:auto;text-align:center">
   <h1>503 — Blob Not Yet Available</h1>
-  <p>The blob <code>${blobId}</code> has been submitted to the Walrus network but has not
+  <p>The blob <code>${escapeHtml(blobId)}</code> has been submitted to the Walrus network but has not
   been fully indexed by storage aggregators yet. This is usually temporary.</p>
   <p>Try refreshing the page in a minute.</p>
 </body>
@@ -1148,6 +1180,7 @@ export async function filesRoutes(app: FastifyInstance) {
             initialSegmentBytes: readPlan.initialSegmentBytes,
             segmentBytes: readPlan.segmentBytes,
             signal: abortController.signal,
+            requestId: req.id,
             log: req.log,
           })) {
             if (!firstByteObserved && chunk.byteLength > 0) {
