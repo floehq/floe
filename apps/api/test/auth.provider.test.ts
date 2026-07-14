@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 
 process.env.FLOE_ACCESS_POLICY = "hybrid";
 process.env.FLOE_AUTH_PROVIDER = "local";
+// Force env-backed store so tests use in-memory keys from FLOE_API_KEYS_JSON
+// rather than querying a Postgres database.
+process.env.FLOE_API_KEY_STORE = "env";
 process.env.FLOE_API_KEYS_JSON = JSON.stringify([
   {
     id: "upload-read-only",

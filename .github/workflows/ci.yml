@@ -73,10 +73,9 @@ jobs:
           --health-timeout 3s
           --health-retries 5
         entrypoint: sh
-        command: -c '
-          mkdir -p /data/floe-test &&
-          minio server /data --console-address ":9001"
-        '
+        command:
+          - -c
+          - mkdir -p /data/floe-test && minio server /data --console-address ":9001"
 
     steps:
       - name: Check out repository
