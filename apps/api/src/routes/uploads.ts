@@ -8,6 +8,7 @@ import { parsePositiveIntEnv } from "../utils/parseEnv.js";
 import { ChunkConfig, UploadConfig } from "../config/uploads.config.js";
 import { WalrusEpochLimits } from "../config/walrus.config.js";
 import { AuthUploadPolicyConfig } from "../config/auth.config.js";
+import { recordUploadSli } from "../services/reliability/sli.js";
 
 import { createSession, getSession, touchUploadActivity } from "../services/uploads/session.js";
 import { buildFinalizeDiagnostics } from "../services/uploads/finalize.shared.js";
@@ -17,6 +18,7 @@ import {
 } from "../services/uploads/finalize.queue.js";
 import { applyRateLimitHeaders } from "../services/auth/auth.headers.js";
 import {
+  emitAuditEvent,
   emitInfrastructureEvent,
   requestEventContext,
 } from "../services/events/infrastructure.events.js";
@@ -468,7 +470,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       },
     },
   }, async (req, reply) => {
-    const log = req.log;
+    const log = req.childLogger;
     const body = req.body as Record<string, unknown>;
     const createLimit = await req.server.authProvider.checkRateLimit({
       req,
@@ -805,7 +807,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       },
     },
   }, async (req, reply) => {
-    const log = req.log;
+    const log = req.childLogger;
     const { uploadId, index } = req.params as Record<string, string>;
     const chunkLimit = await req.server.authProvider.checkRateLimit({
       req,
@@ -1088,7 +1090,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         if (isRedisDependencyError(err)) {
           return sendRedisUnavailable(reply);
         }
-        req.log.error({ err, uploadId }, "Chunk store reconciliation failed during status");
+        req.childLogger.error({ err, uploadId }, "Chunk store reconciliation failed during status");
         reply.header("Retry-After", String(RETRYABLE_RETRY_AFTER_SECONDS));
         return sendApiError(
           reply,
@@ -1147,7 +1149,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       if (isRedisDependencyError(err)) {
         return sendRedisUnavailable(reply);
       }
-      req.log.error({ err, uploadId }, "Chunk store reconciliation failed during status");
+      req.childLogger.error({ err, uploadId }, "Chunk store reconciliation failed during status");
       reply.header("Retry-After", String(RETRYABLE_RETRY_AFTER_SECONDS));
       return sendApiError(
         reply,
@@ -1203,7 +1205,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       },
     },
   }, async (req, reply) => {
-    const log = req.log;
+    const log = req.childLogger;
     const { uploadId } = req.params as { uploadId: string };
     const exposeBlobId = shouldExposeBlobId(req.query as Record<string, unknown>);
     const exposeWalrusDebug = shouldExposeWalrusDebug(req.query as Record<string, unknown>);
@@ -1397,7 +1399,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       if (isRedisDependencyError(err)) {
         return sendRedisUnavailable(reply);
       }
-      req.log.error({ err, uploadId }, "Chunk store reconciliation failed during complete");
+      req.childLogger.error({ err, uploadId }, "Chunk store reconciliation failed during complete");
       reply.header("Retry-After", String(RETRYABLE_RETRY_AFTER_SECONDS));
       return sendApiError(
         reply,
@@ -1468,6 +1470,14 @@ export default async function uploadRoutes(app: FastifyInstance) {
       log,
       uploadId,
     });
+    // Record upload SLI — finalize enqueue counts as success to SLO,
+    // backpressure or errors count as failures.
+    if (!queued.rejectedByBackpressure) {
+      recordUploadSli(true, 0);
+    } else {
+      recordUploadSli(false, 0);
+    }
+
     return reply.code(202).send(responseBody);
   });
 
@@ -1486,7 +1496,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
       },
     },
   }, async (req, reply) => {
-    const log = req.log;
+    const log = req.childLogger;
     const { uploadId } = req.params as { uploadId: string };
     const cancelLimit = await req.server.authProvider.checkRateLimit({
       req,
@@ -1674,6 +1684,18 @@ export default async function uploadRoutes(app: FastifyInstance) {
           status: "canceled",
         },
       });
+
+      // Emit audit event for the cancel action
+      emitAuditEvent(log, {
+        action: "upload_cancel",
+        resource: `upload:${uploadId}`,
+        actor: eventContext.actor,
+        requestId: req.id,
+        before: { status: currentMeta?.status ?? "unknown" },
+        after: { status: "canceled" },
+        metadata: { owner: currentMeta?.owner ?? null },
+      });
+
       const responseBody = { ok: true, uploadId, status: "canceled" as const };
       await persistUploadActionIdempotencyRecord({
         redis,
@@ -1729,6 +1751,18 @@ export default async function uploadRoutes(app: FastifyInstance) {
         status: "canceled",
       },
     });
+
+    // Emit audit event for the cancel action
+    emitAuditEvent(log, {
+      action: "upload_cancel",
+      resource: `upload:${uploadId}`,
+      actor: eventContext.actor,
+      requestId: req.id,
+      before: { status: session?.status ?? currentMeta?.status ?? "unknown" },
+      after: { status: "canceled" },
+      metadata: { owner: session?.owner ?? currentMeta?.owner ?? null },
+    });
+
     const responseBody = { ok: true, uploadId, status: "canceled" as const };
     await persistUploadActionIdempotencyRecord({
       redis,

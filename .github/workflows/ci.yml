@@ -7,11 +7,76 @@ on:
       - master
   pull_request:
 
+env:
+  # Shared test credentials — must match service containers below
+  DATABASE_URL: postgresql://floe_test:floe_test@localhost:5432/floe_test
+  REDIS_URL: redis://localhost:6379
+  FLOE_S3_BUCKET: floe-test
+  FLOE_S3_REGION: us-east-1
+  FLOE_S3_ENDPOINT: http://localhost:9000
+  FLOE_S3_FORCE_PATH_STYLE: 1
+  FLOE_S3_ACCESS_KEY_ID: minioadmin
+  FLOE_S3_SECRET_ACCESS_KEY: minioadmin
+  UPLOAD_TMP_DIR: /tmp/floe-upload
+  FLOE_REDIS_PROVIDER: native
+  FLOE_API_KEY_STORE: postgres
+  FLOE_AUTH_PROVIDER: local
+  FLOE_ACCESS_POLICY: hybrid
+  FLOE_AUTH_MODE: hybrid
+  WALRUS_AGGREGATOR_URL: http://localhost:1
+  FLOE_WALRUS_PUBLISHER_BASE_URL: http://localhost:1
+  SUI_PACKAGE_ID: 0x0000000000000000000000000000000000000000000000000000000000000000
+  SUI_PRIVATE_KEY: suiprivkey0000000000000000000000000000000000000000000000000000000000
+
 jobs:
   api:
     name: Build and Test API
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+      postgres:
+        image: postgres:16-alpine
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: floe_test
+          POSTGRES_PASSWORD: floe_test
+          POSTGRES_DB: floe_test
+        options: >-
+          --health-cmd "pg_isready -U floe_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+      minio:
+        image: minio/minio:latest
+        ports:
+          - 9000:9000
+          - 9001:9001
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        options: >-
+          --health-cmd "curl -sf http://localhost:9000/minio/health/live"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+        entrypoint: sh
+        command: -c '
+          mkdir -p /data/floe-test &&
+          minio server /data --console-address ":9001"
+        '
 
     steps:
       - name: Check out repository
@@ -35,8 +100,17 @@ jobs:
       - name: Build API
         run: npm run build --workspace=apps/api
 
-      - name: Test API
+      - name: Run migration check against Postgres
+        run: npx tsx scripts/migration-check.mjs
+        env:
+          FLOE_POSTGRES_REQUIRED: "1"
+          NODE_ENV: test
+
+      - name: Test API (unit + integration against real services)
         run: npm test --workspace=apps/api
+        env:
+          FLOE_POSTGRES_REQUIRED: "1"
+          NODE_ENV: test
 
   lint:
     name: Lint

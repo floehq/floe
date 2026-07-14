@@ -29,6 +29,10 @@ const LIMIT_DEFAULTS = {
     public: 120,
     authenticated: 1200,
   },
+  ops_read: {
+    public: 10,
+    authenticated: 120,
+  },
 } as const;
 
 const LIMIT_ENV = {
@@ -47,6 +51,10 @@ const LIMIT_ENV = {
   file_stream_read: {
     public: "FLOE_RATE_LIMIT_FILE_STREAM_PUBLIC",
     authenticated: "FLOE_RATE_LIMIT_FILE_STREAM_AUTH",
+  },
+  ops_read: {
+    public: "FLOE_RATE_LIMIT_OPS_READ_PUBLIC",
+    authenticated: "FLOE_RATE_LIMIT_OPS_READ_AUTH",
   },
 } as const;
 

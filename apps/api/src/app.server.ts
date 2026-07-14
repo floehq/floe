@@ -29,7 +29,7 @@ import {
   AuthUploadPolicyConfig,
 } from "./config/auth.config.js";
 import { TopologyConfig } from "./config/topology.config.js";
-import { recordHttpRequest } from "./services/metrics/runtime.metrics.js";
+import { recordHttpRequestAndSli } from "./services/metrics/runtime.metrics.js";
 import { ensureFilesTable } from "./db/files.repository.js";
 import { chunkStore } from "./store/index.js";
 import { initStreamCache } from "./services/stream/stream.cache.js";
@@ -40,6 +40,12 @@ import {
   captureException,
 } from "./services/errors/error.reporter.js";
 import { validateConfig } from "./utils/configValidation.js";
+
+// Global HTTP request concurrency limiter.
+// When active requests exceed FLOE_GLOBAL_REQUEST_CONCURRENCY, new requests
+// receive an immediate 503 response to prevent resource exhaustion.
+import { parsePositiveIntEnv } from "./utils/parseEnv.js";
+const GLOBAL_REQUEST_CONCURRENCY = parsePositiveIntEnv("FLOE_GLOBAL_REQUEST_CONCURRENCY", 200, 1);
 
 // Initialize before any other handlers so Sentry can hook into
 // unhandledRejection / uncaughtException from the start.
@@ -158,16 +164,61 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
   const app = createFastifyApp();
   const corsOrigins = parseCorsOrigins();
 
+  // Semaphore for global HTTP request concurrency limiting
+  let activeRequests = 0;
+  const requestQueue: Array<() => void> = [];
+
+  function drainRequestQueue() {
+    while (activeRequests < GLOBAL_REQUEST_CONCURRENCY && requestQueue.length > 0) {
+      const next = requestQueue.shift();
+      next?.();
+    }
+  }
+
+  function acquireRequestSlot(): Promise<boolean> {
+    if (activeRequests < GLOBAL_REQUEST_CONCURRENCY) {
+      activeRequests += 1;
+      return Promise.resolve(true);
+    }
+
+    // Queue is full — fast-reject
+    if (requestQueue.length >= GLOBAL_REQUEST_CONCURRENCY) {
+      return Promise.resolve(false);
+    }
+
+    return new Promise<boolean>((resolve) => {
+      requestQueue.push(() => {
+        activeRequests += 1;
+        resolve(true);
+      });
+    });
+  }
+
+  function releaseRequestSlot() {
+    activeRequests = Math.max(0, activeRequests - 1);
+    drainRequestQueue();
+  }
+
   app.decorate("authProvider", params?.authProvider ?? createDefaultAuthProvider());
   app.addHook("onRequest", async (req, reply) => {
+    // Global concurrency gate — respond with 503 if overloaded
+    const slotAcquired = await acquireRequestSlot();
+    if (!slotAcquired) {
+      reply.header("Retry-After", "5");
+      return reply.code(503).send({
+        error: {
+          code: "SERVICE_OVERLOADED",
+          message: "Server is at capacity, retry shortly",
+          retryable: true,
+        },
+      });
+    }
+
     reply.header("x-request-id", req.id);
     req.authContext = await req.server.authProvider.resolveIdentity(req);
 
     // Attach a child logger with request-scoped context for consistent
     // structured logging across all route handlers and services.
-    // The child logger is stored on a custom property to avoid Fastify's
-    // readonly constraint on req.log, while still being available via the
-    // request-scoped childLogger for handlers that opt into enriched logging.
     const logContext: Record<string, unknown> = {
       requestId: req.id,
     };
@@ -180,15 +231,15 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
       req.log.child(logContext);
   });
   app.addHook("onResponse", async (req, reply) => {
+    releaseRequestSlot();
     const route = req.routeOptions?.url ?? req.url.split("?")[0];
-    recordHttpRequest({
+    recordHttpRequestAndSli({
       method: req.method,
       route,
       statusCode: reply.statusCode,
       durationMs: Number(reply.elapsedTime ?? 0),
     });
   });
-
   await app.register(cors, {
     origin:
       corsOrigins.length === 0
@@ -388,7 +439,8 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
         : 500;
     const knownCode = err instanceof Error ? knownCodeByMessage[err.message] : undefined;
 
-    req.log.error({ err, url: req.url, method: req.method, requestId: req.id }, "Request error");
+    const errLogger = (req as { childLogger?: ReturnType<typeof req.log.child> }).childLogger ?? req.log;
+    errLogger.error({ err, url: req.url, method: req.method }, "Request error");
 
     return reply.code(statusCode).send({
       error: {

@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { validateFilename, validateContentType } from "../src/utils/validation.js";
+import { validateConfig } from "../src/utils/configValidation.js";
 
 describe("validateFilename", () => {
   it("accepts valid filenames", () => {
@@ -109,4 +110,108 @@ describe("validateContentType", () => {
   it("always rejects text/html by default", () => {
     assert.throws(() => validateContentType("text/html"), /not in the allowed list/);
   });
+});
+
+/**
+ * Helper: set baseline required env vars so validateConfig() doesn't fail
+ * on unrelated missing dependencies (Walrus, Sui, etc.).
+ * Each test overrides only the vars it's actually testing.
+ */
+function withRequiredEnv(fn: () => void) {
+  const restore: Array<{ name: string; prev: string | undefined }> = [];
+  const required = [
+    ["WALRUS_AGGREGATOR_URL", "http://test.local"],
+    ["SUI_PACKAGE_ID", "0x0000000000000000000000000000000000000000000000000000000000000000"],
+    ["SUI_PRIVATE_KEY", "suiprivkey0000000000000000000000000000000000000000000000000000000000"],
+    ["UPLOAD_TMP_DIR", "/tmp/floe-test"],
+    ["FLOE_ENABLE_METRICS", "0"],
+  ] as const;
+
+  for (const [name, value] of required) {
+    restore.push({ name, prev: process.env[name] });
+    process.env[name] = value;
+  }
+
+  try {
+    fn();
+  } finally {
+    for (const { name, prev } of restore) {
+      if (prev !== undefined) process.env[name] = prev;
+      else delete process.env[name];
+    }
+  }
+}
+
+describe("validateConfig — auth token secret", () => {
+  it("rejects missing FLOE_AUTH_TOKEN_SECRET when FLOE_AUTH_PROVIDER=token", () =>
+    withRequiredEnv(() => {
+      process.env.FLOE_AUTH_PROVIDER = "token";
+      delete process.env.FLOE_AUTH_TOKEN_SECRET;
+      const result = validateConfig();
+      assert.equal(result.valid, false);
+      assert.ok(result.errors.some((e) => e.includes("FLOE_AUTH_TOKEN_SECRET is required")));
+    }));
+
+  it("rejects short FLOE_AUTH_TOKEN_SECRET when FLOE_AUTH_PROVIDER=token", () =>
+    withRequiredEnv(() => {
+      process.env.FLOE_AUTH_PROVIDER = "token";
+      process.env.FLOE_AUTH_TOKEN_SECRET = "short";
+      const result = validateConfig();
+      assert.equal(result.valid, false);
+      assert.ok(result.errors.some((e) => e.includes("at least 16 characters")));
+    }));
+
+  it("accepts valid FLOE_AUTH_TOKEN_SECRET when FLOE_AUTH_PROVIDER=token", () =>
+    withRequiredEnv(() => {
+      process.env.FLOE_AUTH_PROVIDER = "token";
+      process.env.FLOE_AUTH_TOKEN_SECRET = "a-16-char-secret!";
+      const result = validateConfig();
+      assert.equal(result.valid, true);
+    }));
+
+  it("warns (not errors) on short FLOE_AUTH_TOKEN_SECRET when provider is NOT token", () =>
+    withRequiredEnv(() => {
+      process.env.FLOE_AUTH_PROVIDER = "local";
+      process.env.FLOE_AUTH_TOKEN_SECRET = "short";
+      const result = validateConfig();
+      assert.ok(!result.errors.some((e) => e.includes("FLOE_AUTH_TOKEN_SECRET")));
+      assert.ok(result.warnings.some((w) => w.includes("FLOE_AUTH_TOKEN_SECRET")));
+    }));
+});
+
+describe("validateConfig — production + public access", () => {
+  it("rejects FLOE_ACCESS_POLICY=public with NODE_ENV=production without opt-in", () =>
+    withRequiredEnv(() => {
+      process.env.NODE_ENV = "production";
+      process.env.FLOE_ACCESS_POLICY = "public";
+      delete process.env.FLOE_ALLOW_PUBLIC_IN_PROD;
+      const result = validateConfig();
+      assert.equal(result.valid, false);
+      assert.ok(result.errors.some((e) => e.includes("FLOE_ALLOW_PUBLIC_IN_PROD")));
+    }));
+
+  it("accepts FLOE_ACCESS_POLICY=public with NODE_ENV=production when opt-in is set", () =>
+    withRequiredEnv(() => {
+      process.env.NODE_ENV = "production";
+      process.env.FLOE_ACCESS_POLICY = "public";
+      process.env.FLOE_ALLOW_PUBLIC_IN_PROD = "1";
+      const result = validateConfig();
+      assert.equal(result.valid, true);
+    }));
+
+  it("does not block non-production with FLOE_ACCESS_POLICY=public", () =>
+    withRequiredEnv(() => {
+      process.env.NODE_ENV = "development";
+      process.env.FLOE_ACCESS_POLICY = "public";
+      const result = validateConfig();
+      assert.equal(result.valid, true);
+    }));
+
+  it("does not block production with FLOE_ACCESS_POLICY=private", () =>
+    withRequiredEnv(() => {
+      process.env.NODE_ENV = "production";
+      process.env.FLOE_ACCESS_POLICY = "private";
+      const result = validateConfig();
+      assert.equal(result.valid, true);
+    }));
 });

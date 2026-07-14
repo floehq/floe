@@ -1,5 +1,7 @@
 import { Transaction } from "@mysten/sui/transactions";
 import { getSuiSigner } from "../state/sui.js";
+import { suiCircuit } from "../services/circuit-breaker/instances.js";
+import { CircuitBreakerError } from "../services/circuit-breaker/index.js";
 
 const SUI_GAS_OBJECT_ID = (process.env.FLOE_SUI_GAS_OBJECT_ID ?? "0x6").trim();
 
@@ -29,8 +31,15 @@ export interface FinalizeFileResult {
   fileId: string;
 }
 
+/**
+ * Finalize file metadata on Sui with circuit breaker protection.
+ *
+ * If the suiCircuit is OPEN, throws CircuitBreakerError immediately
+ * instead of attempting RPC calls that are likely to fail.
+ */
 export async function finalizeFileMetadata(input: FinalizeFileInput): Promise<FinalizeFileResult> {
-  const tx = new Transaction();
+  return suiCircuit.call(async () => {
+    const tx = new Transaction();
 
   tx.moveCall({
     target: `${getSuiPackageId()}::file::create_with_owner`,
@@ -71,6 +80,7 @@ export async function finalizeFileMetadata(input: FinalizeFileInput): Promise<Fi
   }
 
   return { fileId: created.objectId };
+  });
 }
 
 export async function renewFileMetadata(params: {
@@ -78,7 +88,8 @@ export async function renewFileMetadata(params: {
   blobObjectId?: string;
   walrusEndEpoch: number;
 }): Promise<void> {
-  const tx = new Transaction();
+  return suiCircuit.call(async () => {
+    const tx = new Transaction();
 
   if (params.blobObjectId) {
     tx.moveCall({
@@ -103,4 +114,5 @@ export async function renewFileMetadata(params: {
   } catch (err) {
     throw new Error(`SUI_RENEW_SUBMIT_FAILED:${(err as Error)?.message ?? "unknown"}`);
   }
+  });
 }

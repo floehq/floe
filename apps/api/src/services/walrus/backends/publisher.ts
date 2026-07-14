@@ -4,6 +4,8 @@ import { getSuiNetwork, getSuiSigner } from "../../../state/sui.js";
 import type { SuiSigner } from "../../../sui/sui.signer.js";
 import { WalrusUploadLimits } from "../../../config/walrus.config.js";
 import type { WalrusUploadParams, WalrusUploadResult } from "./types.js";
+import { walrusPublishCircuit } from "../../circuit-breaker/instances.js";
+import { CircuitBreakerError } from "../../circuit-breaker/index.js";
 
 const FETCH_TIMEOUT_MS = WalrusUploadLimits.timeoutMs;
 const MIN_BALANCE_MIST = 1_000_000_000n;
@@ -160,15 +162,22 @@ async function safeReadText(res: Response): Promise<string> {
   }
 }
 
+/**
+ * Publish a blob via the Walrus publisher API with circuit breaker protection.
+ *
+ * If the walrusPublishCircuit is OPEN, throws CircuitBreakerError immediately
+ * instead of attempting upstream requests that are likely to fail.
+ */
 export async function uploadToWalrusViaPublisher(
   params: WalrusUploadParams,
 ): Promise<WalrusUploadResult> {
-  const urls = getPublisherBaseUrls();
-  if (urls.length === 0) {
-    throw new Error(
-      "FLOE_WALRUS_PUBLISHER_BASE_URL or FLOE_WALRUS_PUBLISHER_BASE_URLS must be set to http(s) URL when FLOE_WALRUS_STORE_MODE=publisher",
-    );
-  }
+  return walrusPublishCircuit.call(async () => {
+    const urls = getPublisherBaseUrls();
+    if (urls.length === 0) {
+      throw new Error(
+        "FLOE_WALRUS_PUBLISHER_BASE_URL or FLOE_WALRUS_PUBLISHER_BASE_URLS must be set to http(s) URL when FLOE_WALRUS_STORE_MODE=publisher",
+      );
+    }
   for (const baseUrl of urls) {
     if (!/^https?:\/\//.test(baseUrl)) {
       throw new Error(
@@ -323,4 +332,5 @@ export async function uploadToWalrusViaPublisher(
   }
 
   throw lastError ?? new Error("WALRUS_UPLOAD_FAILED");
+  });
 }

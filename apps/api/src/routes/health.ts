@@ -19,6 +19,11 @@ import {
   checkWalrusDependencyHealth,
 } from "../services/health/dependencies.js";
 import { buildOperatorUploadSummary } from "../services/ops/upload.summary.js";
+import {
+  emitAuditEvent,
+  requestEventContext,
+} from "../services/events/infrastructure.events.js";
+import { getAllSloStatuses } from "../services/reliability/sli.js";
 import { TopologyConfig } from "../config/topology.config.js";
 import { describeWalrusReaders } from "../config/walrus.config.js";
 import { describeWalrusWriters } from "../services/walrus/upload.js";
@@ -87,7 +92,7 @@ function requireMetricsToken(req: any, reply: any): boolean {
   }
 
   if (!METRICS_TOKEN) {
-    req.log.error("FLOE_METRICS_TOKEN is missing while ops auth is enabled");
+    req.childLogger.error("FLOE_METRICS_TOKEN is missing while ops auth is enabled");
     sendApiError(reply, 503, "INTERNAL_ERROR", "Metrics auth is not configured", {
       retryable: true,
     });
@@ -132,14 +137,14 @@ async function buildHealthSnapshot(req: any): Promise<HealthSnapshot> {
   ]);
 
   if (!redis.ok) {
-    req.log.error("Redis Health Check Failed");
+    req.childLogger.error("Redis Health Check Failed");
   }
 
   if (redis.ok) {
     try {
       finalizeQueue = await getUploadFinalizeQueueStats();
     } catch (err) {
-      req.log.error({ err }, "Finalize queue health read failed");
+      req.childLogger.error({ err }, "Finalize queue health read failed");
     }
   }
 
@@ -171,6 +176,7 @@ async function buildHealthSnapshot(req: any): Promise<HealthSnapshot> {
         ops: TopologyConfig.routes.ops,
         finalizeWorker: TopologyConfig.workers.finalize,
       },
+      slo: getAllSloStatuses(),
       walrus: {
         readers: describeWalrusReaders(),
         writers: describeWalrusWriters(),
@@ -239,12 +245,53 @@ export default async function healthRoute(app: FastifyInstance) {
   });
 
   app.get("/metrics", async (req, reply) => {
+    // Enforce the metrics token (constant-time comparison against FLOE_METRICS_TOKEN).
     if (!requireMetricsToken(req, reply)) {
+      emitAuditEvent(req.childLogger, {
+        action: "metrics_access_denied",
+        resource: "metrics",
+        actor: requestEventContext(req).actor,
+        requestId: req.id,
+        before: null,
+        after: null,
+        metadata: { reason: "missing_or_invalid_metrics_token" },
+      });
       return;
     }
 
+    // Rate limit metrics reads to protect against brute-force of the token
+    // and excessive Prometheus scrape overhead.
+    const metricsLimit = await req.server.authProvider.checkRateLimit({
+      req,
+      scope: "ops_read",
+    });
+    if (!metricsLimit.allowed) {
+      return sendApiError(reply, 429, "RATE_LIMITED", "Metrics rate limit exceeded", {
+        retryable: true,
+        details: {
+          limit: metricsLimit.limit,
+          current: metricsLimit.current,
+          windowSeconds: metricsLimit.windowSeconds,
+        },
+      });
+    }
+
+    // Emit audit event for successful metrics scrape
+    emitAuditEvent(req.childLogger, {
+      action: "metrics_access",
+      resource: "metrics",
+      actor: requestEventContext(req).actor,
+      requestId: req.id,
+      before: null,
+      after: null,
+      metadata: {
+        authenticated: true,
+        method: "metrics_token",
+      },
+    });
+
     await syncFinalizeQueueMetrics().catch((err) => {
-      req.log.error({ err }, "Failed to sync finalize queue metrics");
+      req.childLogger.error({ err }, "Failed to sync finalize queue metrics");
     });
 
     return reply
@@ -255,6 +302,23 @@ export default async function healthRoute(app: FastifyInstance) {
 
   if (TopologyConfig.routes.ops) {
     app.get("/ops/uploads/:uploadId", async (req, reply) => {
+      // Rate limit ops reads to prevent brute-force of upload IDs and
+      // excessive backend queries.
+      const opsLimit = await req.server.authProvider.checkRateLimit({
+        req,
+        scope: "ops_read",
+      });
+      if (!opsLimit.allowed) {
+        return sendApiError(reply, 429, "RATE_LIMITED", "Ops rate limit exceeded", {
+          retryable: true,
+          details: {
+            limit: opsLimit.limit,
+            current: opsLimit.current,
+            windowSeconds: opsLimit.windowSeconds,
+          },
+        });
+      }
+
       const authz = await req.server.authProvider.authorizeOpsAccess({
         req,
         action: "upload_read",
@@ -323,6 +387,22 @@ export default async function healthRoute(app: FastifyInstance) {
           postgres: postgresHealth,
         },
         finalizeStuckAgeThresholdMs: FINALIZE_QUEUE_STUCK_AGE_MS,
+      });
+
+      // Emit audit event for operator upload read
+      emitAuditEvent(req.childLogger, {
+        action: "ops_upload_read",
+        resource: `upload:${uploadId}`,
+        actor: requestEventContext(req).actor,
+        requestId: req.id,
+        before: null,
+        after: null,
+        metadata: {
+          uploadId,
+          hasSession: Boolean(session),
+          metaStatus: metaObject?.status ?? null,
+          hasChunks: chunkIndexes.length,
+        },
       });
 
       return reply.code(200).send({

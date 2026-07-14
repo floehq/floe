@@ -5,6 +5,8 @@ import {
   observeWalrusSegmentFetch,
   setWalrusConnectionPoolMetrics,
 } from "../metrics/runtime.metrics.js";
+import { walrusReadCircuit } from "../circuit-breaker/instances.js";
+import { CircuitBreakerError } from "../circuit-breaker/index.js";
 
 const BODY_IDLE_TIMEOUT_MS = 30_000;
 const HEAD_CHECK_TIMEOUT_MS = 15_000;
@@ -173,6 +175,10 @@ async function fetchWithTimeout(params: {
  *
  * If a `requestId` is provided, it is propagated as an x-request-id
  * header on the upstream HEAD request for log correlation.
+ *
+ * Protected by the walrusReadCircuit breaker — if the circuit is OPEN
+ * the blob is assumed to exist (optimistic pass-through) so streaming
+ * doesn't degrate to hard failures during an aggregator outage.
  */
 export async function checkWalrusBlobExists(params: {
   blobId: string;
@@ -220,9 +226,18 @@ export async function checkWalrusBlobExists(params: {
     }
   };
 
-  // Send HEAD to the primary first; if it responds quickly we avoid
-  // the overhead of parallel requests entirely for the hot-path case.
-  const primaryResult = await headCheck(ordered[0]);
+  // Run HEAD check through the circuit breaker.
+  // If the circuit is OPEN, optimistically assume exists so streaming
+  // doesn't hard-fail — the fetch path has its own circuit protection.
+  let primaryResult: { exists: boolean; status: number };
+  try {
+    primaryResult = await walrusReadCircuit.call(() => headCheck(ordered[0]));
+  } catch (err) {
+    if (err instanceof CircuitBreakerError) {
+      return { exists: true, reason: "circuit_open_optimistic_pass" };
+    }
+    return { exists: false, reason: "head_check_failed" };
+  }
   if (primaryResult.exists) {
     lastGoodAggregatorIdx = 0;
     return { exists: true };
@@ -261,13 +276,20 @@ export async function checkWalrusBlobExists(params: {
   return { exists: false, reason: "not_found_on_all_aggregators" };
 }
 
+/**
+ * Fetch a blob range from Walrus aggregators with circuit breaker protection.
+ *
+ * If the walrusReadCircuit is OPEN, throws CircuitBreakerError immediately
+ * instead of burning time on attempted connections.
+ */
 export async function fetchWalrusBlob(params: {
   blobId: string;
   rangeHeader?: string;
   signal?: AbortSignal;
   requestId?: string;
 }): Promise<{ res: Response; aggregatorUrl: string }> {
-  const urls = WalrusEnv.aggregatorUrls;
+  return walrusReadCircuit.call(async () => {
+    const urls = WalrusEnv.aggregatorUrls;
   const headers: Record<string, string> = {};
   if (params.rangeHeader) headers["Range"] = params.rangeHeader;
   if (params.requestId) headers["x-request-id"] = params.requestId;
@@ -428,4 +450,5 @@ export async function fetchWalrusBlob(params: {
     throw new Error(`WALRUS_FETCH_FAILED status=${lastStatus}`);
   }
   throw new Error("WALRUS_FETCH_FAILED");
+  });
 }

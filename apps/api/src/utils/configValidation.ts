@@ -4,6 +4,9 @@
  * Checks all required and optional environment variables at startup
  * and produces a grouped error message listing any missing or invalid
  * values before service initialization proceeds.
+ *
+ * The server MUST NOT start when `errors` is non-empty (fail-closed).
+ * `warnings` are advisory only.
  */
 
 export type ConfigValidationResult = {
@@ -16,6 +19,10 @@ function requireEnv(name: string): string | null {
   const value = process.env[name]?.trim();
   if (!value) return null;
   return value;
+}
+
+function lowerEnv(name: string): string | undefined {
+  return process.env[name]?.trim().toLowerCase();
 }
 
 /**
@@ -68,9 +75,38 @@ export function validateConfig(): ConfigValidationResult {
   }
 
   // -- Auth --
+  const authProvider = lowerEnv("FLOE_AUTH_PROVIDER");
   const authTokenSecret = requireEnv("FLOE_AUTH_TOKEN_SECRET");
-  if (authTokenSecret && authTokenSecret.length < 16) {
-    warnings.push("FLOE_AUTH_TOKEN_SECRET is too short (< 16 chars); consider a longer secret");
+  if (authProvider === "token") {
+    if (!authTokenSecret) {
+      errors.push(
+        "FLOE_AUTH_TOKEN_SECRET is required when FLOE_AUTH_PROVIDER=token",
+      );
+    } else if (authTokenSecret.length < 16) {
+      errors.push(
+        "FLOE_AUTH_TOKEN_SECRET must be at least 16 characters when FLOE_AUTH_PROVIDER=token" +
+        " (current length: " + authTokenSecret.length + ")",
+      );
+    }
+  } else {
+    if (authTokenSecret && authTokenSecret.length < 16) {
+      warnings.push(
+        "FLOE_AUTH_TOKEN_SECRET is too short (< 16 chars); consider a longer secret",
+      );
+    }
+  }
+
+  // -- Public access in production requires explicit opt-in --
+  const nodeEnv = lowerEnv("NODE_ENV");
+  const accessPolicy = lowerEnv("FLOE_ACCESS_POLICY") ?? lowerEnv("FLOE_AUTH_MODE") ?? "hybrid";
+  if (nodeEnv === "production" && accessPolicy === "public") {
+    const allowPublicInProd = lowerEnv("FLOE_ALLOW_PUBLIC_IN_PROD");
+    if (allowPublicInProd !== "1" && allowPublicInProd !== "true") {
+      errors.push(
+        "FLOE_ACCESS_POLICY=public with NODE_ENV=production requires " +
+        "FLOE_ALLOW_PUBLIC_IN_PROD=1 as an explicit opt-in",
+      );
+    }
   }
 
   // -- Postgres (optional) --
@@ -80,6 +116,34 @@ export function validateConfig(): ConfigValidationResult {
     if (postgresRequired === "1" || postgresRequired === "true") {
       warnings.push(
         "FLOE_POSTGRES_REQUIRED is set but DATABASE_URL is not configured",
+      );
+    }
+  }
+
+  // -- Overload protection circuit breaker thresholds --
+  const cbWalrusFailure = requireEnv("FLOE_CB_WALRUS_FAILURE_THRESHOLD");
+  if (cbWalrusFailure && Number(cbWalrusFailure) < 1) {
+    errors.push("FLOE_CB_WALRUS_FAILURE_THRESHOLD must be >= 1");
+  }
+  const cbSuiFailure = requireEnv("FLOE_CB_SUI_FAILURE_THRESHOLD");
+  if (cbSuiFailure && Number(cbSuiFailure) < 1) {
+    errors.push("FLOE_CB_SUI_FAILURE_THRESHOLD must be >= 1");
+  }
+  const globalReqConcurrency = requireEnv("FLOE_GLOBAL_REQUEST_CONCURRENCY");
+  if (globalReqConcurrency && Number(globalReqConcurrency) < 1) {
+    errors.push("FLOE_GLOBAL_REQUEST_CONCURRENCY must be >= 1");
+  }
+
+  // -- Metrics token (must be strong enough to resist brute-force) --
+  const metricsEnabled = lowerEnv("FLOE_ENABLE_METRICS");
+  const metricsToken = requireEnv("FLOE_METRICS_TOKEN");
+  if (metricsEnabled !== "0" && metricsEnabled !== "false") {
+    if (!metricsToken) {
+      warnings.push("FLOE_METRICS_TOKEN is not set; metrics endpoint will be unavailable");
+    } else if (metricsToken.length < 16) {
+      errors.push(
+        "FLOE_METRICS_TOKEN must be at least 16 characters" +
+        " (current length: " + metricsToken.length + ")",
       );
     }
   }

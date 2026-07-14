@@ -3,6 +3,8 @@ import type { FastifyRequest } from "fastify";
 import { AuthExternalConfig } from "../../config/auth.config.js";
 import { extractPresentedCredential } from "./auth.credentials.js";
 import type { AuthContext, AuthSubjectType } from "./auth.context.js";
+import { externalAuthCircuit } from "../circuit-breaker/instances.js";
+import { CircuitBreakerError } from "../circuit-breaker/index.js";
 
 type ExternalVerifyResponse = {
   valid?: boolean;
@@ -133,49 +135,60 @@ async function verifyExternalCredential(req: FastifyRequest): Promise<AuthContex
     return cached.context;
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), AuthExternalConfig.timeoutMs);
+  // Wrap the verify call in the circuit breaker.
+  // If the circuit is OPEN we return null (fail-closed for auth),
+  // causing the request to fall through to the next auth provider
+  // rather than blocking callers waiting for a timeout.
   try {
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-      accept: "application/json",
-    };
-    if (AuthExternalConfig.sharedSecret) {
-      headers["x-floe-shared-secret"] = AuthExternalConfig.sharedSecret;
-    }
-    if (AuthExternalConfig.authToken) {
-      headers.authorization = `Bearer ${AuthExternalConfig.authToken}`;
-    }
-    const body =
-      presented.type === "api_key"
-        ? { apiKey: presented.value }
-        : { delegatedToken: presented.value };
+    return await externalAuthCircuit.call(async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), AuthExternalConfig.timeoutMs);
+      try {
+        const headers: Record<string, string> = {
+          "content-type": "application/json",
+          accept: "application/json",
+        };
+        if (AuthExternalConfig.sharedSecret) {
+          headers["x-floe-shared-secret"] = AuthExternalConfig.sharedSecret;
+        }
+        if (AuthExternalConfig.authToken) {
+          headers.authorization = `Bearer ${AuthExternalConfig.authToken}`;
+        }
+        const body =
+          presented.type === "api_key"
+            ? { apiKey: presented.value }
+            : { delegatedToken: presented.value };
 
-    const response = await fetch(verifyUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
+        const response = await fetch(verifyUrl, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        if (!response.ok) return null;
+        const payload = (await response.json().catch(() => null)) as ExternalVerifyResponse | null;
+        if (!payload) return null;
+        const parsed = parseExternalResponse(presented.type, payload);
+        if (!parsed) return null;
+
+        const cacheExpiryMs = computeCacheExpiryMs(parsed);
+        if (cacheExpiryMs > Date.now()) {
+          externalAuthCache.set(cacheKey, {
+            expiresAt: cacheExpiryMs,
+            context: parsed,
+          });
+          evictExternalAuthCacheIfNeeded();
+        }
+        return parsed;
+      } catch {
+        return null;
+      } finally {
+        clearTimeout(timeout);
+      }
     });
-    if (!response.ok) return null;
-    const payload = (await response.json().catch(() => null)) as ExternalVerifyResponse | null;
-    if (!payload) return null;
-    const parsed = parseExternalResponse(presented.type, payload);
-    if (!parsed) return null;
-
-    const cacheExpiryMs = computeCacheExpiryMs(parsed);
-    if (cacheExpiryMs > Date.now()) {
-      externalAuthCache.set(cacheKey, {
-        expiresAt: cacheExpiryMs,
-        context: parsed,
-      });
-      evictExternalAuthCacheIfNeeded();
-    }
-    return parsed;
-  } catch {
+  } catch (err) {
+    // CircuitBreakerError or any other throw from the circuit breaker
     return null;
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
