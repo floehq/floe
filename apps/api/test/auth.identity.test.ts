@@ -199,9 +199,9 @@ test("external provider verifies remote normalized auth context and caches posit
 
 test("external provider accepts SaaS-issued api keys and propagates org, project, and scopes", async () => {
   const receivedRequests: Array<{ headers: Headers; body: string }> = [];
-  (AuthProviderConfig as any).kind = "external";
-  (AuthExternalConfig as any).verifyUrl = "https://auth.floe-private.test/verify";
-  (AuthExternalConfig as any).sharedSecret = "shared-secret";
+  (AuthProviderConfig as Record<string, unknown>).kind = "external";
+  (AuthExternalConfig as Record<string, unknown>).verifyUrl = "https://auth.floe-private.test/verify";
+  (AuthExternalConfig as Record<string, unknown>).sharedSecret = "shared-secret";
   globalThis.fetch = async (_input, init) => {
     receivedRequests.push({
       headers: new Headers(init?.headers),
@@ -282,9 +282,9 @@ test("external provider treats revoked and invalid SaaS verifier responses as un
     },
   ];
   let callIndex = 0;
-  (AuthProviderConfig as any).kind = "external";
-  (AuthExternalConfig as any).verifyUrl = "https://auth.floe-private.test/verify";
-  (AuthExternalConfig as any).sharedSecret = "shared-secret";
+  (AuthProviderConfig as Record<string, unknown>).kind = "external";
+  (AuthExternalConfig as Record<string, unknown>).verifyUrl = "https://auth.floe-private.test/verify";
+  (AuthExternalConfig as Record<string, unknown>).sharedSecret = "shared-secret";
   globalThis.fetch = async () =>
     new Response(JSON.stringify(responses[callIndex++] ?? responses[responses.length - 1]), {
       status: 200,
@@ -319,8 +319,8 @@ test("external provider treats malformed verifier payloads as unauthenticated", 
   ];
   let callIndex = 0;
 
-  (AuthProviderConfig as any).kind = "external";
-  (AuthExternalConfig as any).verifyUrl = "https://auth.floe-private.test/verify";
+  (AuthProviderConfig as Record<string, unknown>).kind = "external";
+  (AuthExternalConfig as Record<string, unknown>).verifyUrl = "https://auth.floe-private.test/verify";
   globalThis.fetch = async () =>
     new Response(JSON.stringify(responses[callIndex++] ?? responses[responses.length - 1]), {
       status: 200,
@@ -348,9 +348,9 @@ test("external provider treats malformed verifier payloads as unauthenticated", 
 
 test("external provider does not cache credentials past verifier expiry", async () => {
   let verifyCalls = 0;
-  (AuthProviderConfig as any).kind = "external";
-  (AuthExternalConfig as any).verifyUrl = "https://auth.floe-private.test/verify";
-  (AuthExternalConfig as any).cacheTtlMs = 60_000;
+  (AuthProviderConfig as Record<string, unknown>).kind = "external";
+  (AuthExternalConfig as Record<string, unknown>).verifyUrl = "https://auth.floe-private.test/verify";
+  (AuthExternalConfig as Record<string, unknown>).cacheTtlMs = 60_000;
   globalThis.fetch = async () => {
     verifyCalls += 1;
     return new Response(
@@ -387,8 +387,8 @@ test("external provider does not cache credentials past verifier expiry", async 
 
 test("resolveRequestIdentity memoizes external auth on the request", async () => {
   let verifyCalls = 0;
-  (AuthProviderConfig as any).kind = "external";
-  (AuthExternalConfig as any).verifyUrl = "https://auth.floe-private.test/verify";
+  (AuthProviderConfig as Record<string, unknown>).kind = "external";
+  (AuthExternalConfig as Record<string, unknown>).verifyUrl = "https://auth.floe-private.test/verify";
   globalThis.fetch = async () => {
     verifyCalls += 1;
     return new Response(

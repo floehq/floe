@@ -106,5 +106,5 @@ test("applyRuntimeConfig projects yaml topology values into env defaults", () =>
 });
 
 test("parseBootstrapNodeRole rejects invalid roles", () => {
-  assert.throws(() => parseBootstrapNodeRole("sidecar" as any), /FLOE_NODE_ROLE/);
+  assert.throws(() => parseBootstrapNodeRole("sidecar" as string), /FLOE_NODE_ROLE/);
 });

@@ -24,8 +24,7 @@ let filesRouteModule: FilesRouteModule;
 let postgresModule: PostgresModule;
 let suiModule: SuiModule;
 let streamCacheModule: StreamCacheModule;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let originalGetObject: any;
+let originalGetObject: (...args: never[]) => Promise<unknown>;
 let walrusFetchCallCount = 0;
 const walrusSamples = new Map<string, Uint8Array>();
 
@@ -84,7 +83,7 @@ const log = {
   child() {
     return this;
   },
-} as any;
+} as unknown as Record<string, (...args: never[]) => unknown>;
 
 function parseRangeHeader(
   rangeHeader: string | null | undefined,
@@ -104,8 +103,8 @@ function parseRangeHeader(
   };
 }
 
-async function createRouteApp(customAuthProvider?: any) {
-  const handlers = new Map<string, (req: any, reply: any) => Promise<unknown> | unknown>();
+async function createRouteApp(customAuthProvider?: Record<string, unknown>) {
+  const handlers = new Map<string, (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown>();
   const authProvider = {
     async authorizeFileAccess() {
       return { allowed: true };
@@ -127,22 +126,22 @@ async function createRouteApp(customAuthProvider?: any) {
     ...customAuthProvider,
   };
   const app = {
-    get(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
+    get(path: string, handler: (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown) {
       handlers.set(`GET ${path}`, handler);
     },
-    post(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
+    post(path: string, handler: (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown) {
       handlers.set(`POST ${path}`, handler);
     },
     route(definition: {
       method: string[];
       url: string;
-      handler: (req: any, reply: any) => Promise<unknown> | unknown;
+      handler: (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown;
     }) {
       for (const method of definition.method) {
         handlers.set(`${method} ${definition.url}`, definition.handler);
       }
     },
-  } as any;
+  } as unknown as Record<string, unknown>;
 
   await filesRouteModule.filesRoutes(app);
 
@@ -506,7 +505,7 @@ test("STREAM_CACHE_MIN_FREE_DISK_FRACTION is removed (only fixed byte floor rema
   // The new code only checks the fixed STREAM_CACHE_MIN_FREE_DISK_BYTES floor.
   const policyModule = await import("../src/services/stream/stream.cache.policy.js");
   assert.equal(
-    (policyModule as any).STREAM_CACHE_MIN_FREE_DISK_FRACTION,
+    (policyModule as Record<string, unknown>).STREAM_CACHE_MIN_FREE_DISK_FRACTION,
     undefined,
     "STREAM_CACHE_MIN_FREE_DISK_FRACTION must be removed from policy exports",
   );
@@ -641,7 +640,7 @@ test("head stream route reflects valid range headers without streaming a body", 
   assert.equal(res.statusCode, 206);
   assert.equal(res.headers["content-range"], "bytes 2-5/10");
   assert.equal(res.headers["content-length"], "4");
-  assert.equal((res.json() as any).payload, undefined);
+  assert.equal((res.json() as Record<string, unknown>).payload, undefined);
 });
 
 test("metadata and manifest expose public streamUrl when configured", async () => {
@@ -706,7 +705,7 @@ test("metadata rejects authenticated keys missing files:read scope", async () =>
     routePath: "/v1/files/:fileId/metadata",
     params: { fileId: "0x2222222222222222222222222222222222222222222222222222222222222222" },
   });
-  const body = res.json() as any;
+  const body = res.json() as Record<string, unknown>;
 
   assert.equal(res.statusCode, 403);
   assert.equal(body.error.code, "INSUFFICIENT_SCOPE");
@@ -748,7 +747,7 @@ test("metadata auth precheck rejects before file lookup", async () => {
     routePath: "/v1/files/:fileId/metadata",
     params: { fileId },
   });
-  const body = res.json() as any;
+  const body = res.json() as Record<string, unknown>;
 
   assert.equal(res.statusCode, 401);
   assert.equal(body.error.code, "AUTH_REQUIRED");
@@ -778,7 +777,7 @@ test("metadata owner mismatch is masked as file not found", async () => {
     routePath: "/v1/files/:fileId/metadata",
     params: { fileId },
   });
-  const body = res.json() as any;
+  const body = res.json() as Record<string, unknown>;
 
   assert.equal(res.statusCode, 404);
   assert.equal(body.error.code, "FILE_NOT_FOUND");
@@ -794,7 +793,7 @@ test("metadata invalid metadata does not inherit public cache headers", async ()
     routePath: "/v1/files/:fileId/metadata",
     params: { fileId },
   });
-  const body = res.json() as any;
+  const body = res.json() as Record<string, unknown>;
 
   assert.equal(res.statusCode, 502);
   assert.equal(body.error.code, "INVALID_FILE_METADATA");
@@ -819,7 +818,7 @@ test("metadata rejects move objects outside the trusted file package", async () 
     routePath: "/v1/files/:fileId/metadata",
     params: { fileId },
   });
-  const body = res.json() as any;
+  const body = res.json() as Record<string, unknown>;
 
   assert.equal(res.statusCode, 404);
   assert.equal(body.error.code, "FILE_NOT_FOUND");
@@ -846,7 +845,7 @@ test("stream auth denial does not inherit public cache headers", async () => {
     routePath: "/v1/files/:fileId/stream",
     params: { fileId },
   });
-  const body = res.json() as any;
+  const body = res.json() as Record<string, unknown>;
 
   assert.equal(res.statusCode, 401);
   assert.equal(body.error.code, "AUTH_REQUIRED");
@@ -1167,8 +1166,8 @@ test("teeCachedStreamBlob logs write failure via optional log param", async () =
 
   const loggedErrors: string[] = [];
   const customLog = {
-    warn: (...args: any[]) => {
-      const errObj = args[0] as any;
+    warn: (...args: unknown[]) => {
+      const errObj = args[0] as Record<string, unknown>;
       if (errObj?.err?.message) {
         loggedErrors.push(errObj.err.message);
       }

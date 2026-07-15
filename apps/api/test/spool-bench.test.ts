@@ -123,7 +123,7 @@ for (const { label, bytes } of SIZES) {
         Readable.from(data),
         createValidationStream(bytes, MAX_CHUNK, hash),
         new Writable({
-          write(c: Buffer, _e: any, cb: () => void) {
+          write(c: Buffer, _e: BufferEncoding, cb: () => void) {
             cb();
           },
         }),
@@ -162,7 +162,7 @@ for (const { label, bytes } of SIZES) {
     // old path hash
     const h1 = crypto.createHash("sha256");
     const s1 = new Writable({
-      write(c: Buffer, _e: any, cb: () => void) {
+      write(c: Buffer, _e: BufferEncoding, cb: () => void) {
         h1.update(c);
         cb();
       },

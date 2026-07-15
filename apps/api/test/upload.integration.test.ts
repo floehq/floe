@@ -48,7 +48,7 @@ const log = {
   child() {
     return this;
   },
-} as any;
+} as unknown as Record<string, (...args: never[]) => unknown>;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -80,8 +80,11 @@ function makeFilePart(buf: Buffer) {
   };
 }
 
-async function createRouteApp(customAuthProvider?: any) {
-  const handlers = new Map<string, (req: any, reply: any) => Promise<unknown> | unknown>();
+async function createRouteApp(customAuthProvider?: Record<string, unknown>) {
+  const handlers = new Map<
+    string,
+    (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown
+  >();
   const authProvider = {
     async authorizeUploadAccess() {
       return { allowed: true };
@@ -103,19 +106,43 @@ async function createRouteApp(customAuthProvider?: any) {
     ...customAuthProvider,
   };
   const app = {
-    get(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
+    get(
+      path: string,
+      handler: (
+        req: Record<string, unknown>,
+        reply: Record<string, unknown>,
+      ) => Promise<unknown> | unknown,
+    ) {
       handlers.set(`GET ${path}`, handler);
     },
-    post(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
+    post(
+      path: string,
+      handler: (
+        req: Record<string, unknown>,
+        reply: Record<string, unknown>,
+      ) => Promise<unknown> | unknown,
+    ) {
       handlers.set(`POST ${path}`, handler);
     },
-    put(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
+    put(
+      path: string,
+      handler: (
+        req: Record<string, unknown>,
+        reply: Record<string, unknown>,
+      ) => Promise<unknown> | unknown,
+    ) {
       handlers.set(`PUT ${path}`, handler);
     },
-    delete(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
+    delete(
+      path: string,
+      handler: (
+        req: Record<string, unknown>,
+        reply: Record<string, unknown>,
+      ) => Promise<unknown> | unknown,
+    ) {
       handlers.set(`DELETE ${path}`, handler);
     },
-  } as any;
+  } as unknown as Record<string, unknown>;
 
   await uploadRoutesModule.default(app);
 
