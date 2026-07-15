@@ -19,11 +19,13 @@ type FilesRouteModule = typeof import("../src/routes/files.ts") & {
 type PostgresModule = typeof import("../src/state/postgres.ts");
 type SuiModule = typeof import("../src/state/sui.ts");
 type StreamCacheModule = typeof import("../src/services/stream/stream.cache.ts");
+type ReadModelModule = typeof import("../src/services/files/file.read-model.ts");
 
 let filesRouteModule: FilesRouteModule;
 let postgresModule: PostgresModule;
 let suiModule: SuiModule;
 let streamCacheModule: StreamCacheModule;
+let readModelModule: ReadModelModule;
 let originalGetObject: (...args: never[]) => Promise<unknown>;
 let walrusFetchCallCount = 0;
 const walrusSamples = new Map<string, Uint8Array>();
@@ -232,6 +234,7 @@ before(async () => {
   postgresModule = await import("../src/state/postgres.ts");
   suiModule = await import("../src/state/sui.ts");
   streamCacheModule = await import("../src/services/stream/stream.cache.ts");
+  readModelModule = await import("../src/services/files/file.read-model.ts");
   const client = suiModule.getSuiClient();
   originalGetObject = client.getObject.bind(client);
   walrusFetchCallCount = 0;
@@ -270,8 +273,9 @@ afterEach(() => {
   postgresModule.setPostgresForTests(null, false);
   suiModule.getSuiClient().getObject = originalGetObject;
   walrusSamples.clear();
-  // Clear in-memory blob existence cache between tests
+  // Clear in-memory caches between tests
   filesRouteModule.getBlobExistenceCacheForTests().clear();
+  readModelModule.resetFileFieldsMemoryCacheForTests();
   return fs.rm(process.env.UPLOAD_TMP_DIR!, { recursive: true, force: true });
 });
 

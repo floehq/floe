@@ -269,6 +269,11 @@ export function clearFileFieldsCache(fileId: string) {
   fileFieldsMemoryCache.delete(fileId);
 }
 
+/** @internal test-only hook — clears all cached file fields entries. */
+export function resetFileFieldsMemoryCacheForTests(): void {
+  fileFieldsMemoryCache.clear();
+}
+
 export function applyFileLookupHeaders(
   reply: any,
   params: { source: FileFieldsSource | null; postgresState: PostgresReadState },
