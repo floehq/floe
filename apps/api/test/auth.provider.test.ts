@@ -61,7 +61,9 @@ afterEach(() => {
   (AuthExternalConfig as Record<string, unknown>)["verifyUrl"] = undefined;
   (AuthExternalConfig as Record<string, unknown>)["sharedSecret"] = undefined;
   (AuthExternalConfig as Record<string, unknown>)["cacheTtlMs"] = 5000;
-  (AuthApiKeyConfig as Record<string, unknown>)["keys"] = JSON.parse(process.env.FLOE_API_KEYS_JSON!);
+  (AuthApiKeyConfig as Record<string, unknown>)["keys"] = JSON.parse(
+    process.env.FLOE_API_KEYS_JSON!,
+  );
   globalThis.fetch = originalFetch;
   externalAuthTestHooks.resetCache();
 });
@@ -281,7 +283,8 @@ test("external provider fails closed for protected routes when verification fail
 test("external provider fails closed for revoked SaaS api keys on protected routes", async () => {
   (AuthModeConfig as Record<string, unknown>)["mode"] = "private";
   (AuthProviderConfig as Record<string, unknown>)["kind"] = "external";
-  (AuthExternalConfig as Record<string, unknown>)["verifyUrl"] = "https://auth.floe-private.test/verify";
+  (AuthExternalConfig as Record<string, unknown>)["verifyUrl"] =
+    "https://auth.floe-private.test/verify";
   (AuthExternalConfig as Record<string, unknown>)["sharedSecret"] = "shared-secret";
   globalThis.fetch = async () =>
     new Response(

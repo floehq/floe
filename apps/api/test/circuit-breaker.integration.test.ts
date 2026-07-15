@@ -63,20 +63,24 @@ test("checkWalrusBlobExists returns optimistic pass when circuit is OPEN", async
   assert.equal(result.reason, "circuit_open_optimistic_pass");
 });
 
-test("checkWalrusBlobExists falls through to real HEAD on closed circuit", { timeout: 5_000 }, async () => {
-  const { checkWalrusBlobExists } = await import("../src/services/walrus/read.js");
+test(
+  "checkWalrusBlobExists falls through to real HEAD on closed circuit",
+  { timeout: 5_000 },
+  async () => {
+    const { checkWalrusBlobExists } = await import("../src/services/walrus/read.js");
 
-  // Circuit is already closed (reset in beforeEach).
-  // The call will attempt a real HEAD request against the configured
-  // aggregator URL. If WALRUS_AGGREGATOR_URL is a dead endpoint, it
-  // will return { exists: false, reason: "..." } rather than throwing.
-  const result = await checkWalrusBlobExists({ blobId: "non-existent-blob" });
+    // Circuit is already closed (reset in beforeEach).
+    // The call will attempt a real HEAD request against the configured
+    // aggregator URL. If WALRUS_AGGREGATOR_URL is a dead endpoint, it
+    // will return { exists: false, reason: "..." } rather than throwing.
+    const result = await checkWalrusBlobExists({ blobId: "non-existent-blob" });
 
-  // Should NOT return the circuit_open optimistic pass
-  assert.notEqual(result.reason, "circuit_open_optimistic_pass");
-  // And should not throw — the HEAD error is caught internally
-  assert.equal(typeof result.exists, "boolean");
-});
+    // Should NOT return the circuit_open optimistic pass
+    assert.notEqual(result.reason, "circuit_open_optimistic_pass");
+    // And should not throw — the HEAD error is caught internally
+    assert.equal(typeof result.exists, "boolean");
+  },
+);
 
 // ============================================================
 // 2. Walrus read — fetchWalrusBlob
@@ -91,7 +95,10 @@ test("fetchWalrusBlob rejects fast when circuit is OPEN", async () => {
     await fetchWalrusBlob({ blobId: "any-blob" });
     assert.fail("Expected CircuitBreakerError");
   } catch (err) {
-    assert.ok(err instanceof CircuitBreakerError, `Expected CircuitBreakerError, got ${(err as Error)?.name}`);
+    assert.ok(
+      err instanceof CircuitBreakerError,
+      `Expected CircuitBreakerError, got ${(err as Error)?.name}`,
+    );
     assert.equal(err.circuitName, "walrus_read");
     assert.equal(err.circuitState, "open");
   }
@@ -132,15 +139,15 @@ test("fetchWalrusBlob recovers after circuit reset", { timeout: 5_000 }, async (
 // ============================================================
 
 test("uploadToWalrusViaPublisher rejects fast when circuit is OPEN", async () => {
-  const { uploadToWalrusViaPublisher } = await import(
-    "../src/services/walrus/backends/publisher.js"
-  );
+  const { uploadToWalrusViaPublisher } =
+    await import("../src/services/walrus/backends/publisher.js");
 
   walrusPublishCircuit.forceState("open");
 
   try {
     await uploadToWalrusViaPublisher({
-      epochs: 1,        streamFactory: () => Readable.from(Buffer.from("test")),
+      epochs: 1,
+      streamFactory: () => Readable.from(Buffer.from("test")),
     });
     assert.fail("Expected CircuitBreakerError");
   } catch (err) {
@@ -200,9 +207,8 @@ test("renewFileMetadata rejects fast when circuit is OPEN", async () => {
 // ============================================================
 
 test("verifyExternalCredential returns null when circuit is OPEN", async () => {
-  const { buildExternalAuthContext, externalAuthTestHooks } = await import(
-    "../src/services/auth/auth.external.js"
-  );
+  const { buildExternalAuthContext, externalAuthTestHooks } =
+    await import("../src/services/auth/auth.external.js");
 
   externalAuthTestHooks.resetCache();
   externalAuthCircuit.forceState("open");
@@ -224,9 +230,7 @@ test("verifyExternalCredential returns null when circuit is OPEN", async () => {
 test("verifyExternalCredential returns null when circuit throws non-CircuitBreakerError", async () => {
   // Verify that any error from the circuit breaker (not just
   // CircuitBreakerError) is caught and returned as null.
-  const { externalAuthTestHooks } = await import(
-    "../src/services/auth/auth.external.js"
-  );
+  const { externalAuthTestHooks } = await import("../src/services/auth/auth.external.js");
 
   externalAuthTestHooks.resetCache();
 
@@ -246,9 +250,7 @@ test("verifyExternalCredential returns null when circuit throws non-CircuitBreak
     },
   } as unknown as Record<string, unknown>;
 
-  const { buildExternalAuthContext } = await import(
-    "../src/services/auth/auth.external.js"
-  );
+  const { buildExternalAuthContext } = await import("../src/services/auth/auth.external.js");
   const result = await buildExternalAuthContext(req);
   assert.equal(result, null);
 });
@@ -287,7 +289,9 @@ test("circuit breaker fast-rejects after failure threshold in real usage", async
   });
 
   // Two consecutive failures should open the circuit
-  const failingFn = async () => { throw new Error("fail"); };
+  const failingFn = async () => {
+    throw new Error("fail");
+  };
 
   await assert.rejects(() => testCb.call(failingFn), /fail/);
   assert.equal(testCb.currentState, "closed");

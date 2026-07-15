@@ -19,10 +19,7 @@ import {
   checkWalrusDependencyHealth,
 } from "../services/health/dependencies.js";
 import { buildOperatorUploadSummary } from "../services/ops/upload.summary.js";
-import {
-  emitAuditEvent,
-  requestEventContext,
-} from "../services/events/infrastructure.events.js";
+import { emitAuditEvent, requestEventContext } from "../services/events/infrastructure.events.js";
 import { getAllSloStatuses } from "../services/reliability/sli.js";
 import { TopologyConfig } from "../config/topology.config.js";
 import { describeWalrusReaders } from "../config/walrus.config.js";
@@ -373,7 +370,9 @@ export default async function healthRoute(app: FastifyInstance) {
             .filter(Number.isInteger)
             .sort((a, b) => a - b)
         : [];
-      const includeReceivedIndexes = parseBoolQuery((req.query as Record<string, unknown>)?.includeReceivedIndexes);
+      const includeReceivedIndexes = parseBoolQuery(
+        (req.query as Record<string, unknown>)?.includeReceivedIndexes,
+      );
       const operatorSummary = buildOperatorUploadSummary({
         session,
         meta: metaObject,

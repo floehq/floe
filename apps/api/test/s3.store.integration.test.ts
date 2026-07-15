@@ -34,7 +34,12 @@ test("S3ChunkStore integration — real MinIO lifecycle", { timeout: 20_000 }, a
     const chunk0 = Buffer.from("hello-chunk-0");
     const hash0 = createHash("sha256").update(chunk0).digest("hex");
     const result0 = await store.writeChunk(
-      uploadId, 0, Readable.from(chunk0), hash0, chunk0.length, false,
+      uploadId,
+      0,
+      Readable.from(chunk0),
+      hash0,
+      chunk0.length,
+      false,
     );
     assert.deepEqual(result0, { alreadyExisted: false });
 
@@ -42,7 +47,12 @@ test("S3ChunkStore integration — real MinIO lifecycle", { timeout: 20_000 }, a
     const chunk1 = Buffer.from("hello-chunk-1-last");
     const hash1 = createHash("sha256").update(chunk1).digest("hex");
     const result1 = await store.writeChunk(
-      uploadId, 1, Readable.from(chunk1), hash1, chunk1.length, true,
+      uploadId,
+      1,
+      Readable.from(chunk1),
+      hash1,
+      chunk1.length,
+      true,
     );
     assert.deepEqual(result1, { alreadyExisted: false });
 
@@ -65,7 +75,12 @@ test("S3ChunkStore integration — real MinIO lifecycle", { timeout: 20_000 }, a
 
     // Write same chunk again — should return alreadyExisted
     const resultRepeat = await store.writeChunk(
-      uploadId, 0, Readable.from(chunk0), hash0, chunk0.length, false,
+      uploadId,
+      0,
+      Readable.from(chunk0),
+      hash0,
+      chunk0.length,
+      false,
     );
     assert.deepEqual(resultRepeat, { alreadyExisted: true });
 
@@ -74,7 +89,6 @@ test("S3ChunkStore integration — real MinIO lifecycle", { timeout: 20_000 }, a
     assert.equal(await store.hasChunk(uploadId, 0), false);
     assert.equal(await store.hasChunk(uploadId, 1), false);
     assert.deepEqual(await store.listChunks(uploadId), []);
-
   } finally {
     // Restore env
     if (envTmpDir !== undefined) {

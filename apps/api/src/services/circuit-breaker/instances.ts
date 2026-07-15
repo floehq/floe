@@ -51,4 +51,3 @@ export const externalAuthCircuit = buildCircuit(
   CircuitBreakerConfig.externalAuthSuccessThreshold,
   CircuitBreakerConfig.externalAuthOpenDurationMs,
 );
-

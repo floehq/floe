@@ -439,7 +439,8 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
         : 500;
     const knownCode = err instanceof Error ? knownCodeByMessage[err.message] : undefined;
 
-    const errLogger = (req as { childLogger?: ReturnType<typeof req.log.child> }).childLogger ?? req.log;
+    const errLogger =
+      (req as { childLogger?: ReturnType<typeof req.log.child> }).childLogger ?? req.log;
     errLogger.error({ err, url: req.url, method: req.method }, "Request error");
 
     return reply.code(statusCode).send({

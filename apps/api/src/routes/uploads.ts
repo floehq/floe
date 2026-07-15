@@ -445,218 +445,212 @@ async function persistUploadActionIdempotencyRecord(params: {
 }
 
 export default async function uploadRoutes(app: FastifyInstance) {
-  app.post("/v1/uploads/create", {
-    bodyLimit: 64 * 1024,
-    schema: {
-      tags: ["Uploads"],
-      summary: "Create an upload session",
-      description:
-        "Initialize a new resumable chunk upload. Returns an uploadId, chunkSize, and totalChunks. The client then uploads chunks via PUT /v1/uploads/:uploadId/chunk/:index.",
-      body: {
-        type: "object",
-        required: ["filename", "contentType", "sizeBytes"],
-        properties: {
-          filename: { type: "string", description: "Original file name", maxLength: 255 },
-          contentType: { type: "string", description: "MIME type of the file" },
-          sizeBytes: { type: "number", description: "Total file size in bytes", minimum: 1 },
-          chunkSize: { type: "number", description: "Preferred chunk size in bytes" },
-          epochs: { type: "number", description: "Walrus storage duration in epochs" },
-          checksum: {
-            type: "string",
-            pattern: "^[a-f0-9]{64}$",
-            description: "Optional SHA-256 checksum of the file content",
+  app.post(
+    "/v1/uploads/create",
+    {
+      bodyLimit: 64 * 1024,
+      schema: {
+        tags: ["Uploads"],
+        summary: "Create an upload session",
+        description:
+          "Initialize a new resumable chunk upload. Returns an uploadId, chunkSize, and totalChunks. The client then uploads chunks via PUT /v1/uploads/:uploadId/chunk/:index.",
+        body: {
+          type: "object",
+          required: ["filename", "contentType", "sizeBytes"],
+          properties: {
+            filename: { type: "string", description: "Original file name", maxLength: 255 },
+            contentType: { type: "string", description: "MIME type of the file" },
+            sizeBytes: { type: "number", description: "Total file size in bytes", minimum: 1 },
+            chunkSize: { type: "number", description: "Preferred chunk size in bytes" },
+            epochs: { type: "number", description: "Walrus storage duration in epochs" },
+            checksum: {
+              type: "string",
+              pattern: "^[a-f0-9]{64}$",
+              description: "Optional SHA-256 checksum of the file content",
+            },
           },
         },
       },
     },
-  }, async (req, reply) => {
-    const log = req.childLogger;
-    const body = req.body as Record<string, unknown>;
-    const createLimit = await req.server.authProvider.checkRateLimit({
-      req,
-      scope: "upload_control",
-    });
-    applyRateLimitHeaders(reply, createLimit);
-    if (!createLimit.allowed) {
-      return sendApiError(reply, 429, "RATE_LIMITED", "Rate limit exceeded", {
-        retryable: true,
-        details: {
-          limit: createLimit.limit,
-          current: createLimit.current,
-          windowSeconds: createLimit.windowSeconds,
-          authenticated: createLimit.identity.authenticated,
-          authMethod: createLimit.identity.method,
-        },
+    async (req, reply) => {
+      const log = req.childLogger;
+      const body = req.body as Record<string, unknown>;
+      const createLimit = await req.server.authProvider.checkRateLimit({
+        req,
+        scope: "upload_control",
       });
-    }
+      applyRateLimitHeaders(reply, createLimit);
+      if (!createLimit.allowed) {
+        return sendApiError(reply, 429, "RATE_LIMITED", "Rate limit exceeded", {
+          retryable: true,
+          details: {
+            limit: createLimit.limit,
+            current: createLimit.current,
+            windowSeconds: createLimit.windowSeconds,
+            authenticated: createLimit.identity.authenticated,
+            authMethod: createLimit.identity.method,
+          },
+        });
+      }
 
-    const authzCreate = await req.server.authProvider.authorizeUploadAccess({
-      req,
-      action: "create",
-    });
-    if (!authzCreate.allowed) {
-      return sendApiError(
-        reply,
-        authzStatusCode(authzCreate.code),
-        authzErrorCode(authzCreate.code),
-        authzCreate.message ?? "Upload access denied",
-      );
-    }
+      const authzCreate = await req.server.authProvider.authorizeUploadAccess({
+        req,
+        action: "create",
+      });
+      if (!authzCreate.allowed) {
+        return sendApiError(
+          reply,
+          authzStatusCode(authzCreate.code),
+          authzErrorCode(authzCreate.code),
+          authzCreate.message ?? "Upload access denied",
+        );
+      }
 
-    if (!body || typeof body !== "object") {
-      return sendApiError(reply, 400, "INVALID_REQUEST_BODY", "Request body must be JSON");
-    }
+      if (!body || typeof body !== "object") {
+        return sendApiError(reply, 400, "INVALID_REQUEST_BODY", "Request body must be JSON");
+      }
 
-    const { filename: rawFilename, contentType: rawContentType, sizeBytes, chunkSize, epochs, checksum } = body;
+      const {
+        filename: rawFilename,
+        contentType: rawContentType,
+        sizeBytes,
+        chunkSize,
+        epochs,
+        checksum,
+      } = body;
 
-    if (!rawFilename || !rawContentType || !sizeBytes) {
-      return sendApiError(reply, 400, "INVALID_CREATE_UPLOAD_REQUEST", "Missing required fields");
-    }
+      if (!rawFilename || !rawContentType || !sizeBytes) {
+        return sendApiError(reply, 400, "INVALID_CREATE_UPLOAD_REQUEST", "Missing required fields");
+      }
 
-    let filename: string;
-    try {
-      filename = validateFilename(rawFilename);
-    } catch (err: any) {
-      return sendApiError(reply, 400, "INVALID_FILENAME", err.message ?? "Invalid filename");
-    }
+      let filename: string;
+      try {
+        filename = validateFilename(rawFilename);
+      } catch (err: any) {
+        return sendApiError(reply, 400, "INVALID_FILENAME", err.message ?? "Invalid filename");
+      }
 
-    let contentType: string;
-    try {
-      contentType = validateContentType(rawContentType);
-    } catch (err: any) {
-      return sendApiError(
-        reply,
-        400,
-        "INVALID_CONTENT_TYPE",
-        err.message ?? "Invalid content type",
-      );
-    }
-
-    let checksumValue: string | undefined;
-    if (checksum !== undefined) {
-      if (typeof checksum !== "string" || !/^[a-f0-9]{64}$/i.test(checksum)) {
+      let contentType: string;
+      try {
+        contentType = validateContentType(rawContentType);
+      } catch (err: any) {
         return sendApiError(
           reply,
           400,
-          "INVALID_CHECKSUM",
-          "checksum must be a 64-char hex sha256",
+          "INVALID_CONTENT_TYPE",
+          err.message ?? "Invalid content type",
         );
       }
-      checksumValue = checksum.toLowerCase();
-    }
 
-    const fileSizeNum = Number(sizeBytes);
-    if (!Number.isFinite(fileSizeNum) || fileSizeNum <= 0) {
-      return sendApiError(reply, 400, "INVALID_FILE_SIZE", "sizeBytes must be positive");
-    }
+      let checksumValue: string | undefined;
+      if (checksum !== undefined) {
+        if (typeof checksum !== "string" || !/^[a-f0-9]{64}$/i.test(checksum)) {
+          return sendApiError(
+            reply,
+            400,
+            "INVALID_CHECKSUM",
+            "checksum must be a 64-char hex sha256",
+          );
+        }
+        checksumValue = checksum.toLowerCase();
+      }
 
-    const tierMaxFileSizeBytes = createLimit.identity.authenticated
-      ? AuthUploadPolicyConfig.maxFileSizeBytes.authenticated
-      : AuthUploadPolicyConfig.maxFileSizeBytes.public;
-    const effectiveMaxFileSizeBytes = Math.min(UploadConfig.maxFileSizeBytes, tierMaxFileSizeBytes);
+      const fileSizeNum = Number(sizeBytes);
+      if (!Number.isFinite(fileSizeNum) || fileSizeNum <= 0) {
+        return sendApiError(reply, 400, "INVALID_FILE_SIZE", "sizeBytes must be positive");
+      }
 
-    if (fileSizeNum > effectiveMaxFileSizeBytes) {
-      return sendApiError(
-        reply,
-        413,
-        "FILE_TOO_LARGE",
-        `File exceeds maxFileSizeBytes (${effectiveMaxFileSizeBytes})`,
+      const tierMaxFileSizeBytes = createLimit.identity.authenticated
+        ? AuthUploadPolicyConfig.maxFileSizeBytes.authenticated
+        : AuthUploadPolicyConfig.maxFileSizeBytes.public;
+      const effectiveMaxFileSizeBytes = Math.min(
+        UploadConfig.maxFileSizeBytes,
+        tierMaxFileSizeBytes,
       );
-    }
 
-    let chunkSizeNum: number | undefined;
-    if (chunkSize !== undefined) {
-      chunkSizeNum = Number(chunkSize);
-      if (!Number.isFinite(chunkSizeNum) || chunkSizeNum <= 0) {
+      if (fileSizeNum > effectiveMaxFileSizeBytes) {
+        return sendApiError(
+          reply,
+          413,
+          "FILE_TOO_LARGE",
+          `File exceeds maxFileSizeBytes (${effectiveMaxFileSizeBytes})`,
+        );
+      }
+
+      let chunkSizeNum: number | undefined;
+      if (chunkSize !== undefined) {
+        chunkSizeNum = Number(chunkSize);
+        if (!Number.isFinite(chunkSizeNum) || chunkSizeNum <= 0) {
+          return sendApiError(
+            reply,
+            400,
+            "INVALID_CHUNK_SIZE",
+            "chunkSize must be a positive number",
+          );
+        }
+      }
+
+      let epochsNum: number | undefined;
+      if (epochs !== undefined) {
+        epochsNum = Number(epochs);
+        if (!Number.isFinite(epochsNum) || epochsNum <= 0) {
+          return sendApiError(reply, 400, "INVALID_EPOCHS", "epochs must be a positive number");
+        }
+      }
+
+      const resolvedChunkSize = Math.min(
+        ChunkConfig.maxBytes,
+        Math.max(ChunkConfig.minBytes, chunkSizeNum ?? ChunkConfig.defaultBytes),
+      );
+
+      const resolvedEpochs = Math.min(
+        WalrusEpochLimits.max,
+        Math.max(WalrusEpochLimits.min, epochsNum ?? WalrusEpochLimits.default),
+      );
+
+      const totalChunks = Math.ceil(fileSizeNum / resolvedChunkSize);
+
+      if (!Number.isFinite(totalChunks) || totalChunks <= 0) {
         return sendApiError(
           reply,
           400,
-          "INVALID_CHUNK_SIZE",
-          "chunkSize must be a positive number",
+          "INVALID_TOTAL_CHUNKS",
+          "Invalid totalChunks derived from inputs",
         );
       }
-    }
 
-    let epochsNum: number | undefined;
-    if (epochs !== undefined) {
-      epochsNum = Number(epochs);
-      if (!Number.isFinite(epochsNum) || epochsNum <= 0) {
-        return sendApiError(reply, 400, "INVALID_EPOCHS", "epochs must be a positive number");
-      }
-    }
-
-    const resolvedChunkSize = Math.min(
-      ChunkConfig.maxBytes,
-      Math.max(ChunkConfig.minBytes, chunkSizeNum ?? ChunkConfig.defaultBytes),
-    );
-
-    const resolvedEpochs = Math.min(
-      WalrusEpochLimits.max,
-      Math.max(WalrusEpochLimits.min, epochsNum ?? WalrusEpochLimits.default),
-    );
-
-    const totalChunks = Math.ceil(fileSizeNum / resolvedChunkSize);
-
-    if (!Number.isFinite(totalChunks) || totalChunks <= 0) {
-      return sendApiError(
-        reply,
-        400,
-        "INVALID_TOTAL_CHUNKS",
-        "Invalid totalChunks derived from inputs",
-      );
-    }
-
-    if (totalChunks > UploadConfig.maxTotalChunks) {
-      return sendApiError(
-        reply,
-        413,
-        "TOO_MANY_CHUNKS",
-        `totalChunks exceeds maxTotalChunks (${UploadConfig.maxTotalChunks})`,
-      );
-    }
-
-    const redis = await requireRedis(reply);
-    if (!redis) return;
-    const idempotencyKey = getCreateIdempotencyKey(req);
-    const idempotencySubject = createLimit.identity.subject;
-    const idempotencyRedisKey = idempotencyKey
-      ? uploadKeys.createIdempotency(idempotencySubject, idempotencyKey)
-      : null;
-    const idempotencyFingerprint = idempotencyRedisKey
-      ? buildCreateUploadFingerprint({
-          subject: idempotencySubject,
-          filename,
-          contentType,
-          sizeBytes: fileSizeNum,
-          checksum: checksumValue,
-          chunkSize: resolvedChunkSize,
-          epochs: resolvedEpochs,
-        })
-      : null;
-    const idempotencyLockKey = idempotencyRedisKey ? `${idempotencyRedisKey}:lock` : null;
-    let createIdempotencyLockClaimed = false;
-
-    if (idempotencyRedisKey && idempotencyFingerprint) {
-      const replay = await guardRedisDependency(reply, () =>
-        sendCreateIdempotencyReplay({
+      if (totalChunks > UploadConfig.maxTotalChunks) {
+        return sendApiError(
           reply,
-          redis,
-          key: idempotencyRedisKey,
-          fingerprint: idempotencyFingerprint,
-        }),
-      );
-      if (replay === REDIS_DEPENDENCY_UNAVAILABLE) return;
-      if (replay === "replayed" || replay === "conflict") return;
+          413,
+          "TOO_MANY_CHUNKS",
+          `totalChunks exceeds maxTotalChunks (${UploadConfig.maxTotalChunks})`,
+        );
+      }
 
-      const claimed = await guardRedisDependency(reply, () =>
-        redis.set(idempotencyLockKey!, idempotencyFingerprint, {
-          nx: true,
-          ex: IDEMPOTENCY_LOCK_TTL_SECONDS,
-        }),
-      );
-      if (claimed === REDIS_DEPENDENCY_UNAVAILABLE) return;
-      if (claimed !== "OK") {
-        const pendingReplay = await guardRedisDependency(reply, () =>
+      const redis = await requireRedis(reply);
+      if (!redis) return;
+      const idempotencyKey = getCreateIdempotencyKey(req);
+      const idempotencySubject = createLimit.identity.subject;
+      const idempotencyRedisKey = idempotencyKey
+        ? uploadKeys.createIdempotency(idempotencySubject, idempotencyKey)
+        : null;
+      const idempotencyFingerprint = idempotencyRedisKey
+        ? buildCreateUploadFingerprint({
+            subject: idempotencySubject,
+            filename,
+            contentType,
+            sizeBytes: fileSizeNum,
+            checksum: checksumValue,
+            chunkSize: resolvedChunkSize,
+            epochs: resolvedEpochs,
+          })
+        : null;
+      const idempotencyLockKey = idempotencyRedisKey ? `${idempotencyRedisKey}:lock` : null;
+      let createIdempotencyLockClaimed = false;
+
+      if (idempotencyRedisKey && idempotencyFingerprint) {
+        const replay = await guardRedisDependency(reply, () =>
           sendCreateIdempotencyReplay({
             reply,
             redis,
@@ -664,415 +658,510 @@ export default async function uploadRoutes(app: FastifyInstance) {
             fingerprint: idempotencyFingerprint,
           }),
         );
-        if (pendingReplay === REDIS_DEPENDENCY_UNAVAILABLE) return;
-        if (pendingReplay === "replayed" || pendingReplay === "conflict") return;
-        return sendApiError(
-          reply,
-          409,
-          "IDEMPOTENCY_REQUEST_IN_PROGRESS",
-          "A create request with this idempotency key is already in progress",
-          { retryable: true },
+        if (replay === REDIS_DEPENDENCY_UNAVAILABLE) return;
+        if (replay === "replayed" || replay === "conflict") return;
+
+        const claimed = await guardRedisDependency(reply, () =>
+          redis.set(idempotencyLockKey!, idempotencyFingerprint, {
+            nx: true,
+            ex: IDEMPOTENCY_LOCK_TTL_SECONDS,
+          }),
         );
-      }
-      createIdempotencyLockClaimed = true;
-    }
-
-    const uploadId = crypto.randomUUID();
-    const capacityReserved = await guardRedisDependency(reply, () =>
-      tryReserveUploadCapacity({
-        maxActiveUploads: UploadConfig.maxActiveUploads,
-        uploadId,
-      }),
-    );
-    if (capacityReserved === REDIS_DEPENDENCY_UNAVAILABLE) return;
-
-    if (!capacityReserved) {
-      if (createIdempotencyLockClaimed && idempotencyLockKey) {
-        await redis.del(idempotencyLockKey).catch(() => {});
-      }
-      return sendApiError(reply, 429, "UPLOAD_CAPACITY_REACHED", "Too many active uploads", {
-        retryable: true,
-      });
-    }
-
-    let sessionCreated = false;
-    try {
-      const session = await createSession({
-        uploadId,
-        filename,
-        contentType,
-        owner: createLimit.identity.authenticated
-          ? createLimit.identity.owner
-          : (createLimit.identity.owner ?? DEFAULT_OWNER_ADDRESS),
-        checksum: checksumValue,
-        sizeBytes: fileSizeNum,
-        chunkSize: resolvedChunkSize,
-        totalChunks,
-        epochs: resolvedEpochs,
-      });
-      sessionCreated = true;
-
-      if (idempotencyRedisKey && idempotencyFingerprint) {
-        const idempotencyTtlSeconds = Math.max(
-          1,
-          Math.ceil(Math.max(0, session.expiresAt - Date.now()) / 1000),
-        );
-        await redis
-          .multi()
-          .hset(idempotencyRedisKey, {
-            fingerprint: idempotencyFingerprint,
-            uploadId: session.uploadId,
-            chunkSize: String(session.chunkSize),
-            totalChunks: String(session.totalChunks),
-            epochs: String(session.resolvedEpochs),
-            expiresAt: String(session.expiresAt),
-          })
-          .expire(idempotencyRedisKey, idempotencyTtlSeconds)
-          .exec()
-          .catch((err) => {
-            log.warn({ err, uploadId }, "Failed to persist create idempotency record");
-          });
-      }
-
-      log.info({ uploadId, totalChunks }, "Upload session created");
-      const eventContext = requestEventContext(req);
-      emitInfrastructureEvent(log, {
-        event: "upload_created",
-        requestId: eventContext.requestId,
-        actor: eventContext.actor,
-        uploadId,
-        outcome: "success",
-        statusCode: 201,
-        bytes: fileSizeNum,
-        metadata: {
-          contentType,
-          chunkSize: session.chunkSize,
-          totalChunks: session.totalChunks,
-          epochs: session.resolvedEpochs,
-        },
-      });
-
-      return reply.code(201).send({
-        uploadId: session.uploadId,
-        chunkSize: session.chunkSize,
-        totalChunks: session.totalChunks,
-        epochs: session.resolvedEpochs,
-        expiresAt: session.expiresAt,
-      });
-    } catch (err) {
-      if (isRedisDependencyError(err)) {
-        return sendRedisUnavailable(reply);
-      }
-      log.error({ err }, "Session creation failed");
-      return sendApiError(reply, 500, "SESSION_CREATE_FAILED", "Failed to create upload session", {
-        retryable: true,
-      });
-    } finally {
-      if (createIdempotencyLockClaimed && idempotencyLockKey) {
-        await redis.del(idempotencyLockKey).catch(() => {});
-      }
-      if (!sessionCreated) {
-        await redis
-          .multi()
-          .del(uploadKeys.session(uploadId))
-          .del(uploadKeys.meta(uploadId))
-          .del(uploadKeys.chunks(uploadId))
-          .srem(uploadKeys.gcIndex(), uploadId)
-          .srem(uploadKeys.activeIndex(), uploadId)
-          .exec()
-          .catch(() => {});
-      }
-    }
-  });
-
-  app.put("/v1/uploads/:uploadId/chunk/:index", {
-    schema: {
-      tags: ["Uploads"],
-      summary: "Upload a chunk",
-      description:
-        "Upload a single chunk of the file. Chunks are uploaded sequentially or out of order. Must provide x-chunk-sha256 header with the SHA-256 hash of the chunk content.",
-      params: {
-        type: "object",
-        required: ["uploadId", "index"],
-        properties: {
-          uploadId: { type: "string", format: "uuid", description: "Upload session ID" },
-          index: { type: "integer", description: "Chunk index (0-based)", minimum: 0 },
-        },
-      },
-      headers: {
-        type: "object",
-        properties: {
-          "x-chunk-sha256": { type: "string", description: "SHA-256 hash of chunk content" },
-        },
-      },
-    },
-  }, async (req, reply) => {
-    const log = req.childLogger;
-    const { uploadId, index } = req.params as Record<string, string>;
-    const chunkLimit = await req.server.authProvider.checkRateLimit({
-      req,
-      scope: "upload_chunk",
-    });
-    applyRateLimitHeaders(reply, chunkLimit);
-    if (!chunkLimit.allowed) {
-      return sendApiError(reply, 429, "RATE_LIMITED", "Rate limit exceeded", {
-        retryable: true,
-        details: {
-          limit: chunkLimit.limit,
-          current: chunkLimit.current,
-          windowSeconds: chunkLimit.windowSeconds,
-          authenticated: chunkLimit.identity.authenticated,
-          authMethod: chunkLimit.identity.method,
-        },
-      });
-    }
-
-    if (!isUuid(uploadId)) {
-      return sendApiError(reply, 400, "INVALID_UPLOAD_ID", "uploadId must be a UUID");
-    }
-
-    const redis = await requireRedis(reply);
-    if (!redis) return;
-
-    const loaded = await guardRedisDependency(reply, () =>
-      Promise.all([
-        getSession(uploadId),
-        redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId)),
-      ] as const),
-    );
-    if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
-    const [session, meta] = loaded;
-    const expired = await guardRedisDependency(reply, () =>
-      expireUploadIfNeeded({ uploadId, session, meta }),
-    );
-    if (expired === REDIS_DEPENDENCY_UNAVAILABLE) return;
-    if (expired) {
-      return sendApiError(reply, 409, "UPLOAD_EXPIRED", "Upload session expired");
-    }
-    if (!session) {
-      return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
-    }
-    const authzChunk = await req.server.authProvider.authorizeUploadAccess({
-      req,
-      action: "chunk",
-      uploadId,
-      uploadOwner: session.owner ?? null,
-    });
-    if (!authzChunk.allowed) {
-      return sendApiError(
-        reply,
-        authzStatusCode(authzChunk.code),
-        authzErrorCode(authzChunk.code),
-        authzChunk.message ?? "Upload access denied",
-      );
-    }
-
-    if (session.status === "completed") {
-      return sendApiError(reply, 409, "UPLOAD_ALREADY_COMPLETED", "Upload is already finalized");
-    }
-
-    const idx = Number(index);
-    const expectedHash = req.headers["x-chunk-sha256"];
-
-    if (
-      !Number.isInteger(idx) ||
-      idx < 0 ||
-      idx >= session.totalChunks ||
-      typeof expectedHash !== "string"
-    ) {
-      return sendApiError(reply, 400, "INVALID_CHUNK", "Invalid chunk index or hash");
-    }
-
-    let part;
-    try {
-      part = await req.file();
-    } catch {
-      return sendApiError(reply, 400, "CHUNK_STREAM_ERROR", "Failed to read chunk stream", {
-        retryable: true,
-      });
-    }
-
-    if (!part || part.type !== "file") {
-      return sendApiError(reply, 400, "INVALID_CHUNK", "Multipart file field required", {
-        retryable: true,
-      });
-    }
-
-    try {
-      const isLastChunk = idx === session.totalChunks - 1;
-
-      const expectedSize = isLastChunk
-        ? session.sizeBytes - session.chunkSize * (session.totalChunks - 1)
-        : session.chunkSize;
-
-      const writeResult = await chunkStore.writeChunk(
-        uploadId,
-        idx,
-        part.file,
-        expectedHash,
-        expectedSize,
-        isLastChunk,
-      );
-      const persisted = await guardRedisDependency(reply, async () => {
-        await redis.sadd(uploadKeys.chunks(uploadId), String(idx));
-        return await touchUploadActivity({ uploadId, chunkIndex: idx });
-      });
-      if (persisted === REDIS_DEPENDENCY_UNAVAILABLE) return;
-      if (!persisted) {
-        await Promise.all([
-          redis.srem(uploadKeys.chunks(uploadId), String(idx)).catch(() => {}),
-          chunkStore.removeChunk(uploadId, idx).catch(() => {}),
-        ]);
-        const status = await redis
-          .hget<string>(uploadKeys.meta(uploadId), "status")
-          .catch(() => null);
-        if (status === "expired") {
-          return sendApiError(reply, 409, "UPLOAD_EXPIRED", "Upload session expired");
+        if (claimed === REDIS_DEPENDENCY_UNAVAILABLE) return;
+        if (claimed !== "OK") {
+          const pendingReplay = await guardRedisDependency(reply, () =>
+            sendCreateIdempotencyReplay({
+              reply,
+              redis,
+              key: idempotencyRedisKey,
+              fingerprint: idempotencyFingerprint,
+            }),
+          );
+          if (pendingReplay === REDIS_DEPENDENCY_UNAVAILABLE) return;
+          if (pendingReplay === "replayed" || pendingReplay === "conflict") return;
+          return sendApiError(
+            reply,
+            409,
+            "IDEMPOTENCY_REQUEST_IN_PROGRESS",
+            "A create request with this idempotency key is already in progress",
+            { retryable: true },
+          );
         }
-        return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
+        createIdempotencyLockClaimed = true;
       }
 
-      const eventContext = requestEventContext(req);
-      emitInfrastructureEvent(log, {
-        event: "chunk_uploaded",
-        requestId: eventContext.requestId,
-        actor: eventContext.actor,
-        uploadId,
-        outcome: "success",
-        statusCode: 200,
-        bytes: expectedSize,
-        metadata: {
-          chunkIndex: idx,
-          reused: writeResult.alreadyExisted,
-          totalChunks: session.totalChunks,
-        },
-      });
+      const uploadId = crypto.randomUUID();
+      const capacityReserved = await guardRedisDependency(reply, () =>
+        tryReserveUploadCapacity({
+          maxActiveUploads: UploadConfig.maxActiveUploads,
+          uploadId,
+        }),
+      );
+      if (capacityReserved === REDIS_DEPENDENCY_UNAVAILABLE) return;
 
-      return {
-        ok: true,
-        chunkIndex: idx,
-        ...(writeResult.alreadyExisted ? { reused: true } : {}),
-      };
-    } catch (err: any) {
-      const message = err?.message ?? "Chunk upload failed";
-
-      if (err?.message === "CHUNK_IN_PROGRESS") {
-        log.info({ uploadId, idx }, "Chunk upload already in progress");
-        return sendApiError(
-          reply,
-          409,
-          "CHUNK_IN_PROGRESS",
-          "Chunk upload already in progress, retry shortly",
-          { retryable: true },
-        );
-      }
-
-      if (
-        err?.message === "HASH_MISMATCH" ||
-        err?.message === "CHUNK_TOO_LARGE" ||
-        err?.message === "CHUNK_SIZE_MISMATCH" ||
-        err?.message === "INVALID_LAST_CHUNK_SIZE"
-      ) {
-        return sendApiError(reply, 400, "INVALID_CHUNK", message, {
-          retryable: false,
+      if (!capacityReserved) {
+        if (createIdempotencyLockClaimed && idempotencyLockKey) {
+          await redis.del(idempotencyLockKey).catch(() => {});
+        }
+        return sendApiError(reply, 429, "UPLOAD_CAPACITY_REACHED", "Too many active uploads", {
+          retryable: true,
         });
       }
 
-      if (isRedisDependencyError(err)) {
-        return sendRedisUnavailable(reply);
+      let sessionCreated = false;
+      try {
+        const session = await createSession({
+          uploadId,
+          filename,
+          contentType,
+          owner: createLimit.identity.authenticated
+            ? createLimit.identity.owner
+            : (createLimit.identity.owner ?? DEFAULT_OWNER_ADDRESS),
+          checksum: checksumValue,
+          sizeBytes: fileSizeNum,
+          chunkSize: resolvedChunkSize,
+          totalChunks,
+          epochs: resolvedEpochs,
+        });
+        sessionCreated = true;
+
+        if (idempotencyRedisKey && idempotencyFingerprint) {
+          const idempotencyTtlSeconds = Math.max(
+            1,
+            Math.ceil(Math.max(0, session.expiresAt - Date.now()) / 1000),
+          );
+          await redis
+            .multi()
+            .hset(idempotencyRedisKey, {
+              fingerprint: idempotencyFingerprint,
+              uploadId: session.uploadId,
+              chunkSize: String(session.chunkSize),
+              totalChunks: String(session.totalChunks),
+              epochs: String(session.resolvedEpochs),
+              expiresAt: String(session.expiresAt),
+            })
+            .expire(idempotencyRedisKey, idempotencyTtlSeconds)
+            .exec()
+            .catch((err) => {
+              log.warn({ err, uploadId }, "Failed to persist create idempotency record");
+            });
+        }
+
+        log.info({ uploadId, totalChunks }, "Upload session created");
+        const eventContext = requestEventContext(req);
+        emitInfrastructureEvent(log, {
+          event: "upload_created",
+          requestId: eventContext.requestId,
+          actor: eventContext.actor,
+          uploadId,
+          outcome: "success",
+          statusCode: 201,
+          bytes: fileSizeNum,
+          metadata: {
+            contentType,
+            chunkSize: session.chunkSize,
+            totalChunks: session.totalChunks,
+            epochs: session.resolvedEpochs,
+          },
+        });
+
+        return reply.code(201).send({
+          uploadId: session.uploadId,
+          chunkSize: session.chunkSize,
+          totalChunks: session.totalChunks,
+          epochs: session.resolvedEpochs,
+          expiresAt: session.expiresAt,
+        });
+      } catch (err) {
+        if (isRedisDependencyError(err)) {
+          return sendRedisUnavailable(reply);
+        }
+        log.error({ err }, "Session creation failed");
+        return sendApiError(
+          reply,
+          500,
+          "SESSION_CREATE_FAILED",
+          "Failed to create upload session",
+          {
+            retryable: true,
+          },
+        );
+      } finally {
+        if (createIdempotencyLockClaimed && idempotencyLockKey) {
+          await redis.del(idempotencyLockKey).catch(() => {});
+        }
+        if (!sessionCreated) {
+          await redis
+            .multi()
+            .del(uploadKeys.session(uploadId))
+            .del(uploadKeys.meta(uploadId))
+            .del(uploadKeys.chunks(uploadId))
+            .srem(uploadKeys.gcIndex(), uploadId)
+            .srem(uploadKeys.activeIndex(), uploadId)
+            .exec()
+            .catch(() => {});
+        }
       }
+    },
+  );
 
-      log.warn({ uploadId, idx, err }, "Chunk upload failed");
-      return sendApiError(reply, 500, "CHUNK_UPLOAD_FAILED", message, { retryable: true });
-    }
-  });
-
-  app.get("/v1/uploads/:uploadId/status", {
-    schema: {
-      tags: ["Uploads"],
-      summary: "Get upload status",
-      description:
-        "Poll the status of an upload session. Returns chunk progress, finalization state, and optional storage debug info.",
-      params: {
-        type: "object",
-        required: ["uploadId"],
-        properties: {
-          uploadId: { type: "string", format: "uuid", description: "Upload session ID" },
+  app.put(
+    "/v1/uploads/:uploadId/chunk/:index",
+    {
+      schema: {
+        tags: ["Uploads"],
+        summary: "Upload a chunk",
+        description:
+          "Upload a single chunk of the file. Chunks are uploaded sequentially or out of order. Must provide x-chunk-sha256 header with the SHA-256 hash of the chunk content.",
+        params: {
+          type: "object",
+          required: ["uploadId", "index"],
+          properties: {
+            uploadId: { type: "string", format: "uuid", description: "Upload session ID" },
+            index: { type: "integer", description: "Chunk index (0-based)", minimum: 0 },
+          },
         },
-      },
-      querystring: {
-        type: "object",
-        properties: {
-          includeBlobId: { type: "string", description: "Set to '1' to expose blob ID" },
-          includeStorage: { type: "string", description: "Alias for includeBlobId" },
-          debug: { type: "string", description: "Set to '1' for Walrus debug info" },
+        headers: {
+          type: "object",
+          properties: {
+            "x-chunk-sha256": { type: "string", description: "SHA-256 hash of chunk content" },
+          },
         },
       },
     },
-  }, async (req, reply) => {
-    const { uploadId } = req.params as { uploadId: string };
-    const exposeBlobId = shouldExposeBlobId(req.query as Record<string, unknown>);
-    const exposeWalrusDebug = shouldExposeWalrusDebug(req.query as Record<string, unknown>);
-
-    if (!isUuid(uploadId)) {
-      return sendApiError(reply, 400, "INVALID_UPLOAD_ID", "uploadId must be a UUID");
-    }
-
-    const redis = await requireRedis(reply);
-    if (!redis) return;
-    const statusProbe = await guardRedisDependency(reply, () =>
-      redis.hget<string>(uploadKeys.meta(uploadId), "status"),
-    );
-    if (statusProbe === REDIS_DEPENDENCY_UNAVAILABLE) return;
-    const statusScope = statusProbe === "finalizing" ? "file_meta_read" : "upload_control";
-    const statusLimit = await req.server.authProvider.checkRateLimit({
-      req,
-      scope: statusScope,
-    });
-    applyRateLimitHeaders(reply, statusLimit);
-    if (!statusLimit.allowed) {
-      return sendApiError(reply, 429, "RATE_LIMITED", "Rate limit exceeded", {
-        retryable: true,
-        details: {
-          limit: statusLimit.limit,
-          current: statusLimit.current,
-          windowSeconds: statusLimit.windowSeconds,
-          authenticated: statusLimit.identity.authenticated,
-          authMethod: statusLimit.identity.method,
-          scope: statusScope,
-        },
+    async (req, reply) => {
+      const log = req.childLogger;
+      const { uploadId, index } = req.params as Record<string, string>;
+      const chunkLimit = await req.server.authProvider.checkRateLimit({
+        req,
+        scope: "upload_chunk",
       });
-    }
+      applyRateLimitHeaders(reply, chunkLimit);
+      if (!chunkLimit.allowed) {
+        return sendApiError(reply, 429, "RATE_LIMITED", "Rate limit exceeded", {
+          retryable: true,
+          details: {
+            limit: chunkLimit.limit,
+            current: chunkLimit.current,
+            windowSeconds: chunkLimit.windowSeconds,
+            authenticated: chunkLimit.identity.authenticated,
+            authMethod: chunkLimit.identity.method,
+          },
+        });
+      }
 
-    const loaded = await guardRedisDependency(reply, () =>
-      Promise.all([
-        getSession(uploadId),
-        redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId)),
-      ] as const),
-    );
-    if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
-    const [session, meta] = loaded;
-    const expired = await guardRedisDependency(reply, () =>
-      expireUploadIfNeeded({ uploadId, session, meta }),
-    );
-    if (expired === REDIS_DEPENDENCY_UNAVAILABLE) return;
-    const refreshedMeta = expired
-      ? await guardRedisDependency(reply, () =>
+      if (!isUuid(uploadId)) {
+        return sendApiError(reply, 400, "INVALID_UPLOAD_ID", "uploadId must be a UUID");
+      }
+
+      const redis = await requireRedis(reply);
+      if (!redis) return;
+
+      const loaded = await guardRedisDependency(reply, () =>
+        Promise.all([
+          getSession(uploadId),
           redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId)),
-        )
-      : meta;
-    if (refreshedMeta === REDIS_DEPENDENCY_UNAVAILABLE) return;
-    const currentMeta = refreshedMeta;
-    if (!session) {
-      const status = currentMeta?.status;
-      if (!status) {
+        ] as const),
+      );
+      if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      const [session, meta] = loaded;
+      const expired = await guardRedisDependency(reply, () =>
+        expireUploadIfNeeded({ uploadId, session, meta }),
+      );
+      if (expired === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      if (expired) {
+        return sendApiError(reply, 409, "UPLOAD_EXPIRED", "Upload session expired");
+      }
+      if (!session) {
         return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
+      }
+      const authzChunk = await req.server.authProvider.authorizeUploadAccess({
+        req,
+        action: "chunk",
+        uploadId,
+        uploadOwner: session.owner ?? null,
+      });
+      if (!authzChunk.allowed) {
+        return sendApiError(
+          reply,
+          authzStatusCode(authzChunk.code),
+          authzErrorCode(authzChunk.code),
+          authzChunk.message ?? "Upload access denied",
+        );
+      }
+
+      if (session.status === "completed") {
+        return sendApiError(reply, 409, "UPLOAD_ALREADY_COMPLETED", "Upload is already finalized");
+      }
+
+      const idx = Number(index);
+      const expectedHash = req.headers["x-chunk-sha256"];
+
+      if (
+        !Number.isInteger(idx) ||
+        idx < 0 ||
+        idx >= session.totalChunks ||
+        typeof expectedHash !== "string"
+      ) {
+        return sendApiError(reply, 400, "INVALID_CHUNK", "Invalid chunk index or hash");
+      }
+
+      let part;
+      try {
+        part = await req.file();
+      } catch {
+        return sendApiError(reply, 400, "CHUNK_STREAM_ERROR", "Failed to read chunk stream", {
+          retryable: true,
+        });
+      }
+
+      if (!part || part.type !== "file") {
+        return sendApiError(reply, 400, "INVALID_CHUNK", "Multipart file field required", {
+          retryable: true,
+        });
+      }
+
+      try {
+        const isLastChunk = idx === session.totalChunks - 1;
+
+        const expectedSize = isLastChunk
+          ? session.sizeBytes - session.chunkSize * (session.totalChunks - 1)
+          : session.chunkSize;
+
+        const writeResult = await chunkStore.writeChunk(
+          uploadId,
+          idx,
+          part.file,
+          expectedHash,
+          expectedSize,
+          isLastChunk,
+        );
+        const persisted = await guardRedisDependency(reply, async () => {
+          await redis.sadd(uploadKeys.chunks(uploadId), String(idx));
+          return await touchUploadActivity({ uploadId, chunkIndex: idx });
+        });
+        if (persisted === REDIS_DEPENDENCY_UNAVAILABLE) return;
+        if (!persisted) {
+          await Promise.all([
+            redis.srem(uploadKeys.chunks(uploadId), String(idx)).catch(() => {}),
+            chunkStore.removeChunk(uploadId, idx).catch(() => {}),
+          ]);
+          const status = await redis
+            .hget<string>(uploadKeys.meta(uploadId), "status")
+            .catch(() => null);
+          if (status === "expired") {
+            return sendApiError(reply, 409, "UPLOAD_EXPIRED", "Upload session expired");
+          }
+          return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
+        }
+
+        const eventContext = requestEventContext(req);
+        emitInfrastructureEvent(log, {
+          event: "chunk_uploaded",
+          requestId: eventContext.requestId,
+          actor: eventContext.actor,
+          uploadId,
+          outcome: "success",
+          statusCode: 200,
+          bytes: expectedSize,
+          metadata: {
+            chunkIndex: idx,
+            reused: writeResult.alreadyExisted,
+            totalChunks: session.totalChunks,
+          },
+        });
+
+        return {
+          ok: true,
+          chunkIndex: idx,
+          ...(writeResult.alreadyExisted ? { reused: true } : {}),
+        };
+      } catch (err: any) {
+        const message = err?.message ?? "Chunk upload failed";
+
+        if (err?.message === "CHUNK_IN_PROGRESS") {
+          log.info({ uploadId, idx }, "Chunk upload already in progress");
+          return sendApiError(
+            reply,
+            409,
+            "CHUNK_IN_PROGRESS",
+            "Chunk upload already in progress, retry shortly",
+            { retryable: true },
+          );
+        }
+
+        if (
+          err?.message === "HASH_MISMATCH" ||
+          err?.message === "CHUNK_TOO_LARGE" ||
+          err?.message === "CHUNK_SIZE_MISMATCH" ||
+          err?.message === "INVALID_LAST_CHUNK_SIZE"
+        ) {
+          return sendApiError(reply, 400, "INVALID_CHUNK", message, {
+            retryable: false,
+          });
+        }
+
+        if (isRedisDependencyError(err)) {
+          return sendRedisUnavailable(reply);
+        }
+
+        log.warn({ uploadId, idx, err }, "Chunk upload failed");
+        return sendApiError(reply, 500, "CHUNK_UPLOAD_FAILED", message, { retryable: true });
+      }
+    },
+  );
+
+  app.get(
+    "/v1/uploads/:uploadId/status",
+    {
+      schema: {
+        tags: ["Uploads"],
+        summary: "Get upload status",
+        description:
+          "Poll the status of an upload session. Returns chunk progress, finalization state, and optional storage debug info.",
+        params: {
+          type: "object",
+          required: ["uploadId"],
+          properties: {
+            uploadId: { type: "string", format: "uuid", description: "Upload session ID" },
+          },
+        },
+        querystring: {
+          type: "object",
+          properties: {
+            includeBlobId: { type: "string", description: "Set to '1' to expose blob ID" },
+            includeStorage: { type: "string", description: "Alias for includeBlobId" },
+            debug: { type: "string", description: "Set to '1' for Walrus debug info" },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
+      const { uploadId } = req.params as { uploadId: string };
+      const exposeBlobId = shouldExposeBlobId(req.query as Record<string, unknown>);
+      const exposeWalrusDebug = shouldExposeWalrusDebug(req.query as Record<string, unknown>);
+
+      if (!isUuid(uploadId)) {
+        return sendApiError(reply, 400, "INVALID_UPLOAD_ID", "uploadId must be a UUID");
+      }
+
+      const redis = await requireRedis(reply);
+      if (!redis) return;
+      const statusProbe = await guardRedisDependency(reply, () =>
+        redis.hget<string>(uploadKeys.meta(uploadId), "status"),
+      );
+      if (statusProbe === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      const statusScope = statusProbe === "finalizing" ? "file_meta_read" : "upload_control";
+      const statusLimit = await req.server.authProvider.checkRateLimit({
+        req,
+        scope: statusScope,
+      });
+      applyRateLimitHeaders(reply, statusLimit);
+      if (!statusLimit.allowed) {
+        return sendApiError(reply, 429, "RATE_LIMITED", "Rate limit exceeded", {
+          retryable: true,
+          details: {
+            limit: statusLimit.limit,
+            current: statusLimit.current,
+            windowSeconds: statusLimit.windowSeconds,
+            authenticated: statusLimit.identity.authenticated,
+            authMethod: statusLimit.identity.method,
+            scope: statusScope,
+          },
+        });
+      }
+
+      const loaded = await guardRedisDependency(reply, () =>
+        Promise.all([
+          getSession(uploadId),
+          redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId)),
+        ] as const),
+      );
+      if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      const [session, meta] = loaded;
+      const expired = await guardRedisDependency(reply, () =>
+        expireUploadIfNeeded({ uploadId, session, meta }),
+      );
+      if (expired === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      const refreshedMeta = expired
+        ? await guardRedisDependency(reply, () =>
+            redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId)),
+          )
+        : meta;
+      if (refreshedMeta === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      const currentMeta = refreshedMeta;
+      if (!session) {
+        const status = currentMeta?.status;
+        if (!status) {
+          return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
+        }
+        const authzStatus = await req.server.authProvider.authorizeUploadAccess({
+          req,
+          action: "status",
+          uploadId,
+          uploadOwner: currentMeta?.owner ?? null,
+        });
+        if (!authzStatus.allowed) {
+          return sendApiError(
+            reply,
+            authzStatusCode(authzStatus.code),
+            authzErrorCode(authzStatus.code),
+            authzStatus.message ?? "Upload access denied",
+          );
+        }
+
+        let receivedChunks: number[];
+        try {
+          receivedChunks = await reconcileReceivedChunks(uploadId);
+        } catch (err) {
+          if (isRedisDependencyError(err)) {
+            return sendRedisUnavailable(reply);
+          }
+          req.childLogger.error(
+            { err, uploadId },
+            "Chunk store reconciliation failed during status",
+          );
+          reply.header("Retry-After", String(RETRYABLE_RETRY_AFTER_SECONDS));
+          return sendApiError(
+            reply,
+            503,
+            "CHUNK_STORE_UNAVAILABLE",
+            "Upload chunk state is temporarily unavailable",
+            { retryable: true },
+          );
+        }
+
+        return {
+          uploadId,
+          chunkSize: currentMeta?.chunkSize ? Number(currentMeta.chunkSize) : null,
+          totalChunks: currentMeta?.totalChunks ? Number(currentMeta.totalChunks) : null,
+          receivedChunks,
+          receivedChunkCount: receivedChunks.length,
+          expiresAt: currentMeta?.expiresAt ? Number(currentMeta.expiresAt) : null,
+          status,
+          ...(status === "finalizing" ? { pollAfterMs: jitteredPollMs() } : {}),
+          ...(currentMeta?.fileId ? { fileId: currentMeta.fileId } : {}),
+          ...(exposeBlobId && currentMeta?.blobId ? { blobId: currentMeta.blobId } : {}),
+          ...(currentMeta?.walrusEndEpoch
+            ? { walrusEndEpoch: Number(currentMeta.walrusEndEpoch) }
+            : {}),
+          ...(exposeWalrusDebug && (currentMeta?.walrusSource || currentMeta?.walrusObjectId)
+            ? {
+                walrusDebug: {
+                  ...(currentMeta?.walrusSource ? { source: currentMeta.walrusSource } : {}),
+                  ...(currentMeta?.walrusObjectId ? { objectId: currentMeta.walrusObjectId } : {}),
+                },
+              }
+            : {}),
+          ...(currentMeta?.error ? { error: currentMeta.error } : {}),
+          ...buildFinalizeDiagnostics(currentMeta),
+        };
       }
       const authzStatus = await req.server.authProvider.authorizeUploadAccess({
         req,
         action: "status",
         uploadId,
-        uploadOwner: currentMeta?.owner ?? null,
+        uploadOwner: session.owner ?? null,
       });
       if (!authzStatus.allowed) {
         return sendApiError(
@@ -1103,13 +1192,15 @@ export default async function uploadRoutes(app: FastifyInstance) {
 
       return {
         uploadId,
-        chunkSize: currentMeta?.chunkSize ? Number(currentMeta.chunkSize) : null,
-        totalChunks: currentMeta?.totalChunks ? Number(currentMeta.totalChunks) : null,
+        chunkSize: session.chunkSize,
+        totalChunks: session.totalChunks,
         receivedChunks,
         receivedChunkCount: receivedChunks.length,
-        expiresAt: currentMeta?.expiresAt ? Number(currentMeta.expiresAt) : null,
-        status,
-        ...(status === "finalizing" ? { pollAfterMs: jitteredPollMs() } : {}),
+        expiresAt: session.expiresAt,
+        status: currentMeta?.status ?? session.status,
+        ...((currentMeta?.status ?? session.status) === "finalizing"
+          ? { pollAfterMs: jitteredPollMs() }
+          : {}),
         ...(currentMeta?.fileId ? { fileId: currentMeta.fileId } : {}),
         ...(exposeBlobId && currentMeta?.blobId ? { blobId: currentMeta.blobId } : {}),
         ...(currentMeta?.walrusEndEpoch
@@ -1126,514 +1217,436 @@ export default async function uploadRoutes(app: FastifyInstance) {
         ...(currentMeta?.error ? { error: currentMeta.error } : {}),
         ...buildFinalizeDiagnostics(currentMeta),
       };
-    }
-    const authzStatus = await req.server.authProvider.authorizeUploadAccess({
-      req,
-      action: "status",
-      uploadId,
-      uploadOwner: session.owner ?? null,
-    });
-    if (!authzStatus.allowed) {
-      return sendApiError(
-        reply,
-        authzStatusCode(authzStatus.code),
-        authzErrorCode(authzStatus.code),
-        authzStatus.message ?? "Upload access denied",
-      );
-    }
+    },
+  );
 
-    let receivedChunks: number[];
-    try {
-      receivedChunks = await reconcileReceivedChunks(uploadId);
-    } catch (err) {
-      if (isRedisDependencyError(err)) {
-        return sendRedisUnavailable(reply);
-      }
-      req.childLogger.error({ err, uploadId }, "Chunk store reconciliation failed during status");
-      reply.header("Retry-After", String(RETRYABLE_RETRY_AFTER_SECONDS));
-      return sendApiError(
-        reply,
-        503,
-        "CHUNK_STORE_UNAVAILABLE",
-        "Upload chunk state is temporarily unavailable",
-        { retryable: true },
-      );
-    }
-
-    return {
-      uploadId,
-      chunkSize: session.chunkSize,
-      totalChunks: session.totalChunks,
-      receivedChunks,
-      receivedChunkCount: receivedChunks.length,
-      expiresAt: session.expiresAt,
-      status: currentMeta?.status ?? session.status,
-      ...((currentMeta?.status ?? session.status) === "finalizing"
-        ? { pollAfterMs: jitteredPollMs() }
-        : {}),
-      ...(currentMeta?.fileId ? { fileId: currentMeta.fileId } : {}),
-      ...(exposeBlobId && currentMeta?.blobId ? { blobId: currentMeta.blobId } : {}),
-      ...(currentMeta?.walrusEndEpoch
-        ? { walrusEndEpoch: Number(currentMeta.walrusEndEpoch) }
-        : {}),
-      ...(exposeWalrusDebug && (currentMeta?.walrusSource || currentMeta?.walrusObjectId)
-        ? {
-            walrusDebug: {
-              ...(currentMeta?.walrusSource ? { source: currentMeta.walrusSource } : {}),
-              ...(currentMeta?.walrusObjectId ? { objectId: currentMeta.walrusObjectId } : {}),
-            },
-          }
-        : {}),
-      ...(currentMeta?.error ? { error: currentMeta.error } : {}),
-      ...buildFinalizeDiagnostics(currentMeta),
-    };
-  });
-
-  app.post("/v1/uploads/:uploadId/complete", {
-    bodyLimit: 64 * 1024,
-    schema: {
-      tags: ["Uploads"],
-      summary: "Finalize upload",
-      description:
-        "Request finalization of a completed upload. All chunks must have been uploaded first. Returns a status indicating whether the upload is being finalized.",
-      params: {
-        type: "object",
-        required: ["uploadId"],
-        properties: {
-          uploadId: { type: "string", format: "uuid", description: "Upload session ID" },
+  app.post(
+    "/v1/uploads/:uploadId/complete",
+    {
+      bodyLimit: 64 * 1024,
+      schema: {
+        tags: ["Uploads"],
+        summary: "Finalize upload",
+        description:
+          "Request finalization of a completed upload. All chunks must have been uploaded first. Returns a status indicating whether the upload is being finalized.",
+        params: {
+          type: "object",
+          required: ["uploadId"],
+          properties: {
+            uploadId: { type: "string", format: "uuid", description: "Upload session ID" },
+          },
         },
       },
     },
-  }, async (req, reply) => {
-    const log = req.childLogger;
-    const { uploadId } = req.params as { uploadId: string };
-    const exposeBlobId = shouldExposeBlobId(req.query as Record<string, unknown>);
-    const exposeWalrusDebug = shouldExposeWalrusDebug(req.query as Record<string, unknown>);
-    const completeLimit = await req.server.authProvider.checkRateLimit({
-      req,
-      scope: "upload_control",
-    });
-    applyRateLimitHeaders(reply, completeLimit);
-    if (!completeLimit.allowed) {
-      return sendApiError(reply, 429, "RATE_LIMITED", "Rate limit exceeded", {
-        retryable: true,
-        details: {
-          limit: completeLimit.limit,
-          current: completeLimit.current,
-          windowSeconds: completeLimit.windowSeconds,
-          authenticated: completeLimit.identity.authenticated,
-          authMethod: completeLimit.identity.method,
-        },
+    async (req, reply) => {
+      const log = req.childLogger;
+      const { uploadId } = req.params as { uploadId: string };
+      const exposeBlobId = shouldExposeBlobId(req.query as Record<string, unknown>);
+      const exposeWalrusDebug = shouldExposeWalrusDebug(req.query as Record<string, unknown>);
+      const completeLimit = await req.server.authProvider.checkRateLimit({
+        req,
+        scope: "upload_control",
       });
-    }
+      applyRateLimitHeaders(reply, completeLimit);
+      if (!completeLimit.allowed) {
+        return sendApiError(reply, 429, "RATE_LIMITED", "Rate limit exceeded", {
+          retryable: true,
+          details: {
+            limit: completeLimit.limit,
+            current: completeLimit.current,
+            windowSeconds: completeLimit.windowSeconds,
+            authenticated: completeLimit.identity.authenticated,
+            authMethod: completeLimit.identity.method,
+          },
+        });
+      }
 
-    if (!isUuid(uploadId)) {
-      return sendApiError(reply, 400, "INVALID_UPLOAD_ID", "uploadId must be a UUID");
-    }
+      if (!isUuid(uploadId)) {
+        return sendApiError(reply, 400, "INVALID_UPLOAD_ID", "uploadId must be a UUID");
+      }
 
-    const redis = await requireRedis(reply);
-    if (!redis) return;
-    const metaKey = uploadKeys.meta(uploadId);
-    const loaded = await guardRedisDependency(reply, () =>
-      Promise.all([getSession(uploadId), redis.hgetall<Record<string, string>>(metaKey)] as const),
-    );
-    if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
-    const [session, meta] = loaded;
-    const expired = await guardRedisDependency(reply, () =>
-      expireUploadIfNeeded({ uploadId, session, meta }),
-    );
-    if (expired === REDIS_DEPENDENCY_UNAVAILABLE) return;
-    const refreshedMeta = expired
-      ? await guardRedisDependency(reply, () => redis.hgetall<Record<string, string>>(metaKey))
-      : meta;
-    if (refreshedMeta === REDIS_DEPENDENCY_UNAVAILABLE) return;
-    const currentMeta = refreshedMeta;
-    const authzComplete = await req.server.authProvider.authorizeUploadAccess({
-      req,
-      action: "complete",
-      uploadId,
-      uploadOwner: session?.owner ?? currentMeta?.owner ?? null,
-    });
-    if (!authzComplete.allowed) {
-      return sendApiError(
-        reply,
-        authzStatusCode(authzComplete.code),
-        authzErrorCode(authzComplete.code),
-        authzComplete.message ?? "Upload access denied",
+      const redis = await requireRedis(reply);
+      if (!redis) return;
+      const metaKey = uploadKeys.meta(uploadId);
+      const loaded = await guardRedisDependency(reply, () =>
+        Promise.all([
+          getSession(uploadId),
+          redis.hgetall<Record<string, string>>(metaKey),
+        ] as const),
       );
-    }
-
-    const idempotencyKey = getRequestIdempotencyKey(req);
-    const idempotencyRedisKey = idempotencyKey
-      ? uploadKeys.completeIdempotency(completeLimit.identity.subject, uploadId, idempotencyKey)
-      : null;
-    const idempotencyFingerprint = idempotencyRedisKey
-      ? buildUploadActionFingerprint({
-          subject: completeLimit.identity.subject,
-          action: "complete",
-          uploadId,
-          includeBlobId: exposeBlobId,
-          includeWalrusDebug: exposeWalrusDebug,
-        })
-      : null;
-    if (idempotencyRedisKey && idempotencyFingerprint) {
-      const replay = await guardRedisDependency(reply, () =>
-        sendUploadActionIdempotencyReplay({
+      if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      const [session, meta] = loaded;
+      const expired = await guardRedisDependency(reply, () =>
+        expireUploadIfNeeded({ uploadId, session, meta }),
+      );
+      if (expired === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      const refreshedMeta = expired
+        ? await guardRedisDependency(reply, () => redis.hgetall<Record<string, string>>(metaKey))
+        : meta;
+      if (refreshedMeta === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      const currentMeta = refreshedMeta;
+      const authzComplete = await req.server.authProvider.authorizeUploadAccess({
+        req,
+        action: "complete",
+        uploadId,
+        uploadOwner: session?.owner ?? currentMeta?.owner ?? null,
+      });
+      if (!authzComplete.allowed) {
+        return sendApiError(
           reply,
+          authzStatusCode(authzComplete.code),
+          authzErrorCode(authzComplete.code),
+          authzComplete.message ?? "Upload access denied",
+        );
+      }
+
+      const idempotencyKey = getRequestIdempotencyKey(req);
+      const idempotencyRedisKey = idempotencyKey
+        ? uploadKeys.completeIdempotency(completeLimit.identity.subject, uploadId, idempotencyKey)
+        : null;
+      const idempotencyFingerprint = idempotencyRedisKey
+        ? buildUploadActionFingerprint({
+            subject: completeLimit.identity.subject,
+            action: "complete",
+            uploadId,
+            includeBlobId: exposeBlobId,
+            includeWalrusDebug: exposeWalrusDebug,
+          })
+        : null;
+      if (idempotencyRedisKey && idempotencyFingerprint) {
+        const replay = await guardRedisDependency(reply, () =>
+          sendUploadActionIdempotencyReplay({
+            reply,
+            redis,
+            key: idempotencyRedisKey,
+            fingerprint: idempotencyFingerprint,
+            conflictMessage: "Idempotency key was already used with a different complete request",
+          }),
+        );
+        if (replay === REDIS_DEPENDENCY_UNAVAILABLE) return;
+        if (replay === "replayed" || replay === "conflict") return;
+      }
+
+      const metaStatus = currentMeta?.status;
+
+      if (metaStatus === "expired") {
+        return sendApiError(reply, 409, "UPLOAD_EXPIRED", "Upload session expired");
+      }
+
+      if (metaStatus === "finalizing") {
+        const currentPollMs = jitteredPollMs();
+        const retryAfter = String(Math.max(1, Math.ceil(currentPollMs / 1000)));
+        const responseBody = {
+          uploadId,
+          status: "finalizing",
+          pollAfterMs: currentPollMs,
+          enqueued: false,
+          ...(isUploadFinalizeQueued(uploadId) ? { inProgress: true } : {}),
+          ...buildFinalizeDiagnostics(currentMeta),
+        };
+        reply.header("Retry-After", retryAfter);
+        await persistUploadActionIdempotencyRecord({
           redis,
           key: idempotencyRedisKey,
           fingerprint: idempotencyFingerprint,
-          conflictMessage: "Idempotency key was already used with a different complete request",
-        }),
+          ttlMs: session?.expiresAt ? session.expiresAt - Date.now() : UploadConfig.sessionTtlMs,
+          statusCode: 202,
+          responseBody,
+          retryAfter,
+          log,
+          uploadId,
+        });
+        return reply.code(202).send(responseBody);
+      }
+
+      if (!session) {
+        if (metaStatus === "completed") {
+          if (!meta?.fileId || !meta?.blobId) {
+            return sendApiError(
+              reply,
+              500,
+              "INTERNAL_ERROR",
+              "Completed upload metadata is corrupt",
+            );
+          }
+
+          const responseBody = {
+            fileId: meta.fileId,
+            ...(exposeBlobId ? { blobId: meta.blobId } : {}),
+            sizeBytes: Number(meta.sizeBytes ?? 0),
+            status: "ready",
+            ...(meta?.walrusEndEpoch ? { walrusEndEpoch: Number(meta.walrusEndEpoch) } : {}),
+            ...(exposeWalrusDebug && (meta?.walrusSource || meta?.walrusObjectId)
+              ? {
+                  walrusDebug: {
+                    ...(meta?.walrusSource ? { source: meta.walrusSource } : {}),
+                    ...(meta?.walrusObjectId ? { objectId: meta.walrusObjectId } : {}),
+                  },
+                }
+              : {}),
+          };
+          await persistUploadActionIdempotencyRecord({
+            redis,
+            key: idempotencyRedisKey,
+            fingerprint: idempotencyFingerprint,
+            ttlMs: UploadConfig.sessionTtlMs,
+            statusCode: 200,
+            responseBody,
+            log,
+            uploadId,
+          });
+          return reply.code(200).send(responseBody);
+        }
+
+        return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
+      }
+
+      if (session.status === "completed" || metaStatus === "completed") {
+        if (meta?.fileId && meta?.blobId) {
+          const responseBody = {
+            fileId: meta.fileId,
+            ...(exposeBlobId ? { blobId: meta.blobId } : {}),
+            sizeBytes: Number(meta.sizeBytes ?? session.sizeBytes),
+            status: "ready",
+            ...(meta?.walrusEndEpoch ? { walrusEndEpoch: Number(meta.walrusEndEpoch) } : {}),
+            ...(exposeWalrusDebug && (meta?.walrusSource || meta?.walrusObjectId)
+              ? {
+                  walrusDebug: {
+                    ...(meta?.walrusSource ? { source: meta.walrusSource } : {}),
+                    ...(meta?.walrusObjectId ? { objectId: meta.walrusObjectId } : {}),
+                  },
+                }
+              : {}),
+          };
+          await persistUploadActionIdempotencyRecord({
+            redis,
+            key: idempotencyRedisKey,
+            fingerprint: idempotencyFingerprint,
+            ttlMs: UploadConfig.sessionTtlMs,
+            statusCode: 200,
+            responseBody,
+            log,
+            uploadId,
+          });
+          return reply.code(200).send(responseBody);
+        }
+
+        return sendApiError(reply, 409, "UPLOAD_ALREADY_COMPLETED", "Upload is already finalized");
+      }
+
+      let receivedChunks: number;
+      try {
+        receivedChunks = (await reconcileReceivedChunks(uploadId)).length;
+      } catch (err) {
+        if (isRedisDependencyError(err)) {
+          return sendRedisUnavailable(reply);
+        }
+        req.childLogger.error(
+          { err, uploadId },
+          "Chunk store reconciliation failed during complete",
+        );
+        reply.header("Retry-After", String(RETRYABLE_RETRY_AFTER_SECONDS));
+        return sendApiError(
+          reply,
+          503,
+          "CHUNK_STORE_UNAVAILABLE",
+          "Upload chunk state is temporarily unavailable",
+          { retryable: true },
+        );
+      }
+
+      if (receivedChunks !== session.totalChunks) {
+        return sendApiError(
+          reply,
+          400,
+          "UPLOAD_INCOMPLETE",
+          `Only ${receivedChunks}/${session.totalChunks} chunks uploaded`,
+          { retryable: true },
+        );
+      }
+
+      const queued = await guardRedisDependency(reply, () =>
+        enqueueUploadFinalize({ uploadId, log }),
       );
-      if (replay === REDIS_DEPENDENCY_UNAVAILABLE) return;
-      if (replay === "replayed" || replay === "conflict") return;
-    }
-
-    const metaStatus = currentMeta?.status;
-
-    if (metaStatus === "expired") {
-      return sendApiError(reply, 409, "UPLOAD_EXPIRED", "Upload session expired");
-    }
-
-    if (metaStatus === "finalizing") {
-      const currentPollMs = jitteredPollMs();
-      const retryAfter = String(Math.max(1, Math.ceil(currentPollMs / 1000)));
+      if (queued === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      if (queued.rejectedByBackpressure) {
+        reply.header("Retry-After", finalizePollRetryAfterSeconds());
+        return sendApiError(
+          reply,
+          503,
+          "FINALIZE_QUEUE_BACKPRESSURE",
+          "Finalize queue is saturated, retry shortly",
+          { retryable: true },
+        );
+      }
+      const retryAfter = finalizePollRetryAfterSeconds();
+      reply.header("Retry-After", retryAfter);
+      const eventContext = requestEventContext(req);
+      emitInfrastructureEvent(log, {
+        event: "finalize_requested",
+        requestId: eventContext.requestId,
+        actor: eventContext.actor,
+        uploadId,
+        outcome: "success",
+        statusCode: 202,
+        metadata: {
+          enqueued: queued.enqueued,
+          inProgress: isUploadFinalizeQueued(uploadId),
+          receivedChunks,
+          totalChunks: session.totalChunks,
+        },
+      });
       const responseBody = {
         uploadId,
         status: "finalizing",
-        pollAfterMs: currentPollMs,
-        enqueued: false,
+        pollAfterMs: jitteredPollMs(),
+        enqueued: queued.enqueued,
         ...(isUploadFinalizeQueued(uploadId) ? { inProgress: true } : {}),
         ...buildFinalizeDiagnostics(currentMeta),
       };
-      reply.header("Retry-After", retryAfter);
       await persistUploadActionIdempotencyRecord({
         redis,
         key: idempotencyRedisKey,
         fingerprint: idempotencyFingerprint,
-        ttlMs: session?.expiresAt ? session.expiresAt - Date.now() : UploadConfig.sessionTtlMs,
+        ttlMs: session.expiresAt - Date.now(),
         statusCode: 202,
         responseBody,
         retryAfter,
         log,
         uploadId,
       });
+      // Record upload SLI — finalize enqueue counts as success to SLO,
+      // backpressure or errors count as failures.
+      if (!queued.rejectedByBackpressure) {
+        recordUploadSli(true, 0);
+      } else {
+        recordUploadSli(false, 0);
+      }
+
       return reply.code(202).send(responseBody);
-    }
+    },
+  );
 
-    if (!session) {
-      if (metaStatus === "completed") {
-        if (!meta?.fileId || !meta?.blobId) {
-          return sendApiError(reply, 500, "INTERNAL_ERROR", "Completed upload metadata is corrupt");
-        }
-
-        const responseBody = {
-          fileId: meta.fileId,
-          ...(exposeBlobId ? { blobId: meta.blobId } : {}),
-          sizeBytes: Number(meta.sizeBytes ?? 0),
-          status: "ready",
-          ...(meta?.walrusEndEpoch ? { walrusEndEpoch: Number(meta.walrusEndEpoch) } : {}),
-          ...(exposeWalrusDebug && (meta?.walrusSource || meta?.walrusObjectId)
-            ? {
-                walrusDebug: {
-                  ...(meta?.walrusSource ? { source: meta.walrusSource } : {}),
-                  ...(meta?.walrusObjectId ? { objectId: meta.walrusObjectId } : {}),
-                },
-              }
-            : {}),
-        };
-        await persistUploadActionIdempotencyRecord({
-          redis,
-          key: idempotencyRedisKey,
-          fingerprint: idempotencyFingerprint,
-          ttlMs: UploadConfig.sessionTtlMs,
-          statusCode: 200,
-          responseBody,
-          log,
-          uploadId,
-        });
-        return reply.code(200).send(responseBody);
-      }
-
-      return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
-    }
-
-    if (session.status === "completed" || metaStatus === "completed") {
-      if (meta?.fileId && meta?.blobId) {
-        const responseBody = {
-          fileId: meta.fileId,
-          ...(exposeBlobId ? { blobId: meta.blobId } : {}),
-          sizeBytes: Number(meta.sizeBytes ?? session.sizeBytes),
-          status: "ready",
-          ...(meta?.walrusEndEpoch ? { walrusEndEpoch: Number(meta.walrusEndEpoch) } : {}),
-          ...(exposeWalrusDebug && (meta?.walrusSource || meta?.walrusObjectId)
-            ? {
-                walrusDebug: {
-                  ...(meta?.walrusSource ? { source: meta.walrusSource } : {}),
-                  ...(meta?.walrusObjectId ? { objectId: meta.walrusObjectId } : {}),
-                },
-              }
-            : {}),
-        };
-        await persistUploadActionIdempotencyRecord({
-          redis,
-          key: idempotencyRedisKey,
-          fingerprint: idempotencyFingerprint,
-          ttlMs: UploadConfig.sessionTtlMs,
-          statusCode: 200,
-          responseBody,
-          log,
-          uploadId,
-        });
-        return reply.code(200).send(responseBody);
-      }
-
-      return sendApiError(reply, 409, "UPLOAD_ALREADY_COMPLETED", "Upload is already finalized");
-    }
-
-    let receivedChunks: number;
-    try {
-      receivedChunks = (await reconcileReceivedChunks(uploadId)).length;
-    } catch (err) {
-      if (isRedisDependencyError(err)) {
-        return sendRedisUnavailable(reply);
-      }
-      req.childLogger.error({ err, uploadId }, "Chunk store reconciliation failed during complete");
-      reply.header("Retry-After", String(RETRYABLE_RETRY_AFTER_SECONDS));
-      return sendApiError(
-        reply,
-        503,
-        "CHUNK_STORE_UNAVAILABLE",
-        "Upload chunk state is temporarily unavailable",
-        { retryable: true },
-      );
-    }
-
-    if (receivedChunks !== session.totalChunks) {
-      return sendApiError(
-        reply,
-        400,
-        "UPLOAD_INCOMPLETE",
-        `Only ${receivedChunks}/${session.totalChunks} chunks uploaded`,
-        { retryable: true },
-      );
-    }
-
-    const queued = await guardRedisDependency(reply, () =>
-      enqueueUploadFinalize({ uploadId, log }),
-    );
-    if (queued === REDIS_DEPENDENCY_UNAVAILABLE) return;
-    if (queued.rejectedByBackpressure) {
-      reply.header("Retry-After", finalizePollRetryAfterSeconds());
-      return sendApiError(
-        reply,
-        503,
-        "FINALIZE_QUEUE_BACKPRESSURE",
-        "Finalize queue is saturated, retry shortly",
-        { retryable: true },
-      );
-    }
-    const retryAfter = finalizePollRetryAfterSeconds();
-    reply.header("Retry-After", retryAfter);
-    const eventContext = requestEventContext(req);
-    emitInfrastructureEvent(log, {
-      event: "finalize_requested",
-      requestId: eventContext.requestId,
-      actor: eventContext.actor,
-      uploadId,
-      outcome: "success",
-      statusCode: 202,
-      metadata: {
-        enqueued: queued.enqueued,
-        inProgress: isUploadFinalizeQueued(uploadId),
-        receivedChunks,
-        totalChunks: session.totalChunks,
-      },
-    });
-    const responseBody = {
-      uploadId,
-      status: "finalizing",
-      pollAfterMs: jitteredPollMs(),
-      enqueued: queued.enqueued,
-      ...(isUploadFinalizeQueued(uploadId) ? { inProgress: true } : {}),
-      ...buildFinalizeDiagnostics(currentMeta),
-    };
-    await persistUploadActionIdempotencyRecord({
-      redis,
-      key: idempotencyRedisKey,
-      fingerprint: idempotencyFingerprint,
-      ttlMs: session.expiresAt - Date.now(),
-      statusCode: 202,
-      responseBody,
-      retryAfter,
-      log,
-      uploadId,
-    });
-    // Record upload SLI — finalize enqueue counts as success to SLO,
-    // backpressure or errors count as failures.
-    if (!queued.rejectedByBackpressure) {
-      recordUploadSli(true, 0);
-    } else {
-      recordUploadSli(false, 0);
-    }
-
-    return reply.code(202).send(responseBody);
-  });
-
-  app.delete("/v1/uploads/:uploadId", {
-    bodyLimit: 64 * 1024,
-    schema: {
-      tags: ["Uploads"],
-      summary: "Cancel upload",
-      description: "Cancel an in-progress upload and clean up all stored chunks.",
-      params: {
-        type: "object",
-        required: ["uploadId"],
-        properties: {
-          uploadId: { type: "string", format: "uuid", description: "Upload session ID" },
+  app.delete(
+    "/v1/uploads/:uploadId",
+    {
+      bodyLimit: 64 * 1024,
+      schema: {
+        tags: ["Uploads"],
+        summary: "Cancel upload",
+        description: "Cancel an in-progress upload and clean up all stored chunks.",
+        params: {
+          type: "object",
+          required: ["uploadId"],
+          properties: {
+            uploadId: { type: "string", format: "uuid", description: "Upload session ID" },
+          },
         },
       },
     },
-  }, async (req, reply) => {
-    const log = req.childLogger;
-    const { uploadId } = req.params as { uploadId: string };
-    const cancelLimit = await req.server.authProvider.checkRateLimit({
-      req,
-      scope: "upload_control",
-    });
-    applyRateLimitHeaders(reply, cancelLimit);
-    if (!cancelLimit.allowed) {
-      return sendApiError(reply, 429, "RATE_LIMITED", "Rate limit exceeded", {
-        retryable: true,
-        details: {
-          limit: cancelLimit.limit,
-          current: cancelLimit.current,
-          windowSeconds: cancelLimit.windowSeconds,
-          authenticated: cancelLimit.identity.authenticated,
-          authMethod: cancelLimit.identity.method,
-        },
+    async (req, reply) => {
+      const log = req.childLogger;
+      const { uploadId } = req.params as { uploadId: string };
+      const cancelLimit = await req.server.authProvider.checkRateLimit({
+        req,
+        scope: "upload_control",
       });
-    }
+      applyRateLimitHeaders(reply, cancelLimit);
+      if (!cancelLimit.allowed) {
+        return sendApiError(reply, 429, "RATE_LIMITED", "Rate limit exceeded", {
+          retryable: true,
+          details: {
+            limit: cancelLimit.limit,
+            current: cancelLimit.current,
+            windowSeconds: cancelLimit.windowSeconds,
+            authenticated: cancelLimit.identity.authenticated,
+            authMethod: cancelLimit.identity.method,
+          },
+        });
+      }
 
-    if (!isUuid(uploadId)) {
-      return sendApiError(reply, 400, "INVALID_UPLOAD_ID", "uploadId must be a UUID");
-    }
+      if (!isUuid(uploadId)) {
+        return sendApiError(reply, 400, "INVALID_UPLOAD_ID", "uploadId must be a UUID");
+      }
 
-    const redis = await requireRedis(reply);
-    if (!redis) return;
-    const metaKey = uploadKeys.meta(uploadId);
-    const lockKey = `${metaKey}:lock`;
+      const redis = await requireRedis(reply);
+      if (!redis) return;
+      const metaKey = uploadKeys.meta(uploadId);
+      const lockKey = `${metaKey}:lock`;
 
-    const loaded = await guardRedisDependency(reply, () =>
-      Promise.all([
-        getSession(uploadId),
-        redis.hgetall<Record<string, string>>(metaKey),
-        redis.exists(lockKey),
-        redis.sismember(uploadKeys.finalizePending(), uploadId),
-      ] as const),
-    );
-    if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
-    const [session, meta, hasLock, isFinalizePending] = loaded;
-    const expired = await guardRedisDependency(reply, () =>
-      expireUploadIfNeeded({ uploadId, session, meta }),
-    );
-    if (expired === REDIS_DEPENDENCY_UNAVAILABLE) return;
-    const refreshedMeta = expired
-      ? await guardRedisDependency(reply, () => redis.hgetall<Record<string, string>>(metaKey))
-      : meta;
-    if (refreshedMeta === REDIS_DEPENDENCY_UNAVAILABLE) return;
-    const currentMeta = refreshedMeta;
-    const authzCancel = await req.server.authProvider.authorizeUploadAccess({
-      req,
-      action: "cancel",
-      uploadId,
-      uploadOwner: session?.owner ?? currentMeta?.owner ?? null,
-    });
-    if (!authzCancel.allowed) {
-      return sendApiError(
-        reply,
-        authzStatusCode(authzCancel.code),
-        authzErrorCode(authzCancel.code),
-        authzCancel.message ?? "Upload access denied",
+      const loaded = await guardRedisDependency(reply, () =>
+        Promise.all([
+          getSession(uploadId),
+          redis.hgetall<Record<string, string>>(metaKey),
+          redis.exists(lockKey),
+          redis.sismember(uploadKeys.finalizePending(), uploadId),
+        ] as const),
       );
-    }
-
-    const idempotencyKey = getRequestIdempotencyKey(req);
-    const idempotencyRedisKey = idempotencyKey
-      ? uploadKeys.cancelIdempotency(cancelLimit.identity.subject, uploadId, idempotencyKey)
-      : null;
-    const idempotencyFingerprint = idempotencyRedisKey
-      ? buildUploadActionFingerprint({
-          subject: cancelLimit.identity.subject,
-          action: "cancel",
-          uploadId,
-        })
-      : null;
-    if (idempotencyRedisKey && idempotencyFingerprint) {
-      const replay = await guardRedisDependency(reply, () =>
-        sendUploadActionIdempotencyReplay({
-          reply,
-          redis,
-          key: idempotencyRedisKey,
-          fingerprint: idempotencyFingerprint,
-          conflictMessage: "Idempotency key was already used with a different cancel request",
-        }),
+      if (loaded === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      const [session, meta, hasLock, isFinalizePending] = loaded;
+      const expired = await guardRedisDependency(reply, () =>
+        expireUploadIfNeeded({ uploadId, session, meta }),
       );
-      if (replay === REDIS_DEPENDENCY_UNAVAILABLE) return;
-      if (replay === "replayed" || replay === "conflict") return;
-    }
-
-    if (hasLock || currentMeta?.status === "finalizing" || isFinalizePending === 1) {
-      reply.header("Retry-After", finalizePollRetryAfterSeconds());
-      return sendApiError(
-        reply,
-        409,
-        "UPLOAD_FINALIZATION_IN_PROGRESS",
-        "Upload is currently finalizing",
-      );
-    }
-
-    const status = currentMeta?.status;
-
-    if (status === "expired") {
-      const responseBody = { ok: true, uploadId, status: "expired" as const };
-      await persistUploadActionIdempotencyRecord({
-        redis,
-        key: idempotencyRedisKey,
-        fingerprint: idempotencyFingerprint,
-        ttlMs: UploadConfig.sessionTtlMs,
-        statusCode: 200,
-        responseBody,
-        log,
+      if (expired === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      const refreshedMeta = expired
+        ? await guardRedisDependency(reply, () => redis.hgetall<Record<string, string>>(metaKey))
+        : meta;
+      if (refreshedMeta === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      const currentMeta = refreshedMeta;
+      const authzCancel = await req.server.authProvider.authorizeUploadAccess({
+        req,
+        action: "cancel",
         uploadId,
+        uploadOwner: session?.owner ?? currentMeta?.owner ?? null,
       });
-      return reply.code(200).send(responseBody);
-    }
-
-    if (!session) {
-      if (!status) {
-        return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
+      if (!authzCancel.allowed) {
+        return sendApiError(
+          reply,
+          authzStatusCode(authzCancel.code),
+          authzErrorCode(authzCancel.code),
+          authzCancel.message ?? "Upload access denied",
+        );
       }
 
-      if (status === "completed") {
-        return sendApiError(reply, 409, "UPLOAD_ALREADY_COMPLETED", "Upload is already finalized");
+      const idempotencyKey = getRequestIdempotencyKey(req);
+      const idempotencyRedisKey = idempotencyKey
+        ? uploadKeys.cancelIdempotency(cancelLimit.identity.subject, uploadId, idempotencyKey)
+        : null;
+      const idempotencyFingerprint = idempotencyRedisKey
+        ? buildUploadActionFingerprint({
+            subject: cancelLimit.identity.subject,
+            action: "cancel",
+            uploadId,
+          })
+        : null;
+      if (idempotencyRedisKey && idempotencyFingerprint) {
+        const replay = await guardRedisDependency(reply, () =>
+          sendUploadActionIdempotencyReplay({
+            reply,
+            redis,
+            key: idempotencyRedisKey,
+            fingerprint: idempotencyFingerprint,
+            conflictMessage: "Idempotency key was already used with a different cancel request",
+          }),
+        );
+        if (replay === REDIS_DEPENDENCY_UNAVAILABLE) return;
+        if (replay === "replayed" || replay === "conflict") return;
       }
 
-      if (status === "canceled" || status === "failed" || status === "expired") {
-        const cleanupResults = await Promise.allSettled([
-          chunkStore.cleanup(uploadId),
-          fs.rm(finalBinPath(uploadId), { force: true }),
-        ]);
-        const cleanupOk = cleanupResults.every((result) => result.status === "fulfilled");
-        if (cleanupOk) {
-          await redis
-            .multi()
-            .srem(uploadKeys.gcIndex(), uploadId)
-            .srem(uploadKeys.activeIndex(), uploadId)
-            .exec();
-        }
-        const responseBody = { ok: true, uploadId, status };
+      if (hasLock || currentMeta?.status === "finalizing" || isFinalizePending === 1) {
+        reply.header("Retry-After", finalizePollRetryAfterSeconds());
+        return sendApiError(
+          reply,
+          409,
+          "UPLOAD_FINALIZATION_IN_PROGRESS",
+          "Upload is currently finalizing",
+        );
+      }
+
+      const status = currentMeta?.status;
+
+      if (status === "expired") {
+        const responseBody = { ok: true, uploadId, status: "expired" as const };
         await persistUploadActionIdempotencyRecord({
           redis,
           key: idempotencyRedisKey,
@@ -1645,6 +1658,114 @@ export default async function uploadRoutes(app: FastifyInstance) {
           uploadId,
         });
         return reply.code(200).send(responseBody);
+      }
+
+      if (!session) {
+        if (!status) {
+          return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Invalid uploadId");
+        }
+
+        if (status === "completed") {
+          return sendApiError(
+            reply,
+            409,
+            "UPLOAD_ALREADY_COMPLETED",
+            "Upload is already finalized",
+          );
+        }
+
+        if (status === "canceled" || status === "failed" || status === "expired") {
+          const cleanupResults = await Promise.allSettled([
+            chunkStore.cleanup(uploadId),
+            fs.rm(finalBinPath(uploadId), { force: true }),
+          ]);
+          const cleanupOk = cleanupResults.every((result) => result.status === "fulfilled");
+          if (cleanupOk) {
+            await redis
+              .multi()
+              .srem(uploadKeys.gcIndex(), uploadId)
+              .srem(uploadKeys.activeIndex(), uploadId)
+              .exec();
+          }
+          const responseBody = { ok: true, uploadId, status };
+          await persistUploadActionIdempotencyRecord({
+            redis,
+            key: idempotencyRedisKey,
+            fingerprint: idempotencyFingerprint,
+            ttlMs: UploadConfig.sessionTtlMs,
+            statusCode: 200,
+            responseBody,
+            log,
+            uploadId,
+          });
+          return reply.code(200).send(responseBody);
+        }
+
+        const markedCanceled = await guardRedisDependency(reply, () =>
+          redis.hset(metaKey, {
+            status: "canceled",
+            canceledAt: String(Date.now()),
+          }),
+        );
+        if (markedCanceled === REDIS_DEPENDENCY_UNAVAILABLE) return;
+
+        await Promise.all([
+          chunkStore.cleanup(uploadId).catch(() => {}),
+          fs.rm(finalBinPath(uploadId), { force: true }).catch(() => {}),
+        ]);
+
+        const cleaned = await guardRedisDependency(reply, () =>
+          redis
+            .multi()
+            .del(uploadKeys.session(uploadId))
+            .del(uploadKeys.chunks(uploadId))
+            .srem(uploadKeys.gcIndex(), uploadId)
+            .srem(uploadKeys.activeIndex(), uploadId)
+            .exec(),
+        );
+        if (cleaned === REDIS_DEPENDENCY_UNAVAILABLE) return;
+
+        log.info({ uploadId }, "Upload canceled");
+        const eventContext = requestEventContext(req);
+        emitInfrastructureEvent(log, {
+          event: "upload_canceled",
+          requestId: eventContext.requestId,
+          actor: eventContext.actor,
+          uploadId,
+          outcome: "success",
+          statusCode: 200,
+          metadata: {
+            status: "canceled",
+          },
+        });
+
+        // Emit audit event for the cancel action
+        emitAuditEvent(log, {
+          action: "upload_cancel",
+          resource: `upload:${uploadId}`,
+          actor: eventContext.actor,
+          requestId: req.id,
+          before: { status: currentMeta?.status ?? "unknown" },
+          after: { status: "canceled" },
+          metadata: { owner: currentMeta?.owner ?? null },
+        });
+
+        const responseBody = { ok: true, uploadId, status: "canceled" as const };
+        await persistUploadActionIdempotencyRecord({
+          redis,
+          key: idempotencyRedisKey,
+          fingerprint: idempotencyFingerprint,
+          ttlMs: UploadConfig.sessionTtlMs,
+          statusCode: 200,
+          responseBody,
+          log,
+          uploadId,
+        });
+        return reply.code(200).send(responseBody);
+      }
+
+      if (status === "completed" || session.status === "completed") {
+        return sendApiError(reply, 409, "UPLOAD_ALREADY_COMPLETED", "Upload is already finalized");
       }
 
       const markedCanceled = await guardRedisDependency(reply, () =>
@@ -1691,9 +1812,9 @@ export default async function uploadRoutes(app: FastifyInstance) {
         resource: `upload:${uploadId}`,
         actor: eventContext.actor,
         requestId: req.id,
-        before: { status: currentMeta?.status ?? "unknown" },
+        before: { status: session?.status ?? currentMeta?.status ?? "unknown" },
         after: { status: "canceled" },
-        metadata: { owner: currentMeta?.owner ?? null },
+        metadata: { owner: session?.owner ?? currentMeta?.owner ?? null },
       });
 
       const responseBody = { ok: true, uploadId, status: "canceled" as const };
@@ -1708,72 +1829,6 @@ export default async function uploadRoutes(app: FastifyInstance) {
         uploadId,
       });
       return reply.code(200).send(responseBody);
-    }
-
-    if (status === "completed" || session.status === "completed") {
-      return sendApiError(reply, 409, "UPLOAD_ALREADY_COMPLETED", "Upload is already finalized");
-    }
-
-    const markedCanceled = await guardRedisDependency(reply, () =>
-      redis.hset(metaKey, {
-        status: "canceled",
-        canceledAt: String(Date.now()),
-      }),
-    );
-    if (markedCanceled === REDIS_DEPENDENCY_UNAVAILABLE) return;
-
-    await Promise.all([
-      chunkStore.cleanup(uploadId).catch(() => {}),
-      fs.rm(finalBinPath(uploadId), { force: true }).catch(() => {}),
-    ]);
-
-    const cleaned = await guardRedisDependency(reply, () =>
-      redis
-        .multi()
-        .del(uploadKeys.session(uploadId))
-        .del(uploadKeys.chunks(uploadId))
-        .srem(uploadKeys.gcIndex(), uploadId)
-        .srem(uploadKeys.activeIndex(), uploadId)
-        .exec(),
-    );
-    if (cleaned === REDIS_DEPENDENCY_UNAVAILABLE) return;
-
-    log.info({ uploadId }, "Upload canceled");
-    const eventContext = requestEventContext(req);
-    emitInfrastructureEvent(log, {
-      event: "upload_canceled",
-      requestId: eventContext.requestId,
-      actor: eventContext.actor,
-      uploadId,
-      outcome: "success",
-      statusCode: 200,
-      metadata: {
-        status: "canceled",
-      },
-    });
-
-    // Emit audit event for the cancel action
-    emitAuditEvent(log, {
-      action: "upload_cancel",
-      resource: `upload:${uploadId}`,
-      actor: eventContext.actor,
-      requestId: req.id,
-      before: { status: session?.status ?? currentMeta?.status ?? "unknown" },
-      after: { status: "canceled" },
-      metadata: { owner: session?.owner ?? currentMeta?.owner ?? null },
-    });
-
-    const responseBody = { ok: true, uploadId, status: "canceled" as const };
-    await persistUploadActionIdempotencyRecord({
-      redis,
-      key: idempotencyRedisKey,
-      fingerprint: idempotencyFingerprint,
-      ttlMs: UploadConfig.sessionTtlMs,
-      statusCode: 200,
-      responseBody,
-      log,
-      uploadId,
-    });
-    return reply.code(200).send(responseBody);
-  });
+    },
+  );
 }

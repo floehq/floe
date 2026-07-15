@@ -177,7 +177,10 @@ export class DiskChunkStore implements ChunkStore {
 
   async hasChunk(uploadId: string, index: number): Promise<boolean> {
     const path = this.chunkPath(uploadId, index);
-    return await fs.stat(path).then(() => true, () => false);
+    return await fs.stat(path).then(
+      () => true,
+      () => false,
+    );
   }
 
   async listChunks(uploadId: string): Promise<number[]> {

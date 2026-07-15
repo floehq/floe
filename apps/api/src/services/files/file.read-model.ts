@@ -226,9 +226,9 @@ export class LruMap<V> {
   }
 }
 
-const fileFieldsMemoryCache = new LruMap<
-  { value: any; expiresAt: number; touchedAt: number }
->(Math.floor(FILE_FIELDS_MEMORY_CACHE_MAX) || 5000);
+const fileFieldsMemoryCache = new LruMap<{ value: any; expiresAt: number; touchedAt: number }>(
+  Math.floor(FILE_FIELDS_MEMORY_CACHE_MAX) || 5000,
+);
 
 function getMemoryFileFields(fileId: string): any | null {
   if (!Number.isFinite(FILE_FIELDS_MEMORY_CACHE_TTL_MS) || FILE_FIELDS_MEMORY_CACHE_TTL_MS <= 0) {

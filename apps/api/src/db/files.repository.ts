@@ -103,12 +103,8 @@ export async function ensureFilesTable(): Promise<void> {
   await pg.query(MIGRATIONS_TABLE);
 
   // Get applied versions
-  const result = await pg.query(
-    "select version from floe_migrations order by version asc",
-  );
-  const applied = new Set(
-    (result.rows as Array<{ version: number }>).map((r) => r.version),
-  );
+  const result = await pg.query("select version from floe_migrations order by version asc");
+  const applied = new Set((result.rows as Array<{ version: number }>).map((r) => r.version));
 
   // Apply pending migrations in order
   for (const migration of MIGRATIONS) {
@@ -116,17 +112,12 @@ export async function ensureFilesTable(): Promise<void> {
 
     try {
       await migration.up(pg);
-      await pg.query(
-        "insert into floe_migrations (version, name) values ($1, $2)",
-        [migration.version, migration.name],
-      );
-    } catch (err) {
-      console.error(
-        "Migration %d (%s) failed:",
+      await pg.query("insert into floe_migrations (version, name) values ($1, $2)", [
         migration.version,
         migration.name,
-        err,
-      );
+      ]);
+    } catch (err) {
+      console.error("Migration %d (%s) failed:", migration.version, migration.name, err);
       throw err;
     }
   }

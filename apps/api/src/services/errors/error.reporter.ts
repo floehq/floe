@@ -33,9 +33,7 @@ export function initErrorReporter(log: { info: (msg: string) => void }): void {
   activeDsn = dsn;
 
   if (!dsn) {
-    log.info(
-      "Sentry error reporter not configured — set FLOE_SENTRY_DSN to enable error tracking",
-    );
+    log.info("Sentry error reporter not configured — set FLOE_SENTRY_DSN to enable error tracking");
     return;
   }
 

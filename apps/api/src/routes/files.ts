@@ -364,7 +364,8 @@ async function* walrusByteStream(params: {
 async function* cachedSegmentByteStream(params: {
   blobId: string;
   start: number;
-  end: number;    initialSegmentBytes: number;
+  end: number;
+  initialSegmentBytes: number;
   segmentBytes: number;
   signal: AbortSignal;
   requestId?: string;
@@ -480,453 +481,483 @@ export function chooseStreamReadPlan(params: {
 }
 
 export async function filesRoutes(app: FastifyInstance) {
-  app.get("/v1/files/:fileId/metadata", {
-    schema: {
-      tags: ["Files"],
-      summary: "Get file metadata",
-      description: "Fetch metadata about a stored file, including size, MIME type, and storage details.",
-      params: {
-        type: "object",
-        required: ["fileId"],
-        properties: {
-          fileId: {
-            type: "string",
-            description: "Sui object ID, blob ID, or file UUID",
+  app.get(
+    "/v1/files/:fileId/metadata",
+    {
+      schema: {
+        tags: ["Files"],
+        summary: "Get file metadata",
+        description:
+          "Fetch metadata about a stored file, including size, MIME type, and storage details.",
+        params: {
+          type: "object",
+          required: ["fileId"],
+          properties: {
+            fileId: {
+              type: "string",
+              description: "Sui object ID, blob ID, or file UUID",
+            },
           },
         },
       },
     },
-  }, async (req, res) => {
-    const readLimit = await req.server.authProvider.checkRateLimit({
-      req,
-      scope: "file_meta_read",
-    });
-    applyRateLimitHeaders(res, readLimit);
-    if (!readLimit.allowed) {
-      return sendApiError(res, 429, "RATE_LIMITED", "Rate limit exceeded", {
-        retryable: true,
+    async (req, res) => {
+      const readLimit = await req.server.authProvider.checkRateLimit({
+        req,
+        scope: "file_meta_read",
       });
-    }
-
-    const { fileId: rawFileId } = req.params as { fileId: string };
-    const fileId = normalizeFileIdParam(rawFileId);
-    if (!fileId) {
-      req.childLogger.warn({ fileId: rawFileId }, "Invalid file id");
-      return sendApiError(res, 400, "INVALID_FILE_ID", "fileId must be a valid Sui object id");
-    }
-
-    const authzPrecheck = await req.server.authProvider.authorizeFileAccess({
-      req,
-      action: "metadata",
-      fileId,
-    });
-    if (!authzPrecheck.allowed) {
-      return sendFileAccessDenied(res, authzPrecheck);
-    }
-
-    const t0 = Date.now();
-    let fields: any | null;
-    let fieldsSource: FileFieldsSource | null;
-    let postgresState: PostgresReadState;
-    try {
-      const out = await getFileFieldsCached(fileId);
-      fields = out.fields;
-      fieldsSource = out.source;
-      postgresState = out.postgresState;
-    } catch (_err) {
-      req.childLogger.error({ err: _err, fileId }, "Sui read failed");
-      return sendApiError(res, 503, "SUI_UNAVAILABLE", "Failed to fetch file metadata from Sui", {
-        retryable: true,
-      });
-    }
-
-    if (!fields) {
-      return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
-    }
-    applyFileLookupHeaders(res, { source: fieldsSource, postgresState });
-
-    const normalized = normalizeFileFields(fields);
-    if (!normalized) {
-      req.childLogger.error({ fileId, fields }, "Invalid file metadata fields");
-      return sendApiError(res, 502, "INVALID_FILE_METADATA", "File metadata is invalid");
-    }
-
-    if (isFileFieldsDebugEnabled()) {
-      req.childLogger.info(
-        { fileId, source: fieldsSource ?? "unknown", durationMs: Date.now() - t0 },
-        "metadata fields lookup",
-      );
-    }
-    observeMetadataLookup({
-      endpoint: "metadata",
-      source: fieldsSource ?? "unknown",
-      durationMs: Date.now() - t0,
-    });
-
-    const exposeBlobId = shouldExposeBlobId(req);
-    const container = inferContainerFromMime(normalized.mimeType);
-    const publicStreamUrl = getPublicStreamUrl(fileId);
-
-    // Estimate expiry status
-    let expiryStatus: any = null;
-    if (normalized.walrusEndEpoch !== null) {
-      try {
-        const currentEpoch = await getCurrentWalrusEpoch();
-        if (currentEpoch !== null) {
-          const epochsRemaining = Math.max(0, normalized.walrusEndEpoch - currentEpoch);
-          // Walrus testnet epochs are currently 1 day.
-          const daysRemaining = epochsRemaining;
-          expiryStatus = {
-            currentEpoch,
-            endEpoch: normalized.walrusEndEpoch,
-            epochsRemaining,
-            estimatedDaysRemaining: daysRemaining,
-            isExpired: epochsRemaining === 0,
-          };
-        }
-      } catch (err) {
-        req.childLogger.warn({ err }, "Failed to fetch Walrus epoch for expiry estimation");
-      }
-    }
-
-    const authz = await req.server.authProvider.authorizeFileAccess({
-      req,
-      action: "metadata",
-      fileId,
-      fileOwner: normalized.ownerAddress,
-    });
-    if (!authz.allowed) {
-      return sendFileAccessDenied(res, authz);
-    }
-    applyFileReadCacheHeaders(res);
-
-    return {
-      fileId,
-      manifestVersion: 1,
-      container,
-      ...(exposeBlobId ? { blobId: normalized.blobId, blobObjectId: normalized.blobObjectId } : {}),
-      sizeBytes: normalized.sizeBytes,
-      mimeType: normalized.mimeType,
-      ...(publicStreamUrl ? { streamUrl: publicStreamUrl } : {}),
-      owner: normalized.owner,
-      createdAt: normalized.createdAt,
-      ...(normalized.walrusEndEpoch !== null ? { walrusEndEpoch: normalized.walrusEndEpoch } : {}),
-      ...(expiryStatus ? { expiryStatus } : {}),
-    };
-  });
-
-  app.post("/v1/files/:fileId/renew", {
-    bodyLimit: 64 * 1024,
-    schema: {
-      tags: ["Files"],
-      summary: "Renew file storage",
-      description:
-        "Extend the Walrus storage duration for a stored file. Requires the file owner's authorization.",
-      params: {
-        type: "object",
-        required: ["fileId"],
-        properties: {
-          fileId: {
-            type: "string",
-            description: "Sui object ID of the file",
-          },
-        },
-      },
-      body: {
-        type: "object",
-        required: ["epochs"],
-        properties: {
-          epochs: {
-            type: "integer",
-            description: "Number of Walrus epochs to extend by",
-            minimum: 1,
-            maximum: 53,
-          },
-        },
-      },
-    },
-  }, async (req, res) => {
-    const { fileId: rawFileId } = req.params as { fileId: string };
-    const { epochs } = req.body as { epochs: number };
-
-    const fileId = normalizeFileIdParam(rawFileId);
-    if (!fileId) {
-      return sendApiError(res, 400, "INVALID_FILE_ID", "fileId must be a valid Sui object id");
-    }
-
-    if (!Number.isInteger(epochs) || epochs <= 0 || epochs > 53) {
-      return sendApiError(res, 400, "INVALID_EPOCHS", "epochs must be an integer between 1 and 53");
-    }
-
-    const authz = await req.server.authProvider.authorizeFileAccess({
-      req,
-      action: "renew",
-      fileId,
-    });
-    if (!authz.allowed) {
-      return sendFileAccessDenied(res, authz);
-    }
-
-    const { fields } = await getFileFieldsCached(fileId);
-    if (!fields) {
-      return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
-    }
-
-    const normalized = normalizeFileFields(fields);
-    if (!normalized) {
-      return sendApiError(res, 502, "INVALID_FILE_METADATA", "File metadata is invalid");
-    }
-
-    // Walrus renewal requires a Blob object ID.
-    // Older Floe uploads might not have this stored.
-    // If missing, we try to update it if the user provides it or we can find it.
-    let blobObjectId = normalized.blobObjectId;
-    if (!blobObjectId) {
-      // For beta, we allow the user to provide it in the body if missing from metadata.
-      const b = req.body as Record<string, unknown>;
-      blobObjectId = (b.blobObjectId as string | undefined) ?? (b.blob_object_id as string | undefined) ?? null;
-    }
-    if (!blobObjectId) {
-      const indexed = await getIndexedFile(fileId).catch(() => null);
-      blobObjectId = indexed?.blobObjectId ?? null;
-    }
-    if (!blobObjectId && normalized.blobId) {
-      const mapped = await getBlobObjectIdByBlobId(normalized.blobId).catch(() => null);
-      blobObjectId = mapped ?? null;
-    }
-    if (!blobObjectId && normalized.blobId) {
-      const byBlob = await findFileByBlobId(normalized.blobId).catch(() => null);
-      blobObjectId = byBlob?.blobObjectId ?? null;
-    }
-    if (!blobObjectId && normalized.checksum) {
-      const byChecksum = await findFileByChecksum(normalized.checksum).catch(() => null);
-      blobObjectId = byChecksum?.blobObjectId ?? null;
-    }
-
-    // Capture before-state for audit trail
-    const auditBefore = {
-      fileId,
-      blobObjectId: normalized.blobObjectId ?? null,
-      walrusEndEpoch: normalized.walrusEndEpoch,
-    };
-
-    if (!blobObjectId) {
-      emitAuditEvent(req.childLogger, {
-        action: "file_renew_missing_blob_object_id",
-        resource: `file:${fileId}`,
-        actor: requestEventContext(req).actor,
-        requestId: req.id,
-        before: auditBefore,
-        after: null,
-        metadata: { error: "Missing blob object ID", epochs },
-      });
-      return sendApiError(
-        res,
-        400,
-        "MISSING_BLOB_OBJECT_ID",
-        "Walrus renewal requires a blob object ID which is missing from this file's metadata.",
-      );
-    }
-
-    try {
-      // 1. Extend Walrus storage
-      const walrusResult = await renewWalrusBlob({
-        blobObjectId,
-        epochs,
-      });
-
-      // 2. Update Floe metadata on Sui
-      try {
-        await renewFileMetadata({
-          fileId,
-          blobObjectId: !normalized.blobObjectId ? blobObjectId : undefined,
-          walrusEndEpoch: walrusResult.endEpoch,
+      applyRateLimitHeaders(res, readLimit);
+      if (!readLimit.allowed) {
+        return sendApiError(res, 429, "RATE_LIMITED", "Rate limit exceeded", {
+          retryable: true,
         });
-      } catch (metadataErr) {
-        const metadataMessage = (metadataErr as Error)?.message ?? "unknown";
-        if (
-          metadataMessage.includes("SUI_RENEW_SUBMIT_FAILED") &&
-          metadataMessage.includes("notExists")
-        ) {
-          req.childLogger.warn(
-            { err: metadataErr, fileId },
-            "Skipping Sui renewal metadata update because the file object is missing",
-          );
-        } else {
-          throw metadataErr;
+      }
+
+      const { fileId: rawFileId } = req.params as { fileId: string };
+      const fileId = normalizeFileIdParam(rawFileId);
+      if (!fileId) {
+        req.childLogger.warn({ fileId: rawFileId }, "Invalid file id");
+        return sendApiError(res, 400, "INVALID_FILE_ID", "fileId must be a valid Sui object id");
+      }
+
+      const authzPrecheck = await req.server.authProvider.authorizeFileAccess({
+        req,
+        action: "metadata",
+        fileId,
+      });
+      if (!authzPrecheck.allowed) {
+        return sendFileAccessDenied(res, authzPrecheck);
+      }
+
+      const t0 = Date.now();
+      let fields: any | null;
+      let fieldsSource: FileFieldsSource | null;
+      let postgresState: PostgresReadState;
+      try {
+        const out = await getFileFieldsCached(fileId);
+        fields = out.fields;
+        fieldsSource = out.source;
+        postgresState = out.postgresState;
+      } catch (_err) {
+        req.childLogger.error({ err: _err, fileId }, "Sui read failed");
+        return sendApiError(res, 503, "SUI_UNAVAILABLE", "Failed to fetch file metadata from Sui", {
+          retryable: true,
+        });
+      }
+
+      if (!fields) {
+        return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
+      }
+      applyFileLookupHeaders(res, { source: fieldsSource, postgresState });
+
+      const normalized = normalizeFileFields(fields);
+      if (!normalized) {
+        req.childLogger.error({ fileId, fields }, "Invalid file metadata fields");
+        return sendApiError(res, 502, "INVALID_FILE_METADATA", "File metadata is invalid");
+      }
+
+      if (isFileFieldsDebugEnabled()) {
+        req.childLogger.info(
+          { fileId, source: fieldsSource ?? "unknown", durationMs: Date.now() - t0 },
+          "metadata fields lookup",
+        );
+      }
+      observeMetadataLookup({
+        endpoint: "metadata",
+        source: fieldsSource ?? "unknown",
+        durationMs: Date.now() - t0,
+      });
+
+      const exposeBlobId = shouldExposeBlobId(req);
+      const container = inferContainerFromMime(normalized.mimeType);
+      const publicStreamUrl = getPublicStreamUrl(fileId);
+
+      // Estimate expiry status
+      let expiryStatus: any = null;
+      if (normalized.walrusEndEpoch !== null) {
+        try {
+          const currentEpoch = await getCurrentWalrusEpoch();
+          if (currentEpoch !== null) {
+            const epochsRemaining = Math.max(0, normalized.walrusEndEpoch - currentEpoch);
+            // Walrus testnet epochs are currently 1 day.
+            const daysRemaining = epochsRemaining;
+            expiryStatus = {
+              currentEpoch,
+              endEpoch: normalized.walrusEndEpoch,
+              epochsRemaining,
+              estimatedDaysRemaining: daysRemaining,
+              isExpired: epochsRemaining === 0,
+            };
+          }
+        } catch (err) {
+          req.childLogger.warn({ err }, "Failed to fetch Walrus epoch for expiry estimation");
         }
       }
 
-      // 3. Update local cache
-      clearFileFieldsCache(fileId);
-      await upsertIndexedFile({
-        ...normalized,
+      const authz = await req.server.authProvider.authorizeFileAccess({
+        req,
+        action: "metadata",
         fileId,
-        blobObjectId,
-        checksum: normalized.checksum,
-        walrusEndEpoch: walrusResult.endEpoch,
-        createdAtMs: normalized.createdAt,
-      }).catch(() => {});
-
-      // Emit audit event on successful renewal
-      const auditAfter = {
-        fileId,
-        blobObjectId: normalized.blobObjectId ?? blobObjectId,
-        walrusEndEpoch: walrusResult.endEpoch,
-        endEpochDelta: normalized.walrusEndEpoch !== null ? walrusResult.endEpoch - normalized.walrusEndEpoch : epochs,
-      };
-      emitAuditEvent(req.childLogger, {
-        action: "file_renew",
-        resource: `file:${fileId}`,
-        actor: requestEventContext(req).actor,
-        requestId: req.id,
-        before: auditBefore,
-        after: auditAfter,
-        metadata: { epochs },
+        fileOwner: normalized.ownerAddress,
       });
+      if (!authz.allowed) {
+        return sendFileAccessDenied(res, authz);
+      }
+      applyFileReadCacheHeaders(res);
 
       return {
-        success: true,
         fileId,
-        walrusEndEpoch: walrusResult.endEpoch,
+        manifestVersion: 1,
+        container,
+        ...(exposeBlobId
+          ? { blobId: normalized.blobId, blobObjectId: normalized.blobObjectId }
+          : {}),
+        sizeBytes: normalized.sizeBytes,
+        mimeType: normalized.mimeType,
+        ...(publicStreamUrl ? { streamUrl: publicStreamUrl } : {}),
+        owner: normalized.owner,
+        createdAt: normalized.createdAt,
+        ...(normalized.walrusEndEpoch !== null
+          ? { walrusEndEpoch: normalized.walrusEndEpoch }
+          : {}),
+        ...(expiryStatus ? { expiryStatus } : {}),
       };
-    } catch (err) {
-      req.childLogger.error({ err, fileId }, "Renewal failed");
-      emitAuditEvent(req.childLogger, {
-        action: "file_renew_failed",
-        resource: `file:${fileId}`,
-        actor: requestEventContext(req).actor,
-        requestId: req.id,
-        before: auditBefore,
-        after: null,
-        metadata: { error: (err as Error)?.message ?? "unknown", epochs },
-      });
-      return sendApiError(
-        res,
-        500,
-        "RENEWAL_FAILED",
-        `Failed to renew file: ${(err as Error)?.message ?? "unknown"}`,
-      );
-    }
-  });
+    },
+  );
 
-  app.get("/v1/files/:fileId/manifest", {
-    schema: {
-      tags: ["Files"],
-      summary: "Get file manifest",
-      description:
-        "Get the storage manifest for a file, describing the blob layout for direct Walrus access.",
-      params: {
-        type: "object",
-        required: ["fileId"],
-        properties: {
-          fileId: { type: "string", description: "Sui object ID of the file" },
+  app.post(
+    "/v1/files/:fileId/renew",
+    {
+      bodyLimit: 64 * 1024,
+      schema: {
+        tags: ["Files"],
+        summary: "Renew file storage",
+        description:
+          "Extend the Walrus storage duration for a stored file. Requires the file owner's authorization.",
+        params: {
+          type: "object",
+          required: ["fileId"],
+          properties: {
+            fileId: {
+              type: "string",
+              description: "Sui object ID of the file",
+            },
+          },
+        },
+        body: {
+          type: "object",
+          required: ["epochs"],
+          properties: {
+            epochs: {
+              type: "integer",
+              description: "Number of Walrus epochs to extend by",
+              minimum: 1,
+              maximum: 53,
+            },
+          },
         },
       },
     },
-  }, async (req, res) => {
-    const readLimit = await req.server.authProvider.checkRateLimit({
-      req,
-      scope: "file_meta_read",
-    });
-    applyRateLimitHeaders(res, readLimit);
-    if (!readLimit.allowed) {
-      return sendApiError(res, 429, "RATE_LIMITED", "Rate limit exceeded", {
-        retryable: true,
+    async (req, res) => {
+      const { fileId: rawFileId } = req.params as { fileId: string };
+      const { epochs } = req.body as { epochs: number };
+
+      const fileId = normalizeFileIdParam(rawFileId);
+      if (!fileId) {
+        return sendApiError(res, 400, "INVALID_FILE_ID", "fileId must be a valid Sui object id");
+      }
+
+      if (!Number.isInteger(epochs) || epochs <= 0 || epochs > 53) {
+        return sendApiError(
+          res,
+          400,
+          "INVALID_EPOCHS",
+          "epochs must be an integer between 1 and 53",
+        );
+      }
+
+      const authz = await req.server.authProvider.authorizeFileAccess({
+        req,
+        action: "renew",
+        fileId,
       });
-    }
+      if (!authz.allowed) {
+        return sendFileAccessDenied(res, authz);
+      }
 
-    const { fileId: rawFileId } = req.params as { fileId: string };
-    const fileId = normalizeFileIdParam(rawFileId);
-    if (!fileId) {
-      req.childLogger.warn({ fileId: rawFileId }, "Invalid file id");
-      return sendApiError(res, 400, "INVALID_FILE_ID", "fileId must be a valid Sui object id");
-    }
+      const { fields } = await getFileFieldsCached(fileId);
+      if (!fields) {
+        return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
+      }
 
-    const authzPrecheck = await req.server.authProvider.authorizeFileAccess({
-      req,
-      action: "manifest",
-      fileId,
-    });
-    if (!authzPrecheck.allowed) {
-      return sendFileAccessDenied(res, authzPrecheck);
-    }
+      const normalized = normalizeFileFields(fields);
+      if (!normalized) {
+        return sendApiError(res, 502, "INVALID_FILE_METADATA", "File metadata is invalid");
+      }
 
-    const t0 = Date.now();
-    let fields: any | null;
-    let fieldsSource: FileFieldsSource | null;
-    let postgresState: PostgresReadState;
-    try {
-      const out = await getFileFieldsCached(fileId);
-      fields = out.fields;
-      fieldsSource = out.source;
-      postgresState = out.postgresState;
-    } catch (_err) {
-      req.childLogger.error({ err: _err, fileId }, "Sui read failed");
-      return sendApiError(res, 503, "SUI_UNAVAILABLE", "Failed to fetch file metadata from Sui", {
-        retryable: true,
-      });
-    }
+      // Walrus renewal requires a Blob object ID.
+      // Older Floe uploads might not have this stored.
+      // If missing, we try to update it if the user provides it or we can find it.
+      let blobObjectId = normalized.blobObjectId;
+      if (!blobObjectId) {
+        // For beta, we allow the user to provide it in the body if missing from metadata.
+        const b = req.body as Record<string, unknown>;
+        blobObjectId =
+          (b.blobObjectId as string | undefined) ??
+          (b.blob_object_id as string | undefined) ??
+          null;
+      }
+      if (!blobObjectId) {
+        const indexed = await getIndexedFile(fileId).catch(() => null);
+        blobObjectId = indexed?.blobObjectId ?? null;
+      }
+      if (!blobObjectId && normalized.blobId) {
+        const mapped = await getBlobObjectIdByBlobId(normalized.blobId).catch(() => null);
+        blobObjectId = mapped ?? null;
+      }
+      if (!blobObjectId && normalized.blobId) {
+        const byBlob = await findFileByBlobId(normalized.blobId).catch(() => null);
+        blobObjectId = byBlob?.blobObjectId ?? null;
+      }
+      if (!blobObjectId && normalized.checksum) {
+        const byChecksum = await findFileByChecksum(normalized.checksum).catch(() => null);
+        blobObjectId = byChecksum?.blobObjectId ?? null;
+      }
 
-    if (!fields) {
-      return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
-    }
-    applyFileLookupHeaders(res, { source: fieldsSource, postgresState });
+      // Capture before-state for audit trail
+      const auditBefore = {
+        fileId,
+        blobObjectId: normalized.blobObjectId ?? null,
+        walrusEndEpoch: normalized.walrusEndEpoch,
+      };
 
-    const normalized = normalizeFileFields(fields);
-    if (!normalized) {
-      req.childLogger.error({ fileId, fields }, "Invalid file metadata fields");
-      return sendApiError(res, 502, "INVALID_FILE_METADATA", "File metadata is invalid");
-    }
+      if (!blobObjectId) {
+        emitAuditEvent(req.childLogger, {
+          action: "file_renew_missing_blob_object_id",
+          resource: `file:${fileId}`,
+          actor: requestEventContext(req).actor,
+          requestId: req.id,
+          before: auditBefore,
+          after: null,
+          metadata: { error: "Missing blob object ID", epochs },
+        });
+        return sendApiError(
+          res,
+          400,
+          "MISSING_BLOB_OBJECT_ID",
+          "Walrus renewal requires a blob object ID which is missing from this file's metadata.",
+        );
+      }
 
-    if (isFileFieldsDebugEnabled()) {
-      req.childLogger.info(
-        { fileId, source: fieldsSource ?? "unknown", durationMs: Date.now() - t0 },
-        "manifest fields lookup",
-      );
-    }
-    observeMetadataLookup({
-      endpoint: "manifest",
-      source: fieldsSource ?? "unknown",
-      durationMs: Date.now() - t0,
-    });
+      try {
+        // 1. Extend Walrus storage
+        const walrusResult = await renewWalrusBlob({
+          blobObjectId,
+          epochs,
+        });
 
-    const exposeBlobId = shouldExposeBlobId(req);
-    const container = inferContainerFromMime(normalized.mimeType);
-    const publicStreamUrl = getPublicStreamUrl(fileId);
-    const authz = await req.server.authProvider.authorizeFileAccess({
-      req,
-      action: "manifest",
-      fileId,
-      fileOwner: normalized.ownerAddress,
-    });
-    if (!authz.allowed) {
-      return sendFileAccessDenied(res, authz);
-    }
-    applyFileReadCacheHeaders(res);
+        // 2. Update Floe metadata on Sui
+        try {
+          await renewFileMetadata({
+            fileId,
+            blobObjectId: !normalized.blobObjectId ? blobObjectId : undefined,
+            walrusEndEpoch: walrusResult.endEpoch,
+          });
+        } catch (metadataErr) {
+          const metadataMessage = (metadataErr as Error)?.message ?? "unknown";
+          if (
+            metadataMessage.includes("SUI_RENEW_SUBMIT_FAILED") &&
+            metadataMessage.includes("notExists")
+          ) {
+            req.childLogger.warn(
+              { err: metadataErr, fileId },
+              "Skipping Sui renewal metadata update because the file object is missing",
+            );
+          } else {
+            throw metadataErr;
+          }
+        }
 
-    return {
-      manifestVersion: 1,
-      fileId,
-      createdAt: normalized.createdAt,
-      sizeBytes: normalized.sizeBytes,
-      mimeType: normalized.mimeType,
-      container,
-      ...(publicStreamUrl ? { streamUrl: publicStreamUrl } : {}),
-      ...(normalized.walrusEndEpoch !== null ? { walrusEndEpoch: normalized.walrusEndEpoch } : {}),
-      layout: {
-        type: "walrus_single_blob",
-        segments: [
-          {
-            index: 0,
-            offsetBytes: 0,
-            sizeBytes: normalized.sizeBytes,
-            ...(exposeBlobId ? { blobId: normalized.blobId } : {}),
+        // 3. Update local cache
+        clearFileFieldsCache(fileId);
+        await upsertIndexedFile({
+          ...normalized,
+          fileId,
+          blobObjectId,
+          checksum: normalized.checksum,
+          walrusEndEpoch: walrusResult.endEpoch,
+          createdAtMs: normalized.createdAt,
+        }).catch(() => {});
+
+        // Emit audit event on successful renewal
+        const auditAfter = {
+          fileId,
+          blobObjectId: normalized.blobObjectId ?? blobObjectId,
+          walrusEndEpoch: walrusResult.endEpoch,
+          endEpochDelta:
+            normalized.walrusEndEpoch !== null
+              ? walrusResult.endEpoch - normalized.walrusEndEpoch
+              : epochs,
+        };
+        emitAuditEvent(req.childLogger, {
+          action: "file_renew",
+          resource: `file:${fileId}`,
+          actor: requestEventContext(req).actor,
+          requestId: req.id,
+          before: auditBefore,
+          after: auditAfter,
+          metadata: { epochs },
+        });
+
+        return {
+          success: true,
+          fileId,
+          walrusEndEpoch: walrusResult.endEpoch,
+        };
+      } catch (err) {
+        req.childLogger.error({ err, fileId }, "Renewal failed");
+        emitAuditEvent(req.childLogger, {
+          action: "file_renew_failed",
+          resource: `file:${fileId}`,
+          actor: requestEventContext(req).actor,
+          requestId: req.id,
+          before: auditBefore,
+          after: null,
+          metadata: { error: (err as Error)?.message ?? "unknown", epochs },
+        });
+        return sendApiError(
+          res,
+          500,
+          "RENEWAL_FAILED",
+          `Failed to renew file: ${(err as Error)?.message ?? "unknown"}`,
+        );
+      }
+    },
+  );
+
+  app.get(
+    "/v1/files/:fileId/manifest",
+    {
+      schema: {
+        tags: ["Files"],
+        summary: "Get file manifest",
+        description:
+          "Get the storage manifest for a file, describing the blob layout for direct Walrus access.",
+        params: {
+          type: "object",
+          required: ["fileId"],
+          properties: {
+            fileId: { type: "string", description: "Sui object ID of the file" },
           },
-        ],
+        },
       },
-    };
-  });
+    },
+    async (req, res) => {
+      const readLimit = await req.server.authProvider.checkRateLimit({
+        req,
+        scope: "file_meta_read",
+      });
+      applyRateLimitHeaders(res, readLimit);
+      if (!readLimit.allowed) {
+        return sendApiError(res, 429, "RATE_LIMITED", "Rate limit exceeded", {
+          retryable: true,
+        });
+      }
+
+      const { fileId: rawFileId } = req.params as { fileId: string };
+      const fileId = normalizeFileIdParam(rawFileId);
+      if (!fileId) {
+        req.childLogger.warn({ fileId: rawFileId }, "Invalid file id");
+        return sendApiError(res, 400, "INVALID_FILE_ID", "fileId must be a valid Sui object id");
+      }
+
+      const authzPrecheck = await req.server.authProvider.authorizeFileAccess({
+        req,
+        action: "manifest",
+        fileId,
+      });
+      if (!authzPrecheck.allowed) {
+        return sendFileAccessDenied(res, authzPrecheck);
+      }
+
+      const t0 = Date.now();
+      let fields: any | null;
+      let fieldsSource: FileFieldsSource | null;
+      let postgresState: PostgresReadState;
+      try {
+        const out = await getFileFieldsCached(fileId);
+        fields = out.fields;
+        fieldsSource = out.source;
+        postgresState = out.postgresState;
+      } catch (_err) {
+        req.childLogger.error({ err: _err, fileId }, "Sui read failed");
+        return sendApiError(res, 503, "SUI_UNAVAILABLE", "Failed to fetch file metadata from Sui", {
+          retryable: true,
+        });
+      }
+
+      if (!fields) {
+        return sendApiError(res, 404, "FILE_NOT_FOUND", "File not found");
+      }
+      applyFileLookupHeaders(res, { source: fieldsSource, postgresState });
+
+      const normalized = normalizeFileFields(fields);
+      if (!normalized) {
+        req.childLogger.error({ fileId, fields }, "Invalid file metadata fields");
+        return sendApiError(res, 502, "INVALID_FILE_METADATA", "File metadata is invalid");
+      }
+
+      if (isFileFieldsDebugEnabled()) {
+        req.childLogger.info(
+          { fileId, source: fieldsSource ?? "unknown", durationMs: Date.now() - t0 },
+          "manifest fields lookup",
+        );
+      }
+      observeMetadataLookup({
+        endpoint: "manifest",
+        source: fieldsSource ?? "unknown",
+        durationMs: Date.now() - t0,
+      });
+
+      const exposeBlobId = shouldExposeBlobId(req);
+      const container = inferContainerFromMime(normalized.mimeType);
+      const publicStreamUrl = getPublicStreamUrl(fileId);
+      const authz = await req.server.authProvider.authorizeFileAccess({
+        req,
+        action: "manifest",
+        fileId,
+        fileOwner: normalized.ownerAddress,
+      });
+      if (!authz.allowed) {
+        return sendFileAccessDenied(res, authz);
+      }
+      applyFileReadCacheHeaders(res);
+
+      return {
+        manifestVersion: 1,
+        fileId,
+        createdAt: normalized.createdAt,
+        sizeBytes: normalized.sizeBytes,
+        mimeType: normalized.mimeType,
+        container,
+        ...(publicStreamUrl ? { streamUrl: publicStreamUrl } : {}),
+        ...(normalized.walrusEndEpoch !== null
+          ? { walrusEndEpoch: normalized.walrusEndEpoch }
+          : {}),
+        layout: {
+          type: "walrus_single_blob",
+          segments: [
+            {
+              index: 0,
+              offsetBytes: 0,
+              sizeBytes: normalized.sizeBytes,
+              ...(exposeBlobId ? { blobId: normalized.blobId } : {}),
+            },
+          ],
+        },
+      };
+    },
+  );
 
   app.route({
     method: ["GET", "HEAD"],
@@ -951,8 +982,7 @@ export async function filesRoutes(app: FastifyInstance) {
         properties: {
           skipBlobCheck: {
             type: "string",
-            description:
-              "Bypass Walrus aggregator HEAD check (requires admin:uploads scope)",
+            description: "Bypass Walrus aggregator HEAD check (requires admin:uploads scope)",
           },
         },
       },
@@ -1138,9 +1168,7 @@ export async function filesRoutes(app: FastifyInstance) {
       // guard is useful for freshly-published blobs but adds latency.
       // Only allowed when the request identity has admin:uploads scope.
       const q = req.query as Record<string, string | undefined>;
-      const rawSkipBlobCheck: boolean =
-        q.skipBlobCheck === "1" ||
-        q.skip_blob_check === "1";
+      const rawSkipBlobCheck: boolean = q.skipBlobCheck === "1" || q.skip_blob_check === "1";
       const hasAdminScopes = req.authContext?.scopes?.includes("admin:uploads") ?? false;
       const skipBlobCheck: boolean = rawSkipBlobCheck && hasAdminScopes;
       if (rawSkipBlobCheck && !hasAdminScopes) {
@@ -1171,7 +1199,9 @@ export async function filesRoutes(app: FastifyInstance) {
           // Dedup concurrent existence checks for the same cold blobId
           let pending = inFlightExistenceChecks.get(blobId);
           if (!pending) {
-            pending = checkWalrusBlobExists({ blobId, requestId: req.id }).catch(() => ({ exists: true }));
+            pending = checkWalrusBlobExists({ blobId, requestId: req.id }).catch(() => ({
+              exists: true,
+            }));
             inFlightExistenceChecks.set(blobId, pending);
           }
           blobExists = await pending;
@@ -1274,9 +1304,11 @@ export async function filesRoutes(app: FastifyInstance) {
       // Full-file tee cache: for status === 200 and small files, fetch and
       // stream the entire blob at once (tee writes to disk concurrently).
       if (status === 200) {
-        const teeResult = await teeCachedStreamBlob({ blobId, sizeBytes, log: req.childLogger }).catch(
-          () => null,
-        );
+        const teeResult = await teeCachedStreamBlob({
+          blobId,
+          sizeBytes,
+          log: req.childLogger,
+        }).catch(() => null);
         if (teeResult) {
           if (teeResult.kind === "tee") {
             return reply.status(status).send(teeResult.stream);
