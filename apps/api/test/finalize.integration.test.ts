@@ -31,6 +31,15 @@ process.env.FLOE_METRICS_TOKEN = "ops-test-token";
 process.env.FLOE_PUBLIC_HEALTH_DETAILS = "1";
 process.env.FLOE_API_KEY_STORE = "env";
 
+// Drop DATABASE_URL and FLOE_POSTGRES_REQUIRED — this file tests Redis-based upload
+// finalization and does not need Postgres. Leaving them set (as CI does) causes the
+// health check to report postgres "unavailable" instead of "disabled", which flips
+// ready→false and inflates recommendedAction to "inspect_dependencies".
+const previousDatabaseUrl = process.env.DATABASE_URL;
+delete process.env.DATABASE_URL;
+const previousPostgresRequired = process.env.FLOE_POSTGRES_REQUIRED;
+delete process.env.FLOE_POSTGRES_REQUIRED;
+
 type RedisModule = typeof import("../src/state/redis.ts");
 type PostgresModule = typeof import("../src/state/postgres.ts");
 type SessionModule = typeof import("../src/services/uploads/session.ts");
@@ -309,6 +318,16 @@ after(async () => {
     redisProcess.kill("SIGTERM");
   }
   await fs.rm(uploadTmpDir, { recursive: true, force: true }).catch(() => {});
+  if (previousDatabaseUrl !== undefined) {
+    process.env.DATABASE_URL = previousDatabaseUrl;
+  } else {
+    delete process.env.DATABASE_URL;
+  }
+  if (previousPostgresRequired !== undefined) {
+    process.env.FLOE_POSTGRES_REQUIRED = previousPostgresRequired;
+  } else {
+    delete process.env.FLOE_POSTGRES_REQUIRED;
+  }
 });
 
 test("runFinalizeJob requeues retryable transient failures through the real worker path", async () => {
