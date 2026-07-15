@@ -29,7 +29,7 @@ process.env.FLOE_NETWORK = "testnet";
 process.env.SUI_PRIVATE_KEY = Buffer.alloc(32, 7).toString("base64");
 process.env.FLOE_METRICS_TOKEN = "ops-test-token";
 process.env.FLOE_PUBLIC_HEALTH_DETAILS = "1";
-delete process.env.DATABASE_URL;
+process.env.FLOE_API_KEY_STORE = "env";
 
 type RedisModule = typeof import("../src/state/redis.ts");
 type PostgresModule = typeof import("../src/state/postgres.ts");
@@ -140,42 +140,21 @@ async function createRouteApp(customAuthProvider?: Record<string, unknown>) {
     },
     ...customAuthProvider,
   };
+  function resolveHandler(optsOrHandler: unknown, maybeHandler?: unknown): unknown {
+    return maybeHandler ?? optsOrHandler;
+  }
   const app = {
-    get(
-      path: string,
-      handler: (
-        req: Record<string, unknown>,
-        reply: Record<string, unknown>,
-      ) => Promise<unknown> | unknown,
-    ) {
-      handlers.set(`GET ${path}`, handler);
+    get(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`GET ${path}`, resolveHandler(optsOrHandler, maybeHandler));
     },
-    post(
-      path: string,
-      handler: (
-        req: Record<string, unknown>,
-        reply: Record<string, unknown>,
-      ) => Promise<unknown> | unknown,
-    ) {
-      handlers.set(`POST ${path}`, handler);
+    post(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`POST ${path}`, resolveHandler(optsOrHandler, maybeHandler));
     },
-    put(
-      path: string,
-      handler: (
-        req: Record<string, unknown>,
-        reply: Record<string, unknown>,
-      ) => Promise<unknown> | unknown,
-    ) {
-      handlers.set(`PUT ${path}`, handler);
+    put(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`PUT ${path}`, resolveHandler(optsOrHandler, maybeHandler));
     },
-    delete(
-      path: string,
-      handler: (
-        req: Record<string, unknown>,
-        reply: Record<string, unknown>,
-      ) => Promise<unknown> | unknown,
-    ) {
-      handlers.set(`DELETE ${path}`, handler);
+    delete(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`DELETE ${path}`, resolveHandler(optsOrHandler, maybeHandler));
     },
   } as unknown as Record<string, unknown>;
 

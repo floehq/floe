@@ -128,24 +128,21 @@ async function createRouteApp(customAuthProvider?: Record<string, unknown>) {
     },
     ...customAuthProvider,
   };
+  function resolveHandler(optsOrHandler: unknown, maybeHandler?: unknown): unknown {
+    return maybeHandler ?? optsOrHandler;
+  }
   const app = {
-    get(
-      path: string,
-      handler: (
-        req: Record<string, unknown>,
-        reply: Record<string, unknown>,
-      ) => Promise<unknown> | unknown,
-    ) {
-      handlers.set(`GET ${path}`, handler);
+    get(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`GET ${path}`, resolveHandler(optsOrHandler, maybeHandler));
     },
-    post(
-      path: string,
-      handler: (
-        req: Record<string, unknown>,
-        reply: Record<string, unknown>,
-      ) => Promise<unknown> | unknown,
-    ) {
-      handlers.set(`POST ${path}`, handler);
+    post(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`POST ${path}`, resolveHandler(optsOrHandler, maybeHandler));
+    },
+    put(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`PUT ${path}`, resolveHandler(optsOrHandler, maybeHandler));
+    },
+    delete(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`DELETE ${path}`, resolveHandler(optsOrHandler, maybeHandler));
     },
     route(definition: {
       method: string[];

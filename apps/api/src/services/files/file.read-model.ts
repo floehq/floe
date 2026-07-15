@@ -196,6 +196,14 @@ export class LruMap<V> {
     this.evictIfNeeded();
   }
 
+  has(key: string): boolean {
+    return this.map.has(key);
+  }
+
+  clear(): void {
+    this.map.clear();
+  }
+
   delete(key: string): boolean {
     return this.map.delete(key);
   }
