@@ -9,7 +9,7 @@ import {
   getIndexedFile,
   upsertIndexedFile,
 } from "../db/files.repository.js";
-import { checkWalrusBlobExists, fetchWalrusBlob } from "../services/walrus/read.js";
+import { fetchWalrusBlob, WalrusBlobNotFoundError } from "../services/walrus/read.js";
 import { renewWalrusBlob } from "../services/walrus/renew.js";
 import { getCurrentWalrusEpoch } from "../services/walrus/epoch.js";
 import { renewFileMetadata } from "../sui/file.metadata.js";
@@ -62,10 +62,6 @@ const blobExistenceCache = new LruMap<number>(BLOB_EXISTENCE_CACHE_MAX_ENTRIES);
 const BLOB_NEGATIVE_EXISTENCE_CACHE_TTL = 10_000;
 const blobNegativeExistenceCache = new LruMap<number>(BLOB_EXISTENCE_CACHE_MAX_ENTRIES);
 
-/** In-flight dedup map: prevents concurrent requests for the same cold blobId
- *  from issuing duplicate checkWalrusBlobExists upstream calls. */
-const inFlightExistenceChecks = new Map<string, Promise<{ exists: boolean }>>();
-
 /** Remove all expired entries from blobExistenceCache. */
 function pruneBlobExistenceCache() {
   const now = Date.now();
@@ -87,6 +83,19 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#x27;");
+}
+
+function BLOB_NOT_AVAILABLE_HTML(blobId: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Blob Not Available</title></head>
+<body style="font-family:sans-serif;padding:2rem;max-width:600px;margin:auto;text-align:center">
+  <h1>503 — Blob Not Yet Available</h1>
+  <p>The blob <code>${escapeHtml(blobId)}</code> has been submitted to the Walrus network but has not
+  been fully indexed by storage aggregators yet. This is usually temporary.</p>
+  <p>Try refreshing the page in a minute.</p>
+</body>
+</html>`;
 }
 
 /** @internal test-only hook */
@@ -1175,11 +1184,13 @@ export async function filesRoutes(app: FastifyInstance) {
         return reply.status(304).send();
       }
 
-      // --- Latency fix: fire blob existence check early (in parallel with
-      // header setup, range parsing, and abort setup) instead of waiting
-      // until after all those synchronous steps complete. The HEAD request
-      // to Walrus aggregators is the dominant cold-read latency source,
-      // so overlapping it with local work saves 50-500ms. ---
+      // --- No separate HEAD existence check ---
+      // Instead of firing a HEAD request to Walrus (a full round trip) before
+      // streaming, we let the GET itself serve as the existence check. If the
+      // blob doesn't exist, fetchWalrusBlob throws WalrusBlobNotFoundError
+      // after exhausting all aggregators, and we map that to 503 below.
+      // The negative-existence cache short-circuits repeat misses.
+
       const q = req.query as Record<string, string | undefined>;
       const rawSkipBlobCheck: boolean = q.skipBlobCheck === "1" || q.skip_blob_check === "1";
       const hasAdminScopes = req.authContext?.scopes?.includes("admin:uploads") ?? false;
@@ -1191,35 +1202,15 @@ export async function filesRoutes(app: FastifyInstance) {
         );
       }
 
-      // Check local disk cache first — if cached, skip HEAD entirely.
+      // Check local disk cache first — if cached, skip Walrus entirely.
       const cachedPath = await getCachedStreamPath(blobId, sizeBytes);
 
-      // Fire blob existence check as a promise NOW so it runs in parallel
-      // with range parsing, conditional headers, and abort setup below.
-      let blobExistsPromise: Promise<{ exists: boolean }> | null = null;
+      // Fast negative-existence cache: if blob was recently confirmed missing,
+      // return 503 immediately without hitting Walrus.
       if (!cachedPath && !skipBlobCheck) {
-        const cachedExpiry = blobExistenceCache.get(blobId);
         const negativeExpiry = blobNegativeExistenceCache.get(blobId);
-        if (cachedExpiry !== undefined && cachedExpiry > Date.now()) {
-          // Positive cache hit — will resolve synchronously below.
-        } else if (negativeExpiry !== undefined && negativeExpiry > Date.now()) {
-          // Negative cache hit — blob was recently confirmed missing.
-          blobExistsPromise = Promise.resolve({ exists: false });
-        } else {
-          if (cachedExpiry !== undefined) {
-            blobExistenceCache.delete(blobId);
-          }
-          if (negativeExpiry !== undefined) {
-            blobNegativeExistenceCache.delete(blobId);
-          }
-          let pending = inFlightExistenceChecks.get(blobId);
-          if (!pending) {
-            pending = checkWalrusBlobExists({ blobId, requestId: req.id }).catch(() => ({
-              exists: true,
-            }));
-            inFlightExistenceChecks.set(blobId, pending);
-          }
-          blobExistsPromise = pending;
+        if (negativeExpiry !== undefined && negativeExpiry > Date.now()) {
+          return reply.status(503).type("text/html").send(BLOB_NOT_AVAILABLE_HTML(blobId));
         }
       }
 
@@ -1299,40 +1290,6 @@ export async function filesRoutes(app: FastifyInstance) {
         return reply.status(status).send();
       }
 
-      // Await the blob existence check that was fired earlier in parallel
-      // with range parsing, conditional headers, and abort setup.
-      let blobExists: { exists: boolean } | null = skipBlobCheck ? { exists: true } : null;
-
-      if (blobExistsPromise) {
-        blobExists = await blobExistsPromise;
-        inFlightExistenceChecks.delete(blobId);
-
-        if (blobExists.exists) {
-          blobExistenceCache.set(blobId, Date.now() + blobExistenceCacheTTL);
-          if (blobExistenceCache.size > BLOB_EXISTENCE_CACHE_MAX_ENTRIES * 0.8) {
-            pruneBlobExistenceCache();
-          }
-        } else {
-          // Cache negative results with shorter TTL to prevent thundering herd
-          // while allowing re-indexing to propagate quickly.
-          blobNegativeExistenceCache.set(blobId, Date.now() + BLOB_NEGATIVE_EXISTENCE_CACHE_TTL);
-        }
-
-        if (!blobExists.exists) {
-          const html = `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><title>Blob Not Available</title></head>
-<body style="font-family:sans-serif;padding:2rem;max-width:600px;margin:auto;text-align:center">
-  <h1>503 — Blob Not Yet Available</h1>
-  <p>The blob <code>${escapeHtml(blobId)}</code> has been submitted to the Walrus network but has not
-  been fully indexed by storage aggregators yet. This is usually temporary.</p>
-  <p>Try refreshing the page in a minute.</p>
-</body>
-</html>`;
-          return reply.status(503).type("text/html").send(html);
-        }
-      }
-
       // Use cached file if available; otherwise try to tee-cache + stream.
       if (cachedPath) {
         const stat = await fs.stat(cachedPath).catch(() => null);
@@ -1405,8 +1362,17 @@ export async function filesRoutes(app: FastifyInstance) {
         const teeResult = await teeCachedStreamBlob({
           blobId,
           sizeBytes,
+          signal: abortController.signal,
           log: req.childLogger,
-        }).catch(() => null);
+        }).catch((err) => {
+          if (err instanceof WalrusBlobNotFoundError) return "NOT_FOUND" as const;
+          return null;
+        });
+        if (teeResult === "NOT_FOUND") {
+          detachAbortHooks();
+          blobNegativeExistenceCache.set(blobId, Date.now() + BLOB_NEGATIVE_EXISTENCE_CACHE_TTL);
+          return reply.status(503).type("text/html").send(BLOB_NOT_AVAILABLE_HTML(blobId));
+        }
         if (teeResult) {
           if (teeResult.kind === "tee") {
             return reply.status(status).send(teeResult.stream);
@@ -1425,9 +1391,43 @@ export async function filesRoutes(app: FastifyInstance) {
         }
       }
 
+      // Segment stream path: peek the first iteration of the generator
+      // BEFORE sending the response, so we can map WalrusBlobNotFoundError
+      // to a proper 503 instead of a broken 200 stream.
+      const segmentGen = cachedSegmentByteStream({
+        blobId,
+        start,
+        end,
+        initialSegmentBytes: readPlan.initialSegmentBytes,
+        segmentBytes: readPlan.segmentBytes,
+        signal: abortController.signal,
+        requestId: req.id,
+        log: req.childLogger,
+      });
+
+      let firstChunkResult: IteratorResult<Uint8Array>;
+      try {
+        firstChunkResult = await segmentGen.next();
+      } catch (err) {
+        detachAbortHooks();
+        if (err instanceof WalrusBlobNotFoundError) {
+          blobNegativeExistenceCache.set(blobId, Date.now() + BLOB_NEGATIVE_EXISTENCE_CACHE_TTL);
+          return reply.status(503).type("text/html").send(BLOB_NOT_AVAILABLE_HTML(blobId));
+        }
+        throw err;
+      }
+
+      // First segment succeeded — blob exists. Cache positive result and
+      // stream the first chunk + remaining generator.
+      blobExistenceCache.set(blobId, Date.now() + blobExistenceCacheTTL);
+      if (blobExistenceCache.size > BLOB_EXISTENCE_CACHE_MAX_ENTRIES * 0.8) {
+        pruneBlobExistenceCache();
+      }
+
       const streamStartMs = Date.now();
       let firstByteObserved = false;
       let totalStreamedBytes = 0;
+
       emitInfrastructureEvent(req.childLogger, {
         event: "stream_started",
         requestId: eventContext.requestId,
@@ -1445,18 +1445,19 @@ export async function filesRoutes(app: FastifyInstance) {
           end,
         },
       });
+
       const stream = Readable.from(
         (async function* () {
-          for await (const chunk of cachedSegmentByteStream({
-            blobId,
-            start,
-            end,
-            initialSegmentBytes: readPlan.initialSegmentBytes,
-            segmentBytes: readPlan.segmentBytes,
-            signal: abortController.signal,
-            requestId: req.id,
-            log: req.childLogger,
-          })) {
+          if (!firstChunkResult.done && firstChunkResult.value.byteLength > 0) {
+            firstByteObserved = true;
+            observeStreamTtfb({
+              range: rangeHeader ? "partial" : "full",
+              durationMs: Date.now() - streamStartMs,
+            });
+            totalStreamedBytes += firstChunkResult.value.byteLength;
+            yield firstChunkResult.value;
+          }
+          for await (const chunk of segmentGen) {
             if (!firstByteObserved && chunk.byteLength > 0) {
               firstByteObserved = true;
               observeStreamTtfb({
