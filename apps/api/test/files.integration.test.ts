@@ -10,6 +10,8 @@ process.env.SUI_PACKAGE_ID = "0x2";
 process.env.WALRUS_AGGREGATOR_URL = "http://127.0.0.1:1";
 process.env.UPLOAD_TMP_DIR = "/tmp/floe-test-upload";
 process.env.FLOE_ENFORCE_UPLOAD_OWNER = "false";
+// Enable Sui RPC metadata fallback for tests that mock Sui client responses.
+process.env.FLOE_SUI_METADATA_FALLBACK = "true";
 // Keep DATABASE_URL from the environment (needed for auth.config.ts module-level
 // initialization when FLOE_API_KEY_STORE=postgres is set globally in CI).
 // Tests that need a specific Postgres state use postgresModule.setPostgresForTests().

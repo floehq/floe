@@ -2,6 +2,13 @@ import { getSuiClient } from "../../state/sui.js";
 import { getIndexedFile, upsertIndexedFile } from "../../db/files.repository.js";
 import { isPostgresConfigured, isPostgresEnabled } from "../../state/postgres.js";
 import { AuthModeConfig, AuthOwnerPolicyConfig } from "../../config/auth.config.js";
+import { parseBoolEnv } from "../../utils/parseEnv.js";
+
+// Latency fix: gate Sui RPC metadata fallback behind an env var.
+// When false (default), reads that miss Postgres return null instead of
+// falling back to a 200-2000ms Sui RPC call. This eliminates the cold-start
+// penalty — upload finalize should have already populated Postgres.
+const SUI_METADATA_FALLBACK_ENABLED = parseBoolEnv("FLOE_SUI_METADATA_FALLBACK", false);
 
 const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
 
@@ -323,6 +330,14 @@ export async function getFileFieldsCached(fileId: string): Promise<CachedFileFie
     };
     setMemoryFileFields(fileId, fields);
     return { fields, source: "postgres", postgresState };
+  }
+
+  // Latency fix: skip Sui RPC fallback by default. The 200-2000ms Sui RPC
+  // call is the dominant cold-start penalty. Upload finalize should have
+  // already populated Postgres. Set FLOE_SUI_METADATA_FALLBACK=true to
+  // re-enable for legacy data migration scenarios.
+  if (!SUI_METADATA_FALLBACK_ENABLED) {
+    return { fields: null, source: null, postgresState };
   }
 
   const obj = await getSuiClient().getObject({

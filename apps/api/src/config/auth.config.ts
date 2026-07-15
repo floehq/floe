@@ -75,8 +75,8 @@ export interface StaticApiKeyConfig {
 
 function buildLocalLeaseSize() {
   return {
-    file_meta_read: parsePositiveIntEnv("FLOE_RATE_LIMIT_FILE_META_LOCAL_LEASE", 1),
-    file_stream_read: parsePositiveIntEnv("FLOE_RATE_LIMIT_FILE_STREAM_LOCAL_LEASE", 1),
+    file_meta_read: parsePositiveIntEnv("FLOE_RATE_LIMIT_FILE_META_LOCAL_LEASE", 20),
+    file_stream_read: parsePositiveIntEnv("FLOE_RATE_LIMIT_FILE_STREAM_LOCAL_LEASE", 20),
   } as const;
 }
 
