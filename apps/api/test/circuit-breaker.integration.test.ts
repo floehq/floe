@@ -215,7 +215,7 @@ test("verifyExternalCredential returns null when circuit is OPEN", async () => {
     headers: {
       authorization: "Bearer some-token",
     },
-  } as any;
+  } as unknown as Record<string, unknown>;
 
   const result = await buildExternalAuthContext(req);
   assert.equal(result, null);
@@ -244,7 +244,7 @@ test("verifyExternalCredential returns null when circuit throws non-CircuitBreak
     headers: {
       authorization: "Bearer any-token",
     },
-  } as any;
+  } as unknown as Record<string, unknown>;
 
   const { buildExternalAuthContext } = await import(
     "../src/services/auth/auth.external.js"
@@ -275,9 +275,6 @@ test("circuit breaker fast-rejects after failure threshold in real usage", async
   // This test verifies that the circuit breaker actually opens after
   // enough consecutive failures when used through the Walrus read path.
   // We use a circuit that triggers immediately to minimize test time.
-  const { walrusReadCircuit: liveCircuit } = await import(
-    "../src/services/circuit-breaker/instances.js"
-  );
 
   // Override circuit with very low threshold for this test
   const { CircuitBreaker } = await import("../src/services/circuit-breaker/index.js");

@@ -27,11 +27,11 @@ test.after(() => {
 });
 
 class HeadObjectCommand {
-  constructor(public readonly input: any) {}
+  constructor(public readonly input: Record<string, unknown>) {}
 }
 
 class PutObjectCommand {
-  constructor(public readonly input: any) {}
+  constructor(public readonly input: Record<string, unknown>) {}
 }
 
 async function collectBody(body: Readable): Promise<Buffer> {
@@ -43,17 +43,17 @@ async function collectBody(body: Readable): Promise<Buffer> {
 }
 
 function makeStore(overrides?: {
-  onPut?: (input: any) => Promise<void>;
+  onPut?: (input: Record<string, unknown>) => Promise<void>;
   headExists?: boolean;
-  headResult?: any;
+  headResult?: Record<string, unknown>;
 }) {
-  const store = Object.create(S3ChunkStore.prototype) as S3ChunkStore & { cfg: any };
+  const store = Object.create(S3ChunkStore.prototype) as S3ChunkStore & { cfg: Record<string, unknown> };
   store.cfg = {
     bucket: "bucket",
     prefix: "prefix",
     maxChunkBytes: 1024 * 1024,
     client: {
-      async send(command: any) {
+      async send(command: HeadObjectCommand | PutObjectCommand) {
         if (command instanceof HeadObjectCommand) {
           if (overrides?.headExists) return overrides.headResult ?? {};
           throw new Error("NotFound");

@@ -24,9 +24,9 @@ class FakeSocket {
 }
 
 function appendReply(client: NativeRedisClient, chunk: string) {
-  const current = (client as any).buffer as Buffer;
-  (client as any).buffer = Buffer.concat([current, Buffer.from(chunk, "utf8")]);
-  (client as any).drainResponses();
+  const current = (client as unknown as { buffer: Buffer }).buffer;
+  (client as unknown as { buffer: Buffer }).buffer = Buffer.concat([current, Buffer.from(chunk, "utf8")]);
+  (client as unknown as { drainResponses: () => void }).drainResponses();
 }
 
 async function flushMicrotasks() {
@@ -36,8 +36,8 @@ async function flushMicrotasks() {
 test("native redis client does not interleave commands into an active MULTI", async () => {
   const client = new NativeRedisClient({ url: "redis://127.0.0.1:6379" });
   const socket = new FakeSocket();
-  (client as any).socket = socket;
-  (client as any).connected = true;
+  (client as unknown as { socket: FakeSocket; connected: boolean }).socket = socket;
+  (client as unknown as { socket: FakeSocket; connected: boolean }).connected = true;
 
   const txPromise = client.execMulti([
     ["SET", "floe:test:key", "value"],
@@ -80,8 +80,8 @@ test("native redis client does not interleave commands into an active MULTI", as
 test("native redis client rejects pending callers when the socket is closed", async () => {
   const client = new NativeRedisClient({ url: "redis://127.0.0.1:6379" });
   const socket = new FakeSocket();
-  (client as any).socket = socket;
-  (client as any).connected = true;
+  (client as unknown as { socket: FakeSocket; connected: boolean }).socket = socket;
+  (client as unknown as { socket: FakeSocket; connected: boolean }).connected = true;
 
   const pingPromise = client.ping();
   await flushMicrotasks();

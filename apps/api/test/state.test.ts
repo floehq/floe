@@ -64,7 +64,7 @@ test("postgres - setPostgresForTests enables/disables correctly", async () => {
     end: async () => {},
   };
 
-  mod.setPostgresForTests(mockClient as any, true);
+  mod.setPostgresForTests(mockClient as unknown as NonNullable<Parameters<typeof postgresModule.setPostgresForTests>[0]>, true);
   assert.equal(mod.getPostgres(), mockClient);
   assert.equal(mod.isPostgresEnabled(), true);
 
@@ -107,12 +107,11 @@ test("postgres - checkPostgresHealth with working pool returns ok=true", async (
   const prev = process.env.DATABASE_URL;
   process.env.DATABASE_URL = "postgres://localhost:5432/test";
   try {
-    const mod = await import("../src/state/postgres.js");
-    const mockClient = {
-      query: async () => ({ rows: [], rowCount: 0 }),
-      end: async () => {},
-    };
-    mod.setPostgresForTests(mockClient as any, true);
+    const mod = await import("../src/state/postgres.js");  const mockClient = {
+    query: async () => ({ rows: [], rowCount: 0 }),
+    end: async () => {},
+  };
+    mod.setPostgresForTests(mockClient as unknown as NonNullable<Parameters<typeof mod.setPostgresForTests>[0]>, true);
     const health = await mod.checkPostgresHealth();
     assert.equal(health.enabled, true);
     assert.equal(health.ok, true);
@@ -134,7 +133,7 @@ test("postgres - checkPostgresHealth with failing query returns ok=false", async
       },
       end: async () => {},
     };
-    mod.setPostgresForTests(mockClient as any, true);
+    mod.setPostgresForTests(mockClient as unknown as NonNullable<Parameters<typeof mod.setPostgresForTests>[0]>, true);
     const health = await mod.checkPostgresHealth();
     assert.equal(health.enabled, true);
     assert.equal(health.ok, false);
@@ -160,7 +159,7 @@ test("postgres - closePostgres works with active pool", async () => {
       ended = true;
     },
   };
-  mod.setPostgresForTests(mockClient as any, true);
+  mod.setPostgresForTests(mockClient as unknown as NonNullable<Parameters<typeof mod.setPostgresForTests>[0]>, true);
   await mod.closePostgres();
   assert.equal(ended, true);
   assert.equal(mod.getPostgres(), null);
@@ -175,7 +174,7 @@ test("redis - getRedis throws when not initialized", async () => {
   try {
     mod.getRedis();
     assert.fail("Should have thrown");
-  } catch (err: any) {
+  } catch (err: unknown) {
     assert.ok(err.message.includes("Redis not initialized"));
   }
 });
@@ -218,7 +217,7 @@ test("redis - closeRedis with mock client calls close", async () => {
       throw new Error("not implemented");
     },
     execMulti: async () => [],
-  } as any;
+  } as unknown as NonNullable<Parameters<typeof mod.setRedisForTests>[0]>;
   mod.setRedisForTests(mock);
   await mod.closeRedis();
   assert.equal(closed, true);
@@ -251,7 +250,7 @@ test("redis - setRedisForTests allows overriding the client", async () => {
       throw new Error("not implemented");
     },
     execMulti: async () => [],
-  } as any;
+  } as unknown as NonNullable<Parameters<typeof mod.setRedisForTests>[0]>;
   mod.setRedisForTests(mock);
   assert.equal(mod.getRedis(), mock);
 });

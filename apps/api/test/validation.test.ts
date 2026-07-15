@@ -95,7 +95,7 @@ describe("validateContentType", () => {
   it("allows FLOE_ALLOWED_CONTENT_TYPES override", async () => {
     process.env.FLOE_ALLOWED_CONTENT_TYPES = "text/html,application/x-msdownload";
     // Re-import to get fresh state
-    const { validateContentType: vct2, getAllowedContentTypes } = await import(
+    const { validateContentType: vct2 } = await import(
       "../src/utils/validation.js"
     );
     assert.equal(vct2("text/html"), "text/html");

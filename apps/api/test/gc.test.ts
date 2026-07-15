@@ -27,12 +27,12 @@ const log = {
   child() {
     return this;
   },
-} as any;
+} as unknown as Record<string, (...args: never[]) => unknown>;
 
 // Global reference to the redis module so all cache-busted GC modules use the same instance.
 // We import it ONCE without cache-busting so setRedisForTests propagates to all consumers.
-let cachedRedisModule: any = null;
-let cachedKeysModule: any = null;
+let cachedRedisModule: typeof import("../src/state/redis.js") | null = null;
+let cachedKeysModule: typeof import("../src/state/keys.js") | null = null;
 
 beforeEach(async () => {
   await fs.mkdir(testTmpDir, { recursive: true });
@@ -311,7 +311,7 @@ function createMockRedis() {
     },
     scard: async (key: string) => sets.get(key)?.size ?? 0,
     multi: () => {
-      const ops: Array<{ method: string; args: any[] }> = [];
+      const ops: Array<{ method: string; args: unknown[] }> = [];
       const self = {
         hset: (key: string, kv: Record<string, unknown>) => {
           ops.push({ method: "hset", args: [key, kv] });

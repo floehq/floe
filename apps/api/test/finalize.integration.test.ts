@@ -58,13 +58,13 @@ const log = {
   child() {
     return this;
   },
-} as any;
+} as unknown as Record<string, (...args: never[]) => unknown>;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function makeRedisMethodFailureStub(originalRedis: any, methods: string[]) {
+function makeRedisMethodFailureStub(originalRedis: Record<string, (...args: never[]) => unknown>, methods: string[]) {
   const failing = new Set(methods);
   return new Proxy(originalRedis, {
     get(target, prop, receiver) {
@@ -76,7 +76,7 @@ function makeRedisMethodFailureStub(originalRedis: any, methods: string[]) {
       const value = Reflect.get(target, prop, receiver);
       return typeof value === "function" ? value.bind(target) : value;
     },
-  }) as any;
+  }) as unknown as Record<string, unknown>;
 }
 
 async function waitForRedis(port: number) {
@@ -98,8 +98,8 @@ async function waitForRedis(port: number) {
   throw new Error(`redis-server did not start on port ${port}`);
 }
 
-async function createRouteApp(customAuthProvider?: any) {
-  const handlers = new Map<string, (req: any, reply: any) => Promise<unknown> | unknown>();
+async function createRouteApp(customAuthProvider?: Record<string, unknown>) {
+  const handlers = new Map<string, (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown>();
   const authProvider = {
     async resolveIdentity() {
       return {
@@ -135,19 +135,19 @@ async function createRouteApp(customAuthProvider?: any) {
     ...customAuthProvider,
   };
   const app = {
-    get(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
+    get(path: string, handler: (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown) {
       handlers.set(`GET ${path}`, handler);
     },
-    post(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
+    post(path: string, handler: (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown) {
       handlers.set(`POST ${path}`, handler);
     },
-    put(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
+    put(path: string, handler: (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown) {
       handlers.set(`PUT ${path}`, handler);
     },
-    delete(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
+    delete(path: string, handler: (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown) {
       handlers.set(`DELETE ${path}`, handler);
     },
-  } as any;
+  } as unknown as Record<string, unknown>;
 
   await uploadRoutesModule.default(app);
   await healthRouteModule.default(app);
@@ -770,7 +770,7 @@ test("health route caches dependency probes across back-to-back requests", async
       pingCalls += 1;
       return "PONG";
     },
-  } as any);
+  } as unknown as NonNullable<Parameters<typeof redisModule.setRedisForTests>[0]>);
 
   const app = await createRouteApp();
   try {
@@ -1101,7 +1101,7 @@ test("ops upload route enforces auth and error handling", async () => {
       ping: async () => {
         throw new Error("redis unavailable");
       },
-    } as any);
+    } as unknown as NonNullable<Parameters<typeof redisModule.setRedisForTests>[0]>);
     const unavailable = await app.inject({
       method: "GET",
       url: `/ops/uploads/${uploadId}`,

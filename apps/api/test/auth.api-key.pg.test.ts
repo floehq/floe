@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 const STORE_PATH = "../src/services/auth/auth.api-key.pg.js";
 
 type PgPool = {
-  query: (sql: string, values?: unknown[]) => Promise<{ rows: any[]; rowCount?: number }>;
+  query: (sql: string, values?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>>; rowCount?: number }>;
   end: () => Promise<void>;
 };
 
@@ -27,9 +27,9 @@ function hashSecret(secret: string): string {
 }
 
 function buildMockPg(overrides?: {
-  findByHashResult?: any[];
-  findByIdResult?: any[];
-  listActiveResult?: any[];
+  findByHashResult?: Array<Record<string, unknown>>;
+  findByIdResult?: Array<Record<string, unknown>>;
+  listActiveResult?: Array<Record<string, unknown>>;
 }): PgPool {
   return {
     query: async (_sql: string, _values?: unknown[]) => {
