@@ -26,10 +26,10 @@ FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9
 # available Debian security patches without needing to hand-list packages.
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
-# Upgrade npm so its bundled transitive dependencies no longer trigger
-# Upgrade npm so its bundled transitive dependencies no longer trigger
-# HIGH-severity Trivy findings. Node 24 ships npm 11.16.0; later npm 11
-# releases patch CVEs in bundle deps (cross-spawn, glob, minimatch, etc.).
+# npm 11.x bundled with Node 24 (11.16.0) is recent enough that the
+# cross-spawn/minimatch CVEs that forced an upgrade from Node 20's npm
+# 10.8.2 are already resolved. Keep the upgrade line defensive in case
+# a newer patch fixes additional bundle CVEs that Trivy flags.
 RUN npm install -g npm@11 && rm -rf /root/.npm
 
 ENV NODE_ENV=production
