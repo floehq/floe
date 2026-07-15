@@ -47,7 +47,9 @@ function makeStore(overrides?: {
   headExists?: boolean;
   headResult?: Record<string, unknown>;
 }) {
-  const store = Object.create(S3ChunkStore.prototype) as S3ChunkStore & { cfg: Record<string, unknown> };
+  const store = Object.create(S3ChunkStore.prototype) as S3ChunkStore & {
+    cfg: Record<string, unknown>;
+  };
   store.cfg = {
     bucket: "bucket",
     prefix: "prefix",

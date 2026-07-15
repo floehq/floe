@@ -18,7 +18,8 @@ function mockClient(): SuiClient {
         coinType: "0x2::sui::SUI",
       } as unknown as Awaited<ReturnType<SuiClient["getBalance"]>>;
     },
-    signAndExecuteTransaction: async () => ({}) as unknown as Awaited<ReturnType<SuiClient["signAndExecuteTransaction"]>>,
+    signAndExecuteTransaction: async () =>
+      ({}) as unknown as Awaited<ReturnType<SuiClient["signAndExecuteTransaction"]>>,
     // @ts-expect-error: SuiClient has ~60 methods; only need getBalance + signAndExecuteTransaction
   } as SuiClient;
 }

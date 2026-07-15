@@ -5,7 +5,10 @@ import crypto from "node:crypto";
 const STORE_PATH = "../src/services/auth/auth.api-key.pg.js";
 
 type PgPool = {
-  query: (sql: string, values?: unknown[]) => Promise<{ rows: Array<Record<string, unknown>>; rowCount?: number }>;
+  query: (
+    sql: string,
+    values?: unknown[],
+  ) => Promise<{ rows: Array<Record<string, unknown>>; rowCount?: number }>;
   end: () => Promise<void>;
 };
 

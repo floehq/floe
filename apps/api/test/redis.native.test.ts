@@ -25,7 +25,10 @@ class FakeSocket {
 
 function appendReply(client: NativeRedisClient, chunk: string) {
   const current = (client as unknown as { buffer: Buffer }).buffer;
-  (client as unknown as { buffer: Buffer }).buffer = Buffer.concat([current, Buffer.from(chunk, "utf8")]);
+  (client as unknown as { buffer: Buffer }).buffer = Buffer.concat([
+    current,
+    Buffer.from(chunk, "utf8"),
+  ]);
   (client as unknown as { drainResponses: () => void }).drainResponses();
 }
 
