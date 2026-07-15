@@ -60,7 +60,10 @@ test("files repository - getIndexedFile returns record with mock pg", async () =
     end: async () => {},
   };
 
-  postgres.setPostgresForTests(mockPg as any, true);
+  postgres.setPostgresForTests(
+    mockPg as unknown as NonNullable<Parameters<typeof postgres.setPostgresForTests>[0]>,
+    true,
+  );
 
   const mod = await import("../src/db/files.repository.js");
   const result = await mod.getIndexedFile("test-file-1");
@@ -83,7 +86,10 @@ test("files repository - getIndexedFile returns null when no rows returned", asy
     end: async () => {},
   };
 
-  postgres.setPostgresForTests(mockPg as any, true);
+  postgres.setPostgresForTests(
+    mockPg as unknown as NonNullable<Parameters<typeof postgres.setPostgresForTests>[0]>,
+    true,
+  );
 
   const mod = await import("../src/db/files.repository.js");
   const result = await mod.getIndexedFile("nonexistent-file");
@@ -112,7 +118,10 @@ test("files repository - getIndexedFile handles null walrus_end_epoch", async ()
     end: async () => {},
   };
 
-  postgres.setPostgresForTests(mockPg as any, true);
+  postgres.setPostgresForTests(
+    mockPg as unknown as NonNullable<Parameters<typeof postgres.setPostgresForTests>[0]>,
+    true,
+  );
 
   const mod = await import("../src/db/files.repository.js");
   const result = await mod.getIndexedFile("test-file-2");
@@ -138,7 +147,10 @@ test("files repository - upsertIndexedFile calls pg.query with correct params", 
     end: async () => {},
   };
 
-  postgres.setPostgresForTests(mockPg as any, true);
+  postgres.setPostgresForTests(
+    mockPg as unknown as NonNullable<Parameters<typeof postgres.setPostgresForTests>[0]>,
+    true,
+  );
 
   const mod = await import("../src/db/files.repository.js");
   await mod.upsertIndexedFile({

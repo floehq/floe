@@ -8,6 +8,9 @@ const WALRUS_CLI_BIN = (process.env.FLOE_WALRUS_CLI_BIN ?? "walrus").trim();
 const WALRUS_CLI_WALLET = process.env.FLOE_WALRUS_CLI_WALLET?.trim() || undefined;
 const WALRUS_CLI_CONTEXT = process.env.FLOE_WALRUS_CLI_CONTEXT?.trim() || undefined;
 
+const WALRUS_EPOCH_CACHE_TTL_MS = 30_000;
+let cachedWalrusEpoch: { value: number | null; expiresAt: number } | null = null;
+
 function defaultWalrusCliConfigPath(): string | undefined {
   const configured = process.env.FLOE_WALRUS_CLI_CONFIG?.trim();
   if (configured) return configured;
@@ -20,6 +23,11 @@ function defaultWalrusCliConfigPath(): string | undefined {
 }
 
 export async function getCurrentWalrusEpoch(): Promise<number | null> {
+  // Return cached value if still fresh
+  if (cachedWalrusEpoch && cachedWalrusEpoch.expiresAt > Date.now()) {
+    return cachedWalrusEpoch.value;
+  }
+
   const args = ["info", "epoch", "--json"];
   const walrusConfig = defaultWalrusCliConfigPath();
   if (walrusConfig) args.push("--config", walrusConfig);
@@ -34,8 +42,11 @@ export async function getCurrentWalrusEpoch(): Promise<number | null> {
     const match = String(stdout).match(/\{[\s\S]*\}/);
     if (!match) return null;
     const parsed = JSON.parse(match[0]) as { currentEpoch?: number };
-    return Number.isFinite(parsed.currentEpoch) ? Number(parsed.currentEpoch) : null;
+    const value = Number.isFinite(parsed.currentEpoch) ? Number(parsed.currentEpoch) : null;
+    cachedWalrusEpoch = { value, expiresAt: Date.now() + WALRUS_EPOCH_CACHE_TTL_MS };
+    return value;
   } catch {
+    cachedWalrusEpoch = { value: null, expiresAt: Date.now() + WALRUS_EPOCH_CACHE_TTL_MS };
     return null;
   }
 }

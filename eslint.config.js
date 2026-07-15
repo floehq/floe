@@ -9,7 +9,7 @@ export default tseslint.config(
       // Match existing code style: semicolons required
       semi: ["error", "always"],
       // No explicit `any` - warn only (existing code uses `as any` in tests)
-      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/no-explicit-any": ["error", { "ignoreRestArgs": true }],
       // Unused vars - allow underscore-prefixed
       "@typescript-eslint/no-unused-vars": [
         "error",
@@ -26,6 +26,6 @@ export default tseslint.config(
     },
   },
   {
-    ignores: ["**/dist/**", "**/coverage/**", "**/node_modules/**", "**/*.js", "**/*.mjs"],
+    ignores: ["**/dist/**", "**/coverage/**", "**/node_modules/**", "**/*.js"],
   }
 );

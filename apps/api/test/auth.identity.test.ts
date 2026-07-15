@@ -33,13 +33,13 @@ async function injectIdentity(trustProxy: boolean) {
 }
 
 afterEach(() => {
-  (AuthProviderConfig as any).kind = "local";
-  (AuthTokenConfig as any).secret = undefined;
-  (AuthExternalConfig as any).verifyUrl = undefined;
-  (AuthExternalConfig as any).sharedSecret = undefined;
-  (AuthExternalConfig as any).authToken = undefined;
-  (AuthExternalConfig as any).timeoutMs = 2000;
-  (AuthExternalConfig as any).cacheTtlMs = 5000;
+  (AuthProviderConfig as Record<string, unknown>)["kind"] = "local";
+  (AuthTokenConfig as Record<string, unknown>)["secret"] = undefined;
+  (AuthExternalConfig as Record<string, unknown>)["verifyUrl"] = undefined;
+  (AuthExternalConfig as Record<string, unknown>)["sharedSecret"] = undefined;
+  (AuthExternalConfig as Record<string, unknown>)["authToken"] = undefined;
+  (AuthExternalConfig as Record<string, unknown>)["timeoutMs"] = 2000;
+  (AuthExternalConfig as Record<string, unknown>)["cacheTtlMs"] = 5000;
   globalThis.fetch = originalFetch;
   externalAuthTestHooks.resetCache();
 });
@@ -61,8 +61,8 @@ test("public identity uses x-forwarded-for when proxy trust is enabled", async (
 });
 
 test("authorization bearer takes precedence over x-api-key", async () => {
-  (AuthProviderConfig as any).kind = "token";
-  (AuthTokenConfig as any).secret = "identity-token-secret";
+  (AuthProviderConfig as Record<string, unknown>)["kind"] = "token";
+  (AuthTokenConfig as Record<string, unknown>)["secret"] = "identity-token-secret";
   const token = signDelegatedAuthTokenForTests(
     {
       sub: "svc_1",
@@ -92,15 +92,15 @@ test("authorization bearer takes precedence over x-api-key", async () => {
     assert.equal(body.credentialType, "bearer");
     assert.equal(body.subject, "service:svc_1");
   } finally {
-    (AuthProviderConfig as any).kind = "local";
-    (AuthTokenConfig as any).secret = undefined;
+    (AuthProviderConfig as Record<string, unknown>)["kind"] = "local";
+    (AuthTokenConfig as Record<string, unknown>)["secret"] = undefined;
     await app.close();
   }
 });
 
 test("token provider rejects expired, malformed, and bad-signature tokens as public", async () => {
-  (AuthProviderConfig as any).kind = "token";
-  (AuthTokenConfig as any).secret = "identity-token-secret";
+  (AuthProviderConfig as Record<string, unknown>)["kind"] = "token";
+  (AuthTokenConfig as Record<string, unknown>)["secret"] = "identity-token-secret";
   const expired = signDelegatedAuthTokenForTests(
     {
       sub: "svc_1",
@@ -132,8 +132,8 @@ test("token provider rejects expired, malformed, and bad-signature tokens as pub
       assert.equal(body.provider, "none");
     }
   } finally {
-    (AuthProviderConfig as any).kind = "local";
-    (AuthTokenConfig as any).secret = undefined;
+    (AuthProviderConfig as Record<string, unknown>)["kind"] = "local";
+    (AuthTokenConfig as Record<string, unknown>)["secret"] = undefined;
     await app.close();
   }
 });
@@ -141,10 +141,11 @@ test("token provider rejects expired, malformed, and bad-signature tokens as pub
 test("external provider verifies remote normalized auth context and caches positive results", async () => {
   let verifyCalls = 0;
   const receivedRequests: Array<{ headers: Headers; body: string }> = [];
-  (AuthProviderConfig as any).kind = "external";
-  (AuthExternalConfig as any).verifyUrl = "https://auth.floe-private.test/verify";
-  (AuthExternalConfig as any).sharedSecret = "shared-secret";
-  (AuthExternalConfig as any).cacheTtlMs = 5_000;
+  (AuthProviderConfig as Record<string, unknown>)["kind"] = "external";
+  (AuthExternalConfig as Record<string, unknown>)["verifyUrl"] =
+    "https://auth.floe-private.test/verify";
+  (AuthExternalConfig as Record<string, unknown>)["sharedSecret"] = "shared-secret";
+  (AuthExternalConfig as Record<string, unknown>)["cacheTtlMs"] = 5_000;
   externalAuthTestHooks.resetCache();
   globalThis.fetch = async (input, init) => {
     verifyCalls += 1;
@@ -199,9 +200,10 @@ test("external provider verifies remote normalized auth context and caches posit
 
 test("external provider accepts SaaS-issued api keys and propagates org, project, and scopes", async () => {
   const receivedRequests: Array<{ headers: Headers; body: string }> = [];
-  (AuthProviderConfig as any).kind = "external";
-  (AuthExternalConfig as any).verifyUrl = "https://auth.floe-private.test/verify";
-  (AuthExternalConfig as any).sharedSecret = "shared-secret";
+  (AuthProviderConfig as Record<string, unknown>).kind = "external";
+  (AuthExternalConfig as Record<string, unknown>).verifyUrl =
+    "https://auth.floe-private.test/verify";
+  (AuthExternalConfig as Record<string, unknown>).sharedSecret = "shared-secret";
   globalThis.fetch = async (_input, init) => {
     receivedRequests.push({
       headers: new Headers(init?.headers),
@@ -282,9 +284,10 @@ test("external provider treats revoked and invalid SaaS verifier responses as un
     },
   ];
   let callIndex = 0;
-  (AuthProviderConfig as any).kind = "external";
-  (AuthExternalConfig as any).verifyUrl = "https://auth.floe-private.test/verify";
-  (AuthExternalConfig as any).sharedSecret = "shared-secret";
+  (AuthProviderConfig as Record<string, unknown>).kind = "external";
+  (AuthExternalConfig as Record<string, unknown>).verifyUrl =
+    "https://auth.floe-private.test/verify";
+  (AuthExternalConfig as Record<string, unknown>).sharedSecret = "shared-secret";
   globalThis.fetch = async () =>
     new Response(JSON.stringify(responses[callIndex++] ?? responses[responses.length - 1]), {
       status: 200,
@@ -319,8 +322,9 @@ test("external provider treats malformed verifier payloads as unauthenticated", 
   ];
   let callIndex = 0;
 
-  (AuthProviderConfig as any).kind = "external";
-  (AuthExternalConfig as any).verifyUrl = "https://auth.floe-private.test/verify";
+  (AuthProviderConfig as Record<string, unknown>).kind = "external";
+  (AuthExternalConfig as Record<string, unknown>).verifyUrl =
+    "https://auth.floe-private.test/verify";
   globalThis.fetch = async () =>
     new Response(JSON.stringify(responses[callIndex++] ?? responses[responses.length - 1]), {
       status: 200,
@@ -348,9 +352,10 @@ test("external provider treats malformed verifier payloads as unauthenticated", 
 
 test("external provider does not cache credentials past verifier expiry", async () => {
   let verifyCalls = 0;
-  (AuthProviderConfig as any).kind = "external";
-  (AuthExternalConfig as any).verifyUrl = "https://auth.floe-private.test/verify";
-  (AuthExternalConfig as any).cacheTtlMs = 60_000;
+  (AuthProviderConfig as Record<string, unknown>).kind = "external";
+  (AuthExternalConfig as Record<string, unknown>).verifyUrl =
+    "https://auth.floe-private.test/verify";
+  (AuthExternalConfig as Record<string, unknown>).cacheTtlMs = 60_000;
   globalThis.fetch = async () => {
     verifyCalls += 1;
     return new Response(
@@ -372,7 +377,7 @@ test("external provider does not cache credentials past verifier expiry", async 
   const req = {
     headers: { authorization: "Bearer short-lived" },
     ip: "127.0.0.1",
-  } as any;
+  } as Record<string, unknown>;
 
   const first = await resolveRequestIdentity(req);
   assert.equal(first.subjectId, "svc_1");
@@ -387,8 +392,9 @@ test("external provider does not cache credentials past verifier expiry", async 
 
 test("resolveRequestIdentity memoizes external auth on the request", async () => {
   let verifyCalls = 0;
-  (AuthProviderConfig as any).kind = "external";
-  (AuthExternalConfig as any).verifyUrl = "https://auth.floe-private.test/verify";
+  (AuthProviderConfig as Record<string, unknown>).kind = "external";
+  (AuthExternalConfig as Record<string, unknown>).verifyUrl =
+    "https://auth.floe-private.test/verify";
   globalThis.fetch = async () => {
     verifyCalls += 1;
     return new Response(
@@ -410,7 +416,7 @@ test("resolveRequestIdentity memoizes external auth on the request", async () =>
   const req = {
     headers: { authorization: "Bearer request-cached" },
     ip: "127.0.0.1",
-  } as any;
+  } as Record<string, unknown>;
 
   const first = await resolveRequestIdentity(req);
   const second = await resolveRequestIdentity(req);

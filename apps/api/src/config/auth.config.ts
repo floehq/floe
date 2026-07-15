@@ -1,20 +1,4 @@
-function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < min) {
-    throw new Error(`${name} must be an integer >= ${min}`);
-  }
-  return n;
-}
-
-function parseBoolEnv(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  if (raw === "1" || raw.toLowerCase() === "true") return true;
-  if (raw === "0" || raw.toLowerCase() === "false") return false;
-  throw new Error(`${name} must be one of: 1, 0, true, false`);
-}
+import { parseBoolEnv, parsePositiveIntEnv } from "../utils/parseEnv.js";
 
 const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
 
@@ -45,6 +29,10 @@ const LIMIT_DEFAULTS = {
     public: 120,
     authenticated: 1200,
   },
+  ops_read: {
+    public: 10,
+    authenticated: 120,
+  },
 } as const;
 
 const LIMIT_ENV = {
@@ -63,6 +51,10 @@ const LIMIT_ENV = {
   file_stream_read: {
     public: "FLOE_RATE_LIMIT_FILE_STREAM_PUBLIC",
     authenticated: "FLOE_RATE_LIMIT_FILE_STREAM_AUTH",
+  },
+  ops_read: {
+    public: "FLOE_RATE_LIMIT_OPS_READ_PUBLIC",
+    authenticated: "FLOE_RATE_LIMIT_OPS_READ_AUTH",
   },
 } as const;
 
@@ -205,7 +197,7 @@ function parseApiKeys(): StaticApiKeyConfig[] {
       ? candidate.scopes
           .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
           .map((value) => value.trim())
-      : ["*"];
+      : ["uploads:write", "files:read"];
     const owner = normalizeOptionalSuiAddress(candidate.owner);
 
     if (!id) throw new Error(`FLOE_API_KEYS_JSON[${index}].id is required`);
@@ -224,7 +216,7 @@ function parseApiKeys(): StaticApiKeyConfig[] {
       id,
       secret,
       owner,
-      scopes: scopes.length > 0 ? scopes : ["*"],
+      scopes: scopes.length > 0 ? scopes : ["uploads:write", "files:read"],
       tier,
     } satisfies StaticApiKeyConfig;
   });
@@ -272,7 +264,7 @@ export const AuthUploadPolicyConfig = {
 } as const;
 
 export const AuthOwnerPolicyConfig = {
-  enforceUploadOwner: parseBoolEnv("FLOE_ENFORCE_UPLOAD_OWNER", false),
+  enforceUploadOwner: parseBoolEnv("FLOE_ENFORCE_UPLOAD_OWNER", true),
 } as const;
 
 export const AuthAccessPolicyConfig = {

@@ -10,7 +10,7 @@ type WalrusUploadResult = Awaited<ReturnType<typeof uploadToWalrusOnce>>;
 const WALRUS_STORE_MODE = resolveWalrusStoreMode();
 
 function extractWalrusHttpStatus(err: unknown): number | undefined {
-  const msg = String((err as any)?.message ?? "");
+  const msg = String((err as Error)?.message ?? "");
   const m = msg.match(/WALRUS_UPLOAD_FAILED:(\d{3})\b/);
   if (!m) return undefined;
   const status = Number(m[1]);
@@ -47,7 +47,7 @@ export async function uploadToWalrusWithMetrics(params: {
             outcome: "success",
             walrusCost: res.cost,
             walrusEndEpoch: res.endEpoch,
-            network: process.env.FLOE_NETWORK as any,
+            network: (process.env.FLOE_NETWORK as "mainnet" | "testnet") ?? "mainnet",
             timestamp: Date.now(),
           });
           observeWalrusPublish({

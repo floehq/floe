@@ -4,7 +4,12 @@ import { isPostgresConfigured, isPostgresEnabled } from "../../state/postgres.js
 import { AuthModeConfig, AuthOwnerPolicyConfig } from "../../config/auth.config.js";
 
 const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
-const TRUSTED_FILE_OBJECT_TYPE = `${process.env.SUI_PACKAGE_ID}::file::FileMeta`.toLowerCase();
+
+function getTrustedFileObjectType(): string {
+  const suiPackageId = process.env.SUI_PACKAGE_ID?.trim();
+  if (!suiPackageId) return "";
+  return `${suiPackageId}::file::FileMeta`.toLowerCase();
+}
 
 export type NormalizedFileFields = {
   blobId: string;
@@ -39,7 +44,13 @@ export function normalizeFileIdParam(raw: unknown): string | null {
 }
 
 function isTrustedFileObjectType(raw: unknown): boolean {
-  return typeof raw === "string" && raw.toLowerCase() === TRUSTED_FILE_OBJECT_TYPE;
+  const trustedType = getTrustedFileObjectType();
+  return typeof raw === "string" && trustedType !== "" && raw.toLowerCase() === trustedType;
+}
+
+/** Represents a Sui optional value that may be a vector (for Move Option types). */
+interface SuiOptionalValue {
+  vec?: unknown[];
 }
 
 function parseOptionalU64(raw: unknown): number | null {
@@ -53,7 +64,7 @@ function parseOptionalU64(raw: unknown): number | null {
     if (Number.isFinite(n) && n >= 0) return Math.floor(n);
   }
   if (typeof raw === "object") {
-    const vec = (raw as any)?.vec;
+    const vec = (raw as SuiOptionalValue)?.vec;
     if (Array.isArray(vec)) {
       if (vec.length === 0) return null;
       return parseOptionalU64(vec[0]);
@@ -67,7 +78,7 @@ function parseOptionalAddress(raw: unknown): string | null {
   if (raw === null || raw === undefined) return null;
   if (typeof raw === "string") return normalizeSuiAddress(raw);
   if (typeof raw === "object") {
-    const vec = (raw as any)?.vec;
+    const vec = (raw as SuiOptionalValue)?.vec;
     if (Array.isArray(vec)) {
       if (vec.length === 0) return null;
       return normalizeSuiAddress(vec[0]);
@@ -83,7 +94,7 @@ function parseOptionalString(raw: unknown): string | null {
     return value ? value : null;
   }
   if (typeof raw === "object") {
-    const vec = (raw as any)?.vec;
+    const vec = (raw as SuiOptionalValue)?.vec;
     if (Array.isArray(vec)) {
       if (vec.length === 0) return null;
       return parseOptionalString(vec[0]);
@@ -158,10 +169,74 @@ export function isFileFieldsDebugEnabled(): boolean {
   return FILE_FIELDS_DEBUG;
 }
 
-const fileFieldsMemoryCache = new Map<
-  string,
-  { value: any; expiresAt: number; touchedAt: number }
->();
+export class LruMap<V> {
+  private readonly max: number;
+  private readonly map = new Map<string, V>();
+
+  constructor(max: number) {
+    this.max = max;
+  }
+
+  get size(): number {
+    return this.map.size;
+  }
+
+  get(key: string): V | undefined {
+    const value = this.map.get(key);
+    if (value === undefined) return undefined;
+    // Move to end (most recently used) on access
+    this.map.delete(key);
+    this.map.set(key, value);
+    return value;
+  }
+
+  set(key: string, value: V): void {
+    this.map.delete(key);
+    this.map.set(key, value);
+    this.evictIfNeeded();
+  }
+
+  has(key: string): boolean {
+    return this.map.has(key);
+  }
+
+  clear(): void {
+    this.map.clear();
+  }
+
+  delete(key: string): boolean {
+    return this.map.delete(key);
+  }
+
+  /**
+   * Iterate entries from least-recently-used to most-recently-used.
+   * Supports for...of destructuring: for (const [key, value] of map)
+   */
+  *[Symbol.iterator](): IterableIterator<[string, V]> {
+    yield* this.map.entries();
+  }
+
+  entries(): IterableIterator<[string, V]> {
+    return this.map.entries();
+  }
+
+  keys(): IterableIterator<string> {
+    return this.map.keys();
+  }
+
+  private evictIfNeeded(): void {
+    while (this.map.size > this.max) {
+      const oldest = this.map.keys().next().value;
+      if (oldest !== undefined) {
+        this.map.delete(oldest);
+      }
+    }
+  }
+}
+
+const fileFieldsMemoryCache = new LruMap<{ value: any; expiresAt: number; touchedAt: number }>(
+  Math.floor(FILE_FIELDS_MEMORY_CACHE_MAX) || 5000,
+);
 
 function getMemoryFileFields(fileId: string): any | null {
   if (!Number.isFinite(FILE_FIELDS_MEMORY_CACHE_TTL_MS) || FILE_FIELDS_MEMORY_CACHE_TTL_MS <= 0) {
@@ -188,26 +263,15 @@ function setMemoryFileFields(fileId: string, fields: any) {
     expiresAt: now + FILE_FIELDS_MEMORY_CACHE_TTL_MS,
     touchedAt: now,
   });
-
-  const maxEntries =
-    Number.isFinite(FILE_FIELDS_MEMORY_CACHE_MAX) && FILE_FIELDS_MEMORY_CACHE_MAX > 0
-      ? Math.floor(FILE_FIELDS_MEMORY_CACHE_MAX)
-      : 5000;
-  if (fileFieldsMemoryCache.size <= maxEntries) return;
-
-  let over = fileFieldsMemoryCache.size - maxEntries;
-  const entries = [...fileFieldsMemoryCache.entries()].sort(
-    (a, b) => a[1].touchedAt - b[1].touchedAt,
-  );
-  for (const [k] of entries) {
-    if (over <= 0) break;
-    fileFieldsMemoryCache.delete(k);
-    over -= 1;
-  }
 }
 
 export function clearFileFieldsCache(fileId: string) {
   fileFieldsMemoryCache.delete(fileId);
+}
+
+/** @internal test-only hook — clears all cached file fields entries. */
+export function resetFileFieldsMemoryCacheForTests(): void {
+  fileFieldsMemoryCache.clear();
 }
 
 export function applyFileLookupHeaders(
@@ -269,12 +333,12 @@ export async function getFileFieldsCached(fileId: string): Promise<CachedFileFie
   if (
     !obj.data?.content ||
     obj.data.content.dataType !== "moveObject" ||
-    !isTrustedFileObjectType((obj.data as any).type)
+    !isTrustedFileObjectType(obj.data.content.type)
   ) {
     return { fields: null, source: null, postgresState };
   }
 
-  const fields = obj.data.content.fields as any;
+  const fields = obj.data.content.fields as Record<string, unknown>;
   setMemoryFileFields(fileId, fields);
   const normalized = normalizeFileFields(fields);
   if (normalized) {

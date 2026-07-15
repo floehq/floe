@@ -1,6 +1,6 @@
 import fs from "fs/promises";
 import path from "path";
-import { Readable } from "stream";
+import { Readable, Transform, type TransformCallback } from "stream";
 import crypto from "crypto";
 import type { FastifyBaseLogger } from "fastify";
 
@@ -31,9 +31,11 @@ import {
   normalizeFinalizeFailure,
   shouldPersistFinalizeFailure,
 } from "./finalize.shared.js";
-import { emitInfrastructureEvent } from "../events/infrastructure.events.js";
+import { emitAuditEvent, emitInfrastructureEvent } from "../events/infrastructure.events.js";
 
 const finalFilePath = (uploadId: string) => path.join(UploadConfig.tmpDir, `${uploadId}.bin`);
+
+const CHUNK_READ_CONCURRENCY = 4;
 
 const FINALIZE_LOCK_TTL_SECONDS = 15 * 60;
 const FINALIZE_LOCK_REFRESH_INTERVAL_MS = 60_000;
@@ -97,30 +99,102 @@ async function releaseFinalizeLockAtomic(params: {
   return Number(res) === 1;
 }
 
-function createChunkAssemblyStream(params: { uploadId: string; totalChunks: number }): Readable {
-  const iter = async function* () {
-    for (let i = 0; i < params.totalChunks; i++) {
-      const rs = chunkStore.openChunk(params.uploadId, i);
-      for await (const buf of rs) {
-        yield buf as Uint8Array;
-      }
-    }
-  };
-  return Readable.from(iter());
+/**
+ * A PassThrough-style Transform that computes a running SHA-256 hash
+ * as data flows through. After the stream completes (or on demand),
+ * call digest() to get the hex-encoded SHA-256.
+ *
+ * Used to tee the chunk assembly stream so we compute the upload
+ * checksum during the Walrus upload instead of reading chunks twice.
+ */
+class HashStream extends Transform {
+  readonly #hash: crypto.Hash;
+
+  constructor() {
+    super();
+    this.#hash = crypto.createHash("sha256");
+  }
+
+  _transform(chunk: Buffer, _enc: string, callback: TransformCallback) {
+    this.#hash.update(chunk);
+    callback(null, chunk);
+  }
+
+  digest(): string {
+    return this.#hash.digest("hex");
+  }
 }
 
-async function computeUploadChecksum(params: {
+function createChunkAssemblyStream(params: {
   uploadId: string;
   totalChunks: number;
-}): Promise<string> {
-  const hash = crypto.createHash("sha256");
-  for (let i = 0; i < params.totalChunks; i++) {
-    const rs = chunkStore.openChunk(params.uploadId, i);
-    for await (const buf of rs) {
-      hash.update(buf as Uint8Array);
-    }
-  }
-  return hash.digest("hex");
+  concurrency?: number;
+}): Readable {
+  const cq = params.concurrency ?? CHUNK_READ_CONCURRENCY;
+
+  return Readable.from(
+    (async function* () {
+      // Pre-allocate arrays by index so we can fill them out of order
+      const buffers: Buffer[][] = new Array(params.totalChunks);
+      const errors: Array<Error | null> = new Array(params.totalChunks);
+      const completions: Array<Promise<void>> = new Array(params.totalChunks);
+      let nextToStart = 0;
+
+      // AbortController ensures in-flight S3 reads from earlier chunks
+      // don't produce unhandled rejections when a later chunk errors.
+      const abortController = new AbortController();
+      const signal = abortController.signal;
+
+      const startRead = (index: number) => {
+        if (signal.aborted || index >= params.totalChunks) return;
+        const promise = new Promise<void>((resolve, reject) => {
+          const rs = chunkStore.openChunk(params.uploadId, index);
+          const bufs: Buffer[] = [];
+          buffers[index] = bufs;
+          rs.on("data", (c: Buffer) => bufs.push(c));
+          rs.on("end", resolve);
+          rs.on("error", (err: Error) => {
+            if (!signal.aborted) {
+              errors[index] = err;
+              reject(err);
+            }
+          });
+        });
+        completions[index] = promise;
+        // Suppress unhandled rejections: once abort fires, remaining
+        // in-flight reads resolve/reject silently.
+        promise.catch(() => {});
+      };
+
+      for (let i = 0; i < params.totalChunks; i++) {
+        // If a previous chunk triggered abort, stop immediately
+        if (signal.aborted) {
+          const firstError = errors.find((e) => e !== null);
+          throw firstError || new Error("STREAM_ABORTED");
+        }
+
+        // Ensure up to `cq` chunks are being fetched ahead of the current position
+        while (nextToStart < params.totalChunks && nextToStart < i + cq) {
+          startRead(nextToStart);
+          nextToStart++;
+        }
+
+        // Wait for this chunk to be available
+        await completions[i];
+        if (errors[i]) {
+          abortController.abort();
+          throw errors[i];
+        }
+
+        // Yield its data in order
+        for (const buf of buffers[i]) {
+          yield buf;
+        }
+        // Free memory
+        buffers[i] = [];
+      }
+    })(),
+  );
 }
 
 async function resolveReusableWalrusBlob(params: {
@@ -318,31 +392,16 @@ export async function finalizeUpload(
         throw new Error("INCOMPLETE_CHUNKS");
       }
 
-      const chunks = await chunkStore.listChunks(uploadId);
-      const set = new Set(chunks);
+      // Use Redis chunk index (uploadKeys.chunks) instead of calling
+      // S3 ListObjectsV2 — cheaper and sufficient for existence checks.
+      const chunkMembers = await redis.smembers<string[]>(uploadKeys.chunks(uploadId));
+      const chunkSet = new Set(chunkMembers.map(String));
       for (let i = 0; i < session.totalChunks; i++) {
-        if (!set.has(i)) {
+        if (!chunkSet.has(String(i))) {
           throw new Error("MISSING_CHUNKS");
         }
       }
-
-      checksum = await computeUploadChecksum({
-        uploadId,
-        totalChunks: session.totalChunks,
-      });
-      if (providedChecksum && checksum !== providedChecksum) {
-        throw new Error("CHECKSUM_MISMATCH");
-      }
     });
-
-    if (checksum && checksum !== meta?.checksum) {
-      await redis.hset(metaKey, { checksum });
-      await redis
-        .hset(uploadKeys.session(uploadId), {
-          checksum,
-        })
-        .catch(() => {});
-    }
 
     let blobId: string | null = meta?.blobId ?? null;
     let walrusObjectId: string | undefined = meta?.walrusObjectId ?? undefined;
@@ -359,31 +418,78 @@ export async function finalizeUpload(
     if (!blobId) {
       assertFinalizeLockHealthy();
       await refreshFinalizeLock();
+
+      // Track the most recently used HashStream so we can read the
+      // computed checksum after uploadToWalrusWithMetrics completes.
+      let lastHashStream: HashStream | null = null;
+
       const result = await runStage("walrus_publish", async () => {
         const reused = await resolveReusableWalrusBlob({
-          checksum,
+          checksum: providedChecksum,
           requestedEpochs: session.resolvedEpochs,
           log: context.log,
         });
         if (reused) {
-          return {
-            blobId: reused.blobId,
-            objectId: reused.blobObjectId,
-            endEpoch: reused.walrusEndEpoch,
-            source: reused.walrusSource,
-          };
+          // BUG 1 FIX: On the reuse path, verify the actual chunk data
+          // matches the claimed checksum by computing the SHA-256 from
+          // the stored chunks. If mismatch, fall through to the upload
+          // path instead of trusting providedChecksum blindly.
+          const computed = await new Promise<string>((resolve, reject) => {
+            const hs = new HashStream();
+            const assembly = createChunkAssemblyStream({
+              uploadId,
+              totalChunks: session.totalChunks,
+            }).pipe(hs);
+            const chunks: Buffer[] = [];
+            assembly.on("data", (c: Buffer) => chunks.push(c));
+            assembly.on("end", () => resolve(hs.digest()));
+            assembly.on("error", reject);
+          });
+          checksum = computed;
+
+          if (providedChecksum && computed !== providedChecksum) {
+            // Checksum mismatch — do NOT reuse the blob. Fall through
+            // to the upload path below so the actual data gets published.
+            context.log?.warn(
+              { uploadId, providedChecksum, computed },
+              "Reuse checksum mismatch; falling through to upload path",
+            );
+          } else {
+            return {
+              blobId: reused.blobId,
+              objectId: reused.blobObjectId,
+              endEpoch: reused.walrusEndEpoch,
+              source: reused.walrusSource,
+            };
+          }
         }
 
-        return uploadToWalrusWithMetrics({
+        // Upload path — compute SHA-256 while streaming to Walrus.
+        // Each streamFactory call creates a fresh HashStream so retries
+        // (internal to uploadToWalrusWithMetrics) don't pipe into a
+        // single consumed stream. lastHashStream captures the final
+        // (successful) attempt's hash.
+        const uploadResult = await uploadToWalrusWithMetrics({
           uploadId,
           sizeBytes: session.sizeBytes,
           epochs: session.resolvedEpochs,
-          streamFactory: () =>
-            createChunkAssemblyStream({
+          streamFactory: () => {
+            const hs = new HashStream();
+            lastHashStream = hs;
+            return createChunkAssemblyStream({
               uploadId,
               totalChunks: session.totalChunks,
-            }),
+            }).pipe(hs);
+          },
         });
+
+        checksum = lastHashStream!.digest();
+
+        if (providedChecksum && checksum !== providedChecksum) {
+          throw new Error("CHECKSUM_MISMATCH");
+        }
+
+        return uploadResult;
       });
 
       blobId = result.blobId;
@@ -411,6 +517,12 @@ export async function finalizeUpload(
         ...(walrusEndEpoch !== undefined ? { walrusEndEpoch: String(walrusEndEpoch) } : {}),
         ...(walrusSource ? { walrusSource } : {}),
       });
+
+      // Persist the computed checksum now that walrus_publish has produced it
+      if (checksum && checksum !== meta?.checksum) {
+        await redis.hset(metaKey, { checksum }).catch(() => {});
+        await redis.hset(uploadKeys.session(uploadId), { checksum }).catch(() => {});
+      }
     }
 
     if (!fileId) {
@@ -459,6 +571,7 @@ export async function finalizeUpload(
           status: "completed",
           fileId,
           blobId,
+          ...(checksum ? { checksum } : {}),
           sizeBytes: String(session.sizeBytes),
           completedAt: String(Date.now()),
           finalizeStage: "completed",
@@ -493,13 +606,23 @@ export async function finalizeUpload(
       mimeType: session.contentType ?? "application/octet-stream",
       walrusEndEpoch: walrusEndEpoch ?? null,
       createdAtMs: Date.now(),
-    }).catch(() => {});
+    }).catch((pgErr) => {
+      context.log?.warn(
+        { uploadId, fileId, blobId, err: pgErr },
+        "Failed to persist indexed file metadata to Postgres during finalize — Redis and Postgres are now divergent",
+      );
+    });
     if (walrusObjectId) {
       await upsertBlobObjectMapping({
         blobId,
         blobObjectId: walrusObjectId,
         checksum: checksum ?? null,
-      }).catch(() => {});
+      }).catch((pgErr) => {
+        context.log?.warn(
+          { uploadId, blobId, blobObjectId: walrusObjectId, err: pgErr },
+          "Failed to persist blob-object mapping to Postgres during finalize — Redis and Postgres are now divergent",
+        );
+      });
     }
 
     const cleanupStartedAt = Date.now();
@@ -567,6 +690,35 @@ export async function finalizeUpload(
         queueWaitMs: context.queueWaitMs ?? 0,
         walrusEndEpoch: walrusEndEpoch ?? null,
         walrusSource: walrusSource ?? null,
+        stageDurationsMs,
+      },
+    });
+
+    emitAuditEvent(context.log ?? console, {
+      action: "finalize_completed",
+      resource: `upload:${uploadId}`,
+      actor: {
+        authenticated: true,
+        method: "external",
+        subject: `system:finalize_worker`,
+        apiKeyId: null,
+        owner: session.owner ?? null,
+        tier: "authenticated",
+      },
+      before: {
+        status: "finalizing",
+      },
+      after: {
+        status: "completed",
+        fileId,
+        blobId,
+        walrusEndEpoch: walrusEndEpoch ?? null,
+        sizeBytes: session.sizeBytes,
+      },
+      metadata: {
+        uploadId,
+        attempt: context.attempt ?? 1,
+        queueWaitMs: context.queueWaitMs ?? 0,
         stageDurationsMs,
       },
     });
@@ -650,6 +802,32 @@ export async function finalizeUpload(
         failedStage: wrapped.finalizeStage ?? currentStage ?? "unknown",
         reasonCode: failure.reasonCode,
         retryable: failure.retryable,
+      },
+    });
+
+    emitAuditEvent(context.log ?? console, {
+      action: "finalize_failed",
+      resource: `upload:${uploadId}`,
+      actor: {
+        authenticated: true,
+        method: "external",
+        subject: `system:finalize_worker`,
+        apiKeyId: null,
+        owner: session.owner ?? null,
+        tier: "authenticated",
+      },
+      before: {
+        status: "finalizing",
+      },
+      after: null,
+      metadata: {
+        uploadId,
+        attempt: context.attempt ?? 1,
+        queueWaitMs: context.queueWaitMs ?? 0,
+        failedStage: wrapped.finalizeStage ?? currentStage ?? "unknown",
+        reasonCode: failure.reasonCode,
+        retryable: failure.retryable,
+        errorMessage: message.slice(0, 500),
       },
     });
 

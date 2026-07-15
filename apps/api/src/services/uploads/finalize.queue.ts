@@ -1,5 +1,6 @@
 import type { FastifyBaseLogger } from "fastify";
 
+import { parsePositiveIntEnv } from "../../utils/parseEnv.js";
 import { getRedis } from "../../state/redis.js";
 import { uploadKeys } from "../../state/keys.js";
 import { getSession } from "./session.js";
@@ -70,16 +71,6 @@ class LocalAsyncQueue {
       this.idleResolvers.shift()?.();
     }
   }
-}
-
-function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < min) {
-    throw new Error(`${name} must be an integer >= ${min}`);
-  }
-  return n;
 }
 
 const FINALIZE_CONCURRENCY = parsePositiveIntEnv("FLOE_FINALIZE_CONCURRENCY", 4);
@@ -323,6 +314,7 @@ async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
   const startedAt = Date.now();
   let timeoutHandle: NodeJS.Timeout | null = null;
   let timedOut = false;
+  let latestProcessPromise: Promise<void> | null = null;
   const redis = getRedis();
   const queuedAtRaw = await redis.hget<string>(uploadKeys.meta(uploadId), "finalizingQueuedAt");
   const queueWaitMs =
@@ -338,15 +330,13 @@ async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
 
   try {
     const processPromise = processFinalizeImpl({ uploadId, log, attempt, queueWaitMs });
+    latestProcessPromise = processPromise;
     activeFinalizeProcesses.add(processPromise);
-    void processPromise.then(
-      () => {
+    void processPromise
+      .finally(() => {
         activeFinalizeProcesses.delete(processPromise);
-      },
-      () => {
-        activeFinalizeProcesses.delete(processPromise);
-      },
-    );
+      })
+      .catch(() => {});
     void processPromise.then(
       () => {
         if (timedOut) {
@@ -479,6 +469,14 @@ async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
       timeoutHandle = null;
     }
     activeLocal.delete(uploadId);
+    if (timedOut && latestProcessPromise) {
+      // The process promise may never settle if the timeout already won the race.
+      // Remove it from activeFinalizeProcesses to prevent a zombie leak that
+      // would otherwise block stopUploadFinalizeWorker indefinitely.
+      // The .finally() on the promise would have handled this naturally, but
+      // after a timeout the .finally() may never fire.
+      activeFinalizeProcesses.delete(latestProcessPromise);
+    }
   }
 }
 
@@ -576,6 +574,10 @@ export const finalizeQueueTestHooks = {
       clearTimeout(timer);
     }
     retryTimers.clear();
+    if (drainTimer) {
+      clearInterval(drainTimer);
+      drainTimer = null;
+    }
     processFinalizeImpl = processFinalize;
     scheduleRetryImpl = scheduleRetry;
   },

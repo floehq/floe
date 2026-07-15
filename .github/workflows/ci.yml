@@ -7,11 +7,32 @@ on:
       - master
   pull_request:
 
+env:
+  # Shared test credentials
+  DATABASE_URL: postgresql://floe_test:floe_test@localhost:5432/floe_test
+  REDIS_URL: redis://localhost:6379
+  FLOE_S3_BUCKET: floe-test
+  FLOE_S3_REGION: us-east-1
+  FLOE_S3_ENDPOINT: http://localhost:9000
+  FLOE_S3_FORCE_PATH_STYLE: 1
+  FLOE_S3_ACCESS_KEY_ID: minioadmin
+  FLOE_S3_SECRET_ACCESS_KEY: minioadmin
+  UPLOAD_TMP_DIR: /tmp/floe-upload
+  FLOE_REDIS_PROVIDER: native
+  FLOE_API_KEY_STORE: postgres
+  FLOE_AUTH_PROVIDER: local
+  FLOE_ACCESS_POLICY: hybrid
+  FLOE_AUTH_MODE: hybrid
+  WALRUS_AGGREGATOR_URL: http://localhost:1
+  FLOE_WALRUS_PUBLISHER_BASE_URL: http://localhost:1
+  SUI_PACKAGE_ID: 0x0000000000000000000000000000000000000000000000000000000000000000
+  SUI_PRIVATE_KEY: suiprivkey0000000000000000000000000000000000000000000000000000000000
+
 jobs:
   api:
     name: Build and Test API
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
@@ -20,23 +41,113 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
+
+      - name: Start Redis
+        run: |
+          docker run -d --name floe-redis \
+            -p 6379:6379 \
+            --health-cmd "redis-cli ping" \
+            --health-interval 3s \
+            --health-timeout 2s \
+            --health-retries 10 \
+            redis:7-alpine
+
+      - name: Wait for Redis
+        run: |
+          for i in $(seq 1 20); do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' floe-redis 2>/dev/null || echo "starting")
+            echo "Attempt $i: Redis health = $STATUS"
+            if [ "$STATUS" = "healthy" ]; then
+              echo "Redis is ready!"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "Redis failed to become healthy"
+          docker logs floe-redis
+          exit 1
+
+      - name: Start PostgreSQL
+        run: |
+          docker run -d --name floe-postgres \
+            -p 5432:5432 \
+            -e POSTGRES_USER=floe_test \
+            -e POSTGRES_PASSWORD=floe_test \
+            -e POSTGRES_DB=floe_test \
+            --health-cmd "pg_isready -U floe_test" \
+            --health-interval 3s \
+            --health-timeout 2s \
+            --health-retries 10 \
+            postgres:16-alpine
+
+      - name: Wait for PostgreSQL
+        run: |
+          for i in $(seq 1 20); do
+            STATUS=$(docker inspect --format='{{.State.Health.Status}}' floe-postgres 2>/dev/null || echo "starting")
+            echo "Attempt $i: PostgreSQL health = $STATUS"
+            if [ "$STATUS" = "healthy" ]; then
+              echo "PostgreSQL is ready!"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "PostgreSQL failed to become healthy"
+          docker logs floe-postgres
+          exit 1
+
+      - name: Start MinIO
+        run: |
+          docker run -d --name floe-minio \
+            -p 9000:9000 \
+            -p 9001:9001 \
+            -e MINIO_ROOT_USER=minioadmin \
+            -e MINIO_ROOT_PASSWORD=minioadmin \
+            --entrypoint sh \
+            minio/minio:latest \
+            -c "mkdir -p /data/floe-test && minio server /data --console-address ':9001'"
+
+      - name: Wait for MinIO
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:9000/minio/health/live > /dev/null 2>&1; then
+              echo "MinIO is ready! (attempt $i)"
+              exit 0
+            fi
+            echo "Attempt $i: MinIO not ready yet..."
+            sleep 2
+          done
+          echo "MinIO failed to start"
+          docker logs floe-minio
+          exit 1
 
       - name: Install dependencies
         run: npm ci
 
       - name: Install Redis
-        run: sudo apt-get update && sudo apt-get install -y redis-server
-
-      - name: Verify redis-server is available
-        run: redis-server --version
+        run: |
+          sudo apt-get update && sudo apt-get install -y redis-server
+          sudo systemctl stop redis-server || true
 
       - name: Build API
         run: npm run build --workspace=apps/api
 
-      - name: Test API
+      - name: Run migration check against Postgres
+        run: npx tsx scripts/migration-check.mjs
+        env:
+          FLOE_POSTGRES_REQUIRED: "1"
+          NODE_ENV: test
+
+      - name: Test API (unit + integration against real services)
         run: npm test --workspace=apps/api
+        env:
+          FLOE_POSTGRES_REQUIRED: "1"
+          NODE_ENV: test
+
+      - name: Cleanup containers
+        if: always()
+        run: docker rm -f floe-redis floe-postgres floe-minio 2>/dev/null || true
 
   lint:
     name: Lint
@@ -50,7 +161,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -63,7 +174,6 @@ jobs:
     name: npm audit
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    continue-on-error: true
 
     steps:
       - name: Check out repository
@@ -72,7 +182,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
 
       - name: Install dependencies
@@ -85,7 +195,6 @@ jobs:
     name: Trivy (Docker image)
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
 
     steps:
       - name: Check out repository

@@ -51,9 +51,9 @@ test("walrus upload - uploadToWalrusOnce rejects epoch=0", async () => {
   try {
     const mod = await importFresh("../src/services/walrus/upload.js");
     try {
-      await mod.uploadToWalrusOnce(() => null as any, 0);
+      await mod.uploadToWalrusOnce(() => null, 0);
       assert.fail("Should have thrown");
-    } catch (err: any) {
+    } catch (err) {
       assert.ok(
         err.message.includes("INVALID_EPOCHS"),
         `Expected INVALID_EPOCHS, got: ${err.message}`,
@@ -75,9 +75,9 @@ test("walrus upload - uploadToWalrusOnce rejects negative epochs", async () => {
   try {
     const mod = await importFresh("../src/services/walrus/upload.js");
     try {
-      await mod.uploadToWalrusOnce(() => null as any, -5);
+      await mod.uploadToWalrusOnce(() => null, -5);
       assert.fail("Should have thrown");
-    } catch (err: any) {
+    } catch (err) {
       assert.ok(
         err.message.includes("INVALID_EPOCHS"),
         `Expected INVALID_EPOCHS, got: ${err.message}`,

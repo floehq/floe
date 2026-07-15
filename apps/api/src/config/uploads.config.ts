@@ -1,4 +1,5 @@
 import path from "path";
+import { parsePositiveIntEnv } from "../utils/parseEnv.js";
 
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
@@ -6,16 +7,6 @@ function requireEnv(name: string): string {
     throw new Error(`Missing required env: ${name}`);
   }
   return value;
-}
-
-function parsePositiveIntEnv(name: string, fallback: number, min = 1): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < min) {
-    throw new Error(`${name} must be an integer >= ${min}`);
-  }
-  return n;
 }
 
 export const UploadConfig = {

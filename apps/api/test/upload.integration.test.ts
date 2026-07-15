@@ -22,7 +22,7 @@ process.env.FLOE_CHUNK_MAX_BYTES = "8";
 process.env.FLOE_UPLOAD_SESSION_TTL_MS = "2000";
 process.env.WALRUS_AGGREGATOR_URL = "http://127.0.0.1:1";
 process.env.FLOE_FINALIZE_STATUS_POLL_MS = "2000";
-delete process.env.DATABASE_URL;
+process.env.FLOE_API_KEY_STORE = "env";
 
 type RedisModule = typeof import("../src/state/redis.ts");
 type UploadConfigModule = typeof import("../src/config/uploads.config.ts");
@@ -30,6 +30,7 @@ type SessionModule = typeof import("../src/services/uploads/session.ts");
 type UploadRoutesModule = typeof import("../src/routes/uploads.ts");
 type KeysModule = typeof import("../src/state/keys.ts");
 type StoreIndexModule = typeof import("../src/store/index.ts");
+type QueueModule = typeof import("../src/services/uploads/finalize.queue.ts");
 let redisProcess: ChildProcess | null = null;
 let redisModule: RedisModule;
 let uploadConfigModule: UploadConfigModule;
@@ -37,6 +38,7 @@ let sessionModule: SessionModule;
 let uploadRoutesModule: UploadRoutesModule;
 let keysModule: KeysModule;
 let storeIndexModule: StoreIndexModule;
+let queueModule: QueueModule;
 
 const log = {
   info() {},
@@ -48,7 +50,7 @@ const log = {
   child() {
     return this;
   },
-} as any;
+} as unknown as Record<string, (...args: never[]) => unknown>;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -80,8 +82,11 @@ function makeFilePart(buf: Buffer) {
   };
 }
 
-async function createRouteApp(customAuthProvider?: any) {
-  const handlers = new Map<string, (req: any, reply: any) => Promise<unknown> | unknown>();
+async function createRouteApp(customAuthProvider?: Record<string, unknown>) {
+  const handlers = new Map<
+    string,
+    (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown
+  >();
   const authProvider = {
     async authorizeUploadAccess() {
       return { allowed: true };
@@ -102,20 +107,23 @@ async function createRouteApp(customAuthProvider?: any) {
     },
     ...customAuthProvider,
   };
+  function resolveHandler(optsOrHandler: unknown, maybeHandler?: unknown): unknown {
+    return maybeHandler ?? optsOrHandler;
+  }
   const app = {
-    get(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
-      handlers.set(`GET ${path}`, handler);
+    get(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`GET ${path}`, resolveHandler(optsOrHandler, maybeHandler));
     },
-    post(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
-      handlers.set(`POST ${path}`, handler);
+    post(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`POST ${path}`, resolveHandler(optsOrHandler, maybeHandler));
     },
-    put(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
-      handlers.set(`PUT ${path}`, handler);
+    put(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`PUT ${path}`, resolveHandler(optsOrHandler, maybeHandler));
     },
-    delete(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
-      handlers.set(`DELETE ${path}`, handler);
+    delete(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`DELETE ${path}`, resolveHandler(optsOrHandler, maybeHandler));
     },
-  } as any;
+  } as unknown as Record<string, unknown>;
 
   await uploadRoutesModule.default(app);
 
@@ -162,6 +170,7 @@ async function createRouteApp(customAuthProvider?: any) {
         body: params.body,
         headers: params.headers ?? {},
         log,
+        childLogger: log,
         server: { authProvider },
         async file() {
           return params.filePart ?? null;
@@ -231,6 +240,7 @@ before(async () => {
   uploadRoutesModule = await import("../src/routes/uploads.ts");
   keysModule = await import("../src/state/keys.ts");
   storeIndexModule = await import("../src/store/index.ts");
+  queueModule = await import("../src/services/uploads/finalize.queue.ts");
 
   await redisModule.initRedis();
 });
@@ -381,6 +391,7 @@ test("create rejects reusing an idempotency key with a different checksum", asyn
 });
 
 afterEach(async () => {
+  queueModule?.finalizeQueueTestHooks?.reset();
   const redis = redisModule.getRedis();
   const { uploadKeys } = keysModule;
   const [gcIds, activeIds] = await Promise.all([

@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 
 process.env.FLOE_ACCESS_POLICY = "hybrid";
 process.env.FLOE_AUTH_PROVIDER = "local";
+// Force env-backed store so tests use in-memory keys from FLOE_API_KEYS_JSON
+// rather than querying a Postgres database.
+process.env.FLOE_API_KEY_STORE = "env";
+process.env.FLOE_ENFORCE_UPLOAD_OWNER = "false";
 process.env.FLOE_API_KEYS_JSON = JSON.stringify([
   {
     id: "upload-read-only",
@@ -39,21 +43,28 @@ const { externalAuthTestHooks } = await import("../src/services/auth/auth.extern
 const provider = createDefaultAuthProvider();
 const originalFetch = globalThis.fetch;
 
-function makeReq(headers: Record<string, string> = {}) {
+interface MockRequest {
+  headers: Record<string, string | undefined>;
+  ip: string;
+}
+
+function makeReq(headers: Record<string, string> = {}): MockRequest {
   return {
     headers,
     ip: "127.0.0.1",
-  } as any;
+  };
 }
 
 afterEach(() => {
-  (AuthModeConfig as any).mode = "hybrid";
-  (AuthProviderConfig as any).kind = "local";
-  (AuthTokenConfig as any).secret = undefined;
-  (AuthExternalConfig as any).verifyUrl = undefined;
-  (AuthExternalConfig as any).sharedSecret = undefined;
-  (AuthExternalConfig as any).cacheTtlMs = 5000;
-  (AuthApiKeyConfig as any).keys = JSON.parse(process.env.FLOE_API_KEYS_JSON!);
+  (AuthModeConfig as Record<string, unknown>)["mode"] = "hybrid";
+  (AuthProviderConfig as Record<string, unknown>)["kind"] = "local";
+  (AuthTokenConfig as Record<string, unknown>)["secret"] = undefined;
+  (AuthExternalConfig as Record<string, unknown>)["verifyUrl"] = undefined;
+  (AuthExternalConfig as Record<string, unknown>)["sharedSecret"] = undefined;
+  (AuthExternalConfig as Record<string, unknown>)["cacheTtlMs"] = 5000;
+  (AuthApiKeyConfig as Record<string, unknown>)["keys"] = JSON.parse(
+    process.env.FLOE_API_KEYS_JSON!,
+  );
   globalThis.fetch = originalFetch;
   externalAuthTestHooks.resetCache();
 });
@@ -107,7 +118,7 @@ test("hybrid mode keeps file reads public without an API key", async () => {
 });
 
 test("public mode allows unauthenticated upload mutations", async () => {
-  (AuthModeConfig as any).mode = "public";
+  (AuthModeConfig as Record<string, unknown>)["mode"] = "public";
   const req = makeReq();
 
   const result = await provider.authorizeUploadAccess({
@@ -119,7 +130,7 @@ test("public mode allows unauthenticated upload mutations", async () => {
 });
 
 test("private mode still requires authentication for file reads", async () => {
-  (AuthModeConfig as any).mode = "private";
+  (AuthModeConfig as Record<string, unknown>)["mode"] = "private";
   const req = makeReq();
 
   const result = await provider.authorizeFileAccess({
@@ -150,8 +161,8 @@ test("wildcard scopes retain full access", async () => {
 });
 
 test("none provider remains valid for public deployments", async () => {
-  (AuthModeConfig as any).mode = "public";
-  (AuthProviderConfig as any).kind = "none";
+  (AuthModeConfig as Record<string, unknown>)["mode"] = "public";
+  (AuthProviderConfig as Record<string, unknown>)["kind"] = "none";
 
   const result = await provider.authorizeUploadAccess({
     req: makeReq(),
@@ -162,9 +173,9 @@ test("none provider remains valid for public deployments", async () => {
 });
 
 test("token provider accepts signed delegated bearer tokens", async () => {
-  (AuthModeConfig as any).mode = "private";
-  (AuthProviderConfig as any).kind = "token";
-  (AuthTokenConfig as any).secret = "test-token-secret";
+  (AuthModeConfig as Record<string, unknown>)["mode"] = "private";
+  (AuthProviderConfig as Record<string, unknown>)["kind"] = "token";
+  (AuthTokenConfig as Record<string, unknown>)["secret"] = "test-token-secret";
   const token = signDelegatedAuthTokenForTests(
     {
       sub: "user_123",
@@ -185,7 +196,7 @@ test("token provider accepts signed delegated bearer tokens", async () => {
 });
 
 test("ops access requires authenticated scope even in public mode", async () => {
-  (AuthModeConfig as any).mode = "public";
+  (AuthModeConfig as Record<string, unknown>)["mode"] = "public";
 
   const result = await provider.authorizeOpsAccess({
     req: makeReq(),
@@ -197,7 +208,7 @@ test("ops access requires authenticated scope even in public mode", async () => 
 });
 
 test("ops read accepts ops:read and admin:uploads scopes", async () => {
-  (AuthApiKeyConfig as any).keys = [
+  (AuthApiKeyConfig as Record<string, unknown>)["keys"] = [
     {
       id: "ops-reader",
       secret: "ops-reader-secret",
@@ -226,7 +237,7 @@ test("ops read accepts ops:read and admin:uploads scopes", async () => {
 });
 
 test("ops admin requires admin:uploads", async () => {
-  (AuthApiKeyConfig as any).keys = [
+  (AuthApiKeyConfig as Record<string, unknown>)["keys"] = [
     {
       id: "ops-reader",
       secret: "ops-reader-secret",
@@ -256,10 +267,10 @@ test("ops admin requires admin:uploads", async () => {
 });
 
 test("external provider fails closed for protected routes when verification fails", async () => {
-  (AuthModeConfig as any).mode = "private";
-  (AuthProviderConfig as any).kind = "external";
-  (AuthExternalConfig as any).verifyUrl = "http://127.0.0.1:9/verify";
-  (AuthExternalConfig as any).timeoutMs = 50;
+  (AuthModeConfig as Record<string, unknown>)["mode"] = "private";
+  (AuthProviderConfig as Record<string, unknown>)["kind"] = "external";
+  (AuthExternalConfig as Record<string, unknown>)["verifyUrl"] = "http://127.0.0.1:9/verify";
+  (AuthExternalConfig as Record<string, unknown>)["timeoutMs"] = 50;
 
   const result = await provider.authorizeUploadAccess({
     req: makeReq({ authorization: "Bearer external-credential" }),
@@ -271,10 +282,11 @@ test("external provider fails closed for protected routes when verification fail
 });
 
 test("external provider fails closed for revoked SaaS api keys on protected routes", async () => {
-  (AuthModeConfig as any).mode = "private";
-  (AuthProviderConfig as any).kind = "external";
-  (AuthExternalConfig as any).verifyUrl = "https://auth.floe-private.test/verify";
-  (AuthExternalConfig as any).sharedSecret = "shared-secret";
+  (AuthModeConfig as Record<string, unknown>)["mode"] = "private";
+  (AuthProviderConfig as Record<string, unknown>)["kind"] = "external";
+  (AuthExternalConfig as Record<string, unknown>)["verifyUrl"] =
+    "https://auth.floe-private.test/verify";
+  (AuthExternalConfig as Record<string, unknown>)["sharedSecret"] = "shared-secret";
   globalThis.fetch = async () =>
     new Response(
       JSON.stringify({
@@ -303,9 +315,9 @@ test("external provider fails closed for revoked SaaS api keys on protected rout
 });
 
 test("token provider missing scope is denied by route authorization", async () => {
-  (AuthModeConfig as any).mode = "private";
-  (AuthProviderConfig as any).kind = "token";
-  (AuthTokenConfig as any).secret = "test-token-secret";
+  (AuthModeConfig as Record<string, unknown>)["mode"] = "private";
+  (AuthProviderConfig as Record<string, unknown>)["kind"] = "token";
+  (AuthTokenConfig as Record<string, unknown>)["secret"] = "test-token-secret";
   const token = signDelegatedAuthTokenForTests(
     {
       sub: "user_123",

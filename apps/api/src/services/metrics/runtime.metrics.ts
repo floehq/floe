@@ -1,3 +1,5 @@
+import { getAllSloStatuses, recordApiSli } from "../reliability/sli.js";
+
 type LabelValue = string | number | boolean;
 type Labels = Record<string, LabelValue>;
 
@@ -291,6 +293,87 @@ export function recordStreamCacheEviction(params: {
   });
 }
 
+export function observeCircuitBreakerState(params: {
+  name: string;
+  from: string;
+  to: string;
+}): void {
+  // Track state transitions as a counter so dashboards can chart open/close cycles
+  incrementCounter("floe_circuit_breaker_transitions_total", 1, {
+    name: params.name,
+    from: params.from,
+    to: params.to,
+  });
+
+  // Set a gauge for the current state (1 = closed, 2 = half_open, 3 = open)
+  const stateValue = params.to === "closed" ? 1 : params.to === "half_open" ? 2 : 3;
+  setGauge("floe_circuit_breaker_state", stateValue, { name: params.name });
+}
+
+export function observeCircuitBreakerOutcome(params: {
+  name: string;
+  state: string;
+  success: boolean;
+  durationMs: number;
+}): void {
+  const allowed = !(params.state === "open");
+  incrementCounter("floe_circuit_breaker_calls_total", 1, {
+    name: params.name,
+    allowed: String(allowed),
+    success: String(params.success),
+  });
+}
+
+function renderSliGauges(): string[] {
+  const lines: string[] = [];
+  const statuses = getAllSloStatuses();
+  for (const [name, status] of Object.entries(statuses)) {
+    const prefix = `floe_sli_${name}`;
+    // Sync SLI values from the sliding window into the gauge registry
+    setGauge(prefix + "_total", status.sli.total);
+    setGauge(prefix + "_good", status.sli.good);
+    setGauge(prefix + "_slow", status.sli.slow);
+    setGauge(prefix + "_success_rate", status.sli.successRate);
+    setGauge(prefix + "_within_budget_rate", status.sli.withinBudgetRate);
+    setGauge(prefix + "_error_budget_remaining", status.errorBudgetRemaining);
+    setGauge(prefix + "_burn_rate", status.burnRate);
+    setGauge(prefix + "_within_slo", status.withinSlo ? 1 : 0);
+    // Now render from the gauge registry
+    lines.push(...renderGauge(prefix + "_total", `SLI total requests for ${name}`));
+    lines.push(...renderGauge(prefix + "_good", `SLI successful requests for ${name}`));
+    lines.push(...renderGauge(prefix + "_slow", `SLI slow requests for ${name}`));
+    lines.push(...renderGauge(prefix + "_success_rate", `SLI success rate for ${name}`));
+    lines.push(
+      ...renderGauge(prefix + "_within_budget_rate", `SLI within budget rate for ${name}`),
+    );
+    lines.push(
+      ...renderGauge(prefix + "_error_budget_remaining", `SLI error budget remaining for ${name}`),
+    );
+    lines.push(...renderGauge(prefix + "_burn_rate", `SLI burn rate for ${name}`));
+    lines.push(...renderGauge(prefix + "_within_slo", `SLI within SLO indicator for ${name}`));
+  }
+  return lines;
+}
+
+/**
+ * Record HTTP request and update API SLI tracking.
+ * Called from the onResponse hook.
+ */
+export function recordHttpRequestAndSli(params: {
+  method: string;
+  route: string;
+  statusCode: number;
+  durationMs: number;
+}) {
+  recordHttpRequest(params);
+  const success = params.statusCode >= 200 && params.statusCode < 500;
+  recordApiSli(success, params.durationMs);
+}
+
+export function setWalrusConnectionPoolMetrics(params: { activeConnections: number }): void {
+  setGauge("floe_walrus_pool_active_connections", params.activeConnections);
+}
+
 export function recordUploadTotalDuration(params: {
   durationMs: number;
   outcome: "succeeded" | "failed";
@@ -400,6 +483,18 @@ export function renderPrometheusMetrics(): string {
       "floe_sui_finalize_duration_ms",
       "Sui metadata finalize duration in milliseconds",
     ),
+    ...renderGauge(
+      "floe_circuit_breaker_state",
+      "Circuit breaker state (1=closed, 2=half_open, 3=open)",
+    ),
+    ...renderCounter(
+      "floe_circuit_breaker_transitions_total",
+      "Circuit breaker state transitions by name and direction",
+    ),
+    ...renderCounter(
+      "floe_circuit_breaker_calls_total",
+      "Circuit breaker calls by name, allowed, and success",
+    ),
     ...renderCounter("floe_stream_read_errors_total", "Stream read errors by reason"),
     ...renderHistogram(
       "floe_metadata_lookup_duration_ms",
@@ -415,6 +510,7 @@ export function renderPrometheusMetrics(): string {
       "floe_upload_total_duration_ms",
       "Total upload duration from creation to finalization in milliseconds",
     ),
+    ...renderSliGauges(),
   );
 
   return `${lines.join("\n")}\n`;

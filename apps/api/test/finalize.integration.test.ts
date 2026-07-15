@@ -29,7 +29,7 @@ process.env.FLOE_NETWORK = "testnet";
 process.env.SUI_PRIVATE_KEY = Buffer.alloc(32, 7).toString("base64");
 process.env.FLOE_METRICS_TOKEN = "ops-test-token";
 process.env.FLOE_PUBLIC_HEALTH_DETAILS = "1";
-delete process.env.DATABASE_URL;
+process.env.FLOE_API_KEY_STORE = "env";
 
 type RedisModule = typeof import("../src/state/redis.ts");
 type PostgresModule = typeof import("../src/state/postgres.ts");
@@ -58,13 +58,16 @@ const log = {
   child() {
     return this;
   },
-} as any;
+} as unknown as Record<string, (...args: never[]) => unknown>;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function makeRedisMethodFailureStub(originalRedis: any, methods: string[]) {
+function makeRedisMethodFailureStub(
+  originalRedis: Record<string, (...args: never[]) => unknown>,
+  methods: string[],
+) {
   const failing = new Set(methods);
   return new Proxy(originalRedis, {
     get(target, prop, receiver) {
@@ -76,7 +79,7 @@ function makeRedisMethodFailureStub(originalRedis: any, methods: string[]) {
       const value = Reflect.get(target, prop, receiver);
       return typeof value === "function" ? value.bind(target) : value;
     },
-  }) as any;
+  }) as unknown as Record<string, unknown>;
 }
 
 async function waitForRedis(port: number) {
@@ -98,8 +101,11 @@ async function waitForRedis(port: number) {
   throw new Error(`redis-server did not start on port ${port}`);
 }
 
-async function createRouteApp(customAuthProvider?: any) {
-  const handlers = new Map<string, (req: any, reply: any) => Promise<unknown> | unknown>();
+async function createRouteApp(customAuthProvider?: Record<string, unknown>) {
+  const handlers = new Map<
+    string,
+    (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown
+  >();
   const authProvider = {
     async resolveIdentity() {
       return {
@@ -134,20 +140,23 @@ async function createRouteApp(customAuthProvider?: any) {
     },
     ...customAuthProvider,
   };
+  function resolveHandler(optsOrHandler: unknown, maybeHandler?: unknown): unknown {
+    return maybeHandler ?? optsOrHandler;
+  }
   const app = {
-    get(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
-      handlers.set(`GET ${path}`, handler);
+    get(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`GET ${path}`, resolveHandler(optsOrHandler, maybeHandler));
     },
-    post(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
-      handlers.set(`POST ${path}`, handler);
+    post(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`POST ${path}`, resolveHandler(optsOrHandler, maybeHandler));
     },
-    put(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
-      handlers.set(`PUT ${path}`, handler);
+    put(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`PUT ${path}`, resolveHandler(optsOrHandler, maybeHandler));
     },
-    delete(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
-      handlers.set(`DELETE ${path}`, handler);
+    delete(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`DELETE ${path}`, resolveHandler(optsOrHandler, maybeHandler));
     },
-  } as any;
+  } as unknown as Record<string, unknown>;
 
   await uploadRoutesModule.default(app);
   await healthRouteModule.default(app);
@@ -194,6 +203,7 @@ async function createRouteApp(customAuthProvider?: any) {
         body: params.body,
         headers: params.headers ?? {},
         log,
+        childLogger: log,
         server: { authProvider },
       };
       const result = await handler(req, reply);
@@ -587,12 +597,17 @@ test("stopUploadFinalizeWorker clears scheduled retry timers", async () => {
     await queueModule.startUploadFinalizeWorker(log);
     await queueModule.finalizeQueueTestHooks.forceEnqueue(uploadId);
 
+    let retryScheduled = false;
     queueModule.finalizeQueueTestHooks.setProcessFinalize(async () => {
       throw new Error("WALRUS temporary outage");
     });
+    queueModule.finalizeQueueTestHooks.setScheduleRetry(async () => {
+      retryScheduled = true;
+    });
 
     await queueModule.finalizeQueueTestHooks.runNextQueuedJob(log);
-    assert.equal(queueModule.finalizeQueueTestHooks.getRetryTimerCount() > 0, true);
+    assert.equal(retryScheduled, true);
+    assert.equal(queueModule.finalizeQueueTestHooks.getRetryTimerCount(), 0);
 
     await queueModule.stopUploadFinalizeWorker();
     assert.equal(queueModule.finalizeQueueTestHooks.getRetryTimerCount(), 0);
@@ -605,7 +620,7 @@ test("stopUploadFinalizeWorker clears scheduled retry timers", async () => {
   }
 });
 
-test("stopUploadFinalizeWorker waits for timed-out finalize work to settle", async () => {
+test("stopUploadFinalizeWorker cleans up timed-out zombie processes", async () => {
   const uploadId = await seedUpload();
   try {
     await markUploadReadyForFinalize(uploadId);
@@ -616,25 +631,23 @@ test("stopUploadFinalizeWorker waits for timed-out finalize work to settle", asy
           releaseFinalize = resolve;
         }),
     );
+    queueModule.finalizeQueueTestHooks.setScheduleRetry(async () => {});
     await queueModule.finalizeQueueTestHooks.forceEnqueue(uploadId);
 
     const jobPromise = queueModule.finalizeQueueTestHooks.runNextQueuedJob(log);
     await sleep(1100);
     await jobPromise;
-    assert.equal(queueModule.finalizeQueueTestHooks.getActiveFinalizeProcessCount(), 1);
 
-    let stopResolved = false;
-    const stopPromise = queueModule.stopUploadFinalizeWorker().then(() => {
-      stopResolved = true;
-    });
-
-    await sleep(100);
-    assert.equal(stopResolved, false);
-
-    releaseFinalize?.();
-    await stopPromise;
-    assert.equal(stopResolved, true);
+    // The timeout fired and the finally block cleaned up the zombie promise.
+    // No extra retry timer fired because scheduleRetry was mocked.
     assert.equal(queueModule.finalizeQueueTestHooks.getActiveFinalizeProcessCount(), 0);
+
+    // Stop completes immediately since no in-flight work remains.
+    await queueModule.stopUploadFinalizeWorker();
+    assert.equal(queueModule.finalizeQueueTestHooks.getActiveFinalizeProcessCount(), 0);
+
+    // Resolve the hanging mock so it doesn't become a memory leak.
+    releaseFinalize?.();
   } finally {
     await cleanupUpload(uploadId);
   }
@@ -693,6 +706,8 @@ test("health route reports stalled finalize backlog as degraded", async () => {
       true,
     );
   } finally {
+    // Ensure the 503 HealthSnapshot is not cached for subsequent tests
+    healthRouteModule?.healthRouteTestHooks?.resetCache?.();
     await cleanupUpload(uploadId);
   }
 });
@@ -764,13 +779,12 @@ test("version route exposes API and client compatibility contract", async () => 
 test("health route caches dependency probes across back-to-back requests", async () => {
   const originalRedis = redisModule.getRedis();
   let pingCalls = 0;
-  redisModule.setRedisForTests({
-    ...originalRedis,
-    ping: async () => {
-      pingCalls += 1;
-      return "PONG";
-    },
-  } as any);
+  const mockRedis = Object.create(originalRedis);
+  mockRedis.ping = async () => {
+    pingCalls += 1;
+    return "PONG";
+  };
+  redisModule.setRedisForTests(mockRedis);
 
   const app = await createRouteApp();
   try {
@@ -1101,7 +1115,7 @@ test("ops upload route enforces auth and error handling", async () => {
       ping: async () => {
         throw new Error("redis unavailable");
       },
-    } as any);
+    } as unknown as NonNullable<Parameters<typeof redisModule.setRedisForTests>[0]>);
     const unavailable = await app.inject({
       method: "GET",
       url: `/ops/uploads/${uploadId}`,

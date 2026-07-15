@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim AS deps
+FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS deps
 
 WORKDIR /app
 
@@ -20,17 +20,16 @@ RUN npm prune --omit=dev --workspaces
 # CVEs for packages that were already removed by npm prune.
 RUN rm -f node_modules/.package-lock.json
 
-FROM node:20-bookworm-slim AS runtime
+FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS runtime
 
 # Fix OS-level CVEs in final image — unqualified upgrade catches all
 # available Debian security patches without needing to hand-list packages.
 RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
 
-# Upgrade npm so its bundled transitive dependencies (cross-spawn, glob,
-# minimatch, sigstore, tar) no longer trigger HIGH-severity Trivy findings.
-# node:20-bookworm-slim ships npm 10.8.2, which bundles vulnerable versions
-# of these packages in /usr/local/lib/node_modules/npm/node_modules/.
-# npm 11 is the latest major that supports Node 20 (npm 12 requires Node 22+).
+# npm 11.x bundled with Node 24 (11.16.0) is recent enough that the
+# cross-spawn/minimatch CVEs that forced an upgrade from Node 20's npm
+# 10.8.2 are already resolved. Keep the upgrade line defensive in case
+# a newer patch fixes additional bundle CVEs that Trivy flags.
 RUN npm install -g npm@11 && rm -rf /root/.npm
 
 ENV NODE_ENV=production

@@ -1,3 +1,4 @@
+import { parseBoolEnv } from "../utils/parseEnv.js";
 import { createRequire } from "module";
 import type { FastifyBaseLogger } from "fastify";
 
@@ -17,14 +18,6 @@ function loadAwsS3(): AwsS3Module {
       "S3 chunk store requires @aws-sdk/client-s3. Install it with: npm install --workspace=apps/api @aws-sdk/client-s3",
     );
   }
-}
-
-function parseBoolEnv(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  if (raw === "1" || raw.toLowerCase() === "true") return true;
-  if (raw === "0" || raw.toLowerCase() === "false") return false;
-  throw new Error(`${name} must be one of: 1, 0, true, false`);
 }
 
 function buildS3Client() {
@@ -56,6 +49,62 @@ function buildS3Client() {
     HeadBucketCommand: aws.HeadBucketCommand,
     CreateBucketCommand: aws.CreateBucketCommand,
   };
+}
+
+export type S3DependencyHealth = {
+  configured: boolean;
+  ok: boolean | null;
+  latencyMs: number | null;
+  status: "healthy" | "unavailable" | "disabled";
+};
+
+/**
+ * Lightweight S3 liveness check — issues a HeadBucket request and
+ * returns whether the bucket is reachable.
+ */
+export async function checkS3Health(): Promise<S3DependencyHealth> {
+  const mode = (process.env.FLOE_CHUNK_STORE_MODE ?? "s3").trim().toLowerCase();
+  if (mode !== "s3") {
+    return {
+      configured: false,
+      ok: null,
+      latencyMs: null,
+      status: "disabled",
+    };
+  }
+
+  const bucket = (process.env.FLOE_S3_BUCKET ?? "").trim();
+  if (!bucket) {
+    return {
+      configured: false,
+      ok: null,
+      latencyMs: null,
+      status: "disabled",
+    };
+  }
+
+  const start = Date.now();
+  try {
+    const { client, HeadBucketCommand } = buildS3Client();
+    await client.send(
+      new HeadBucketCommand({
+        Bucket: bucket,
+      }),
+    );
+    return {
+      configured: true,
+      ok: true,
+      latencyMs: Date.now() - start,
+      status: "healthy",
+    };
+  } catch {
+    return {
+      configured: true,
+      ok: false,
+      latencyMs: Date.now() - start,
+      status: "unavailable",
+    };
+  }
 }
 
 export function isS3BucketMissingError(err: unknown): boolean {

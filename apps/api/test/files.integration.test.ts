@@ -9,7 +9,10 @@ process.env.SUI_PRIVATE_KEY = `[${new Array(32).fill(0).join(",")}]`;
 process.env.SUI_PACKAGE_ID = "0x2";
 process.env.WALRUS_AGGREGATOR_URL = "http://127.0.0.1:1";
 process.env.UPLOAD_TMP_DIR = "/tmp/floe-test-upload";
-delete process.env.DATABASE_URL;
+process.env.FLOE_ENFORCE_UPLOAD_OWNER = "false";
+// Keep DATABASE_URL from the environment (needed for auth.config.ts module-level
+// initialization when FLOE_API_KEY_STORE=postgres is set globally in CI).
+// Tests that need a specific Postgres state use postgresModule.setPostgresForTests().
 
 type FilesRouteModule = typeof import("../src/routes/files.ts") & {
   getBlobExistenceCacheForTests: () => Map<string, number>;
@@ -17,13 +20,14 @@ type FilesRouteModule = typeof import("../src/routes/files.ts") & {
 type PostgresModule = typeof import("../src/state/postgres.ts");
 type SuiModule = typeof import("../src/state/sui.ts");
 type StreamCacheModule = typeof import("../src/services/stream/stream.cache.ts");
+type ReadModelModule = typeof import("../src/services/files/file.read-model.ts");
 
 let filesRouteModule: FilesRouteModule;
 let postgresModule: PostgresModule;
 let suiModule: SuiModule;
 let streamCacheModule: StreamCacheModule;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let originalGetObject: any;
+let readModelModule: ReadModelModule;
+let originalGetObject: (...args: never[]) => Promise<unknown>;
 let walrusFetchCallCount = 0;
 const walrusSamples = new Map<string, Uint8Array>();
 
@@ -54,6 +58,7 @@ async function mockSuiFile(fields?: Parameters<typeof buildFileFields>[0]) {
       type: "0x2::file::FileMeta",
       content: {
         dataType: "moveObject",
+        type: "0x2::file::FileMeta",
         fields: buildFileFields(fields),
       },
     },
@@ -82,7 +87,7 @@ const log = {
   child() {
     return this;
   },
-} as any;
+} as unknown as Record<string, (...args: never[]) => unknown>;
 
 function parseRangeHeader(
   rangeHeader: string | null | undefined,
@@ -102,8 +107,11 @@ function parseRangeHeader(
   };
 }
 
-async function createRouteApp(customAuthProvider?: any) {
-  const handlers = new Map<string, (req: any, reply: any) => Promise<unknown> | unknown>();
+async function createRouteApp(customAuthProvider?: Record<string, unknown>) {
+  const handlers = new Map<
+    string,
+    (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown
+  >();
   const authProvider = {
     async authorizeFileAccess() {
       return { allowed: true };
@@ -124,23 +132,35 @@ async function createRouteApp(customAuthProvider?: any) {
     },
     ...customAuthProvider,
   };
+  function resolveHandler(optsOrHandler: unknown, maybeHandler?: unknown): unknown {
+    return maybeHandler ?? optsOrHandler;
+  }
   const app = {
-    get(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
-      handlers.set(`GET ${path}`, handler);
+    get(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`GET ${path}`, resolveHandler(optsOrHandler, maybeHandler));
     },
-    post(path: string, handler: (req: any, reply: any) => Promise<unknown> | unknown) {
-      handlers.set(`POST ${path}`, handler);
+    post(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`POST ${path}`, resolveHandler(optsOrHandler, maybeHandler));
+    },
+    put(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`PUT ${path}`, resolveHandler(optsOrHandler, maybeHandler));
+    },
+    delete(path: string, optsOrHandler: unknown, maybeHandler?: unknown) {
+      handlers.set(`DELETE ${path}`, resolveHandler(optsOrHandler, maybeHandler));
     },
     route(definition: {
       method: string[];
       url: string;
-      handler: (req: any, reply: any) => Promise<unknown> | unknown;
+      handler: (
+        req: Record<string, unknown>,
+        reply: Record<string, unknown>,
+      ) => Promise<unknown> | unknown;
     }) {
       for (const method of definition.method) {
         handlers.set(`${method} ${definition.url}`, definition.handler);
       }
     },
-  } as any;
+  } as unknown as Record<string, unknown>;
 
   await filesRouteModule.filesRoutes(app);
 
@@ -191,6 +211,7 @@ async function createRouteApp(customAuthProvider?: any) {
         headers: params.headers ?? {},
         body: params.body,
         log,
+        childLogger: log,
         server: { authProvider },
         raw: {
           once() {},
@@ -216,6 +237,7 @@ before(async () => {
   postgresModule = await import("../src/state/postgres.ts");
   suiModule = await import("../src/state/sui.ts");
   streamCacheModule = await import("../src/services/stream/stream.cache.ts");
+  readModelModule = await import("../src/services/files/file.read-model.ts");
   const client = suiModule.getSuiClient();
   originalGetObject = client.getObject.bind(client);
   walrusFetchCallCount = 0;
@@ -247,13 +269,16 @@ before(async () => {
 });
 
 afterEach(() => {
-  delete process.env.DATABASE_URL;
+  // Keep DATABASE_URL from the environment (needed for auth.config.ts module-level
+  // initialization when FLOE_API_KEY_STORE=postgres is set globally in CI).
+  // Tests that need a specific Postgres state use postgresModule.setPostgresForTests().
   delete process.env.FLOE_PUBLIC_STREAM_BASE_URL;
   postgresModule.setPostgresForTests(null, false);
   suiModule.getSuiClient().getObject = originalGetObject;
   walrusSamples.clear();
-  // Clear in-memory blob existence cache between tests
+  // Clear in-memory caches between tests
   filesRouteModule.getBlobExistenceCacheForTests().clear();
+  readModelModule.resetFileFieldsMemoryCacheForTests();
   return fs.rm(process.env.UPLOAD_TMP_DIR!, { recursive: true, force: true });
 });
 
@@ -273,6 +298,7 @@ test("metadata route exposes degraded postgres fallback when Sui is used", async
       type: "0x2::file::FileMeta",
       content: {
         dataType: "moveObject",
+        type: "0x2::file::FileMeta",
         fields: {
           blob_id: "blob-1",
           size_bytes: "128",
@@ -356,6 +382,7 @@ test("manifest route exposes degraded postgres fallback headers", async () => {
       type: "0x2::file::FileMeta",
       content: {
         dataType: "moveObject",
+        type: "0x2::file::FileMeta",
         fields: {
           blob_id: "blob-3",
           size_bytes: "512",
@@ -502,7 +529,7 @@ test("STREAM_CACHE_MIN_FREE_DISK_FRACTION is removed (only fixed byte floor rema
   // The new code only checks the fixed STREAM_CACHE_MIN_FREE_DISK_BYTES floor.
   const policyModule = await import("../src/services/stream/stream.cache.policy.js");
   assert.equal(
-    (policyModule as any).STREAM_CACHE_MIN_FREE_DISK_FRACTION,
+    (policyModule as Record<string, unknown>).STREAM_CACHE_MIN_FREE_DISK_FRACTION,
     undefined,
     "STREAM_CACHE_MIN_FREE_DISK_FRACTION must be removed from policy exports",
   );
@@ -637,7 +664,7 @@ test("head stream route reflects valid range headers without streaming a body", 
   assert.equal(res.statusCode, 206);
   assert.equal(res.headers["content-range"], "bytes 2-5/10");
   assert.equal(res.headers["content-length"], "4");
-  assert.equal((res.json() as any).payload, undefined);
+  assert.equal((res.json() as Record<string, unknown>).payload, undefined);
 });
 
 test("metadata and manifest expose public streamUrl when configured", async () => {
@@ -647,6 +674,7 @@ test("metadata and manifest expose public streamUrl when configured", async () =
       type: "0x2::file::FileMeta",
       content: {
         dataType: "moveObject",
+        type: "0x2::file::FileMeta",
         fields: {
           blob_id: "blob-public-url",
           size_bytes: "128",
@@ -702,7 +730,7 @@ test("metadata rejects authenticated keys missing files:read scope", async () =>
     routePath: "/v1/files/:fileId/metadata",
     params: { fileId: "0x2222222222222222222222222222222222222222222222222222222222222222" },
   });
-  const body = res.json() as any;
+  const body = res.json() as Record<string, unknown>;
 
   assert.equal(res.statusCode, 403);
   assert.equal(body.error.code, "INSUFFICIENT_SCOPE");
@@ -718,6 +746,7 @@ test("metadata auth precheck rejects before file lookup", async () => {
         type: "0x2::file::FileMeta",
         content: {
           dataType: "moveObject",
+          type: "0x2::file::FileMeta",
           fields: buildFileFields(),
         },
       },
@@ -744,7 +773,7 @@ test("metadata auth precheck rejects before file lookup", async () => {
     routePath: "/v1/files/:fileId/metadata",
     params: { fileId },
   });
-  const body = res.json() as any;
+  const body = res.json() as Record<string, unknown>;
 
   assert.equal(res.statusCode, 401);
   assert.equal(body.error.code, "AUTH_REQUIRED");
@@ -774,7 +803,7 @@ test("metadata owner mismatch is masked as file not found", async () => {
     routePath: "/v1/files/:fileId/metadata",
     params: { fileId },
   });
-  const body = res.json() as any;
+  const body = res.json() as Record<string, unknown>;
 
   assert.equal(res.statusCode, 404);
   assert.equal(body.error.code, "FILE_NOT_FOUND");
@@ -790,7 +819,7 @@ test("metadata invalid metadata does not inherit public cache headers", async ()
     routePath: "/v1/files/:fileId/metadata",
     params: { fileId },
   });
-  const body = res.json() as any;
+  const body = res.json() as Record<string, unknown>;
 
   assert.equal(res.statusCode, 502);
   assert.equal(body.error.code, "INVALID_FILE_METADATA");
@@ -803,6 +832,7 @@ test("metadata rejects move objects outside the trusted file package", async () 
       type: "0x2::other::FileMeta",
       content: {
         dataType: "moveObject",
+        type: "0x2::other::FileMeta",
         fields: buildFileFields(),
       },
     },
@@ -815,7 +845,7 @@ test("metadata rejects move objects outside the trusted file package", async () 
     routePath: "/v1/files/:fileId/metadata",
     params: { fileId },
   });
-  const body = res.json() as any;
+  const body = res.json() as Record<string, unknown>;
 
   assert.equal(res.statusCode, 404);
   assert.equal(body.error.code, "FILE_NOT_FOUND");
@@ -842,7 +872,7 @@ test("stream auth denial does not inherit public cache headers", async () => {
     routePath: "/v1/files/:fileId/stream",
     params: { fileId },
   });
-  const body = res.json() as any;
+  const body = res.json() as Record<string, unknown>;
 
   assert.equal(res.statusCode, 401);
   assert.equal(body.error.code, "AUTH_REQUIRED");
@@ -1163,8 +1193,8 @@ test("teeCachedStreamBlob logs write failure via optional log param", async () =
 
   const loggedErrors: string[] = [];
   const customLog = {
-    warn: (...args: any[]) => {
-      const errObj = args[0] as any;
+    warn: (...args: unknown[]) => {
+      const errObj = args[0] as Record<string, unknown>;
       if (errObj?.err?.message) {
         loggedErrors.push(errObj.err.message);
       }

@@ -10,8 +10,11 @@ export async function getWalrusBlobState(blobObjectId: string): Promise<WalrusBl
     options: { showContent: true },
   });
 
-  const fields = (updatedObj.data?.content as any)?.fields;
-  const endEpoch = fields?.storage?.fields?.end_epoch;
+  const contentFields = (
+    updatedObj?.data?.content as { fields?: Record<string, unknown> } | undefined
+  )?.fields;
+  const storageFields = contentFields?.storage as { fields?: Record<string, unknown> } | undefined;
+  const endEpoch = storageFields?.fields?.end_epoch;
 
   return {
     endEpoch:

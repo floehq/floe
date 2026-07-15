@@ -15,6 +15,9 @@ export interface WalrusRenewResult {
   endEpoch: number;
 }
 
+const WALRUS_RENEW_CACHE_TTL_MS = 10_000;
+const renewResultCache = new Map<string, { result: WalrusRenewResult; expiresAt: number }>();
+
 const execFileAsync = promisify(execFile);
 const WALRUS_CLI_BIN = (process.env.FLOE_WALRUS_CLI_BIN ?? "walrus").trim();
 const WALRUS_CLI_WALLET = process.env.FLOE_WALRUS_CLI_WALLET?.trim() || undefined;
@@ -37,6 +40,12 @@ function defaultWalrusCliConfigPath(): string | undefined {
  * with the installed Walrus client configuration.
  */
 export async function renewWalrusBlob(params: WalrusRenewParams): Promise<WalrusRenewResult> {
+  const cacheKey = `${params.blobObjectId}:${params.epochs}`;
+  const cached = renewResultCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.result;
+  }
+
   const args = [
     "extend",
     "--blob-obj-id",
@@ -58,8 +67,12 @@ export async function renewWalrusBlob(params: WalrusRenewParams): Promise<Walrus
 
     const state = await getWalrusBlobState(params.blobObjectId);
     const endEpoch = state.endEpoch ?? 0;
-
-    return { endEpoch: Number(endEpoch) };
+    const result: WalrusRenewResult = { endEpoch: Number(endEpoch) };
+    renewResultCache.set(cacheKey, {
+      result,
+      expiresAt: Date.now() + WALRUS_RENEW_CACHE_TTL_MS,
+    });
+    return result;
   } catch (err: any) {
     const detail = err?.stderr || err?.stdout || err?.message || "unknown";
     throw new Error(`WALRUS_RENEW_FAILED:${String(detail).slice(0, 1000)}`);

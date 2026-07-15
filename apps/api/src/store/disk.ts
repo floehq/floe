@@ -1,4 +1,5 @@
-import fs from "fs";
+import fs from "fs/promises";
+import { createWriteStream, createReadStream } from "fs";
 import path from "path";
 import crypto from "crypto";
 import { pipeline } from "stream/promises";
@@ -47,7 +48,7 @@ export class DiskChunkStore implements ChunkStore {
     expectedSize: number,
     isLastChunk: boolean,
   ): Promise<void> {
-    const stat = await fs.promises.stat(finalPath);
+    const stat = await fs.stat(finalPath);
     if (isLastChunk) {
       if (stat.size <= 0 || stat.size > expectedSize) {
         throw new Error("INVALID_LAST_CHUNK_SIZE");
@@ -57,7 +58,7 @@ export class DiskChunkStore implements ChunkStore {
     }
 
     const hash = crypto.createHash("sha256");
-    await pipeline(fs.createReadStream(finalPath), hash);
+    await pipeline(createReadStream(finalPath), hash);
     const actualHash = hash.digest("hex");
     if (actualHash !== expectedHash.toLowerCase()) {
       throw new Error("HASH_MISMATCH");
@@ -76,10 +77,14 @@ export class DiskChunkStore implements ChunkStore {
     const finalPath = this.chunkPath(uploadId, index);
     const tempPath = `${finalPath}.tmp`;
 
-    fs.mkdirSync(dir, { recursive: true });
+    await fs.mkdir(dir, { recursive: true });
 
     // If the final chunk already exists, treat this as idempotent.
-    if (fs.existsSync(finalPath)) {
+    const finalExists = await fs.stat(finalPath).then(
+      () => true,
+      () => false,
+    );
+    if (finalExists) {
       await this.verifyExistingChunk(finalPath, expectedHash, expectedSize, isLastChunk);
       return { alreadyExisted: true };
     }
@@ -87,26 +92,30 @@ export class DiskChunkStore implements ChunkStore {
     const hash = crypto.createHash("sha256");
     const validator = createValidationStream(expectedSize, hash);
 
-    let ws: fs.WriteStream | null = null;
+    let ws: import("fs").WriteStream | null = null;
 
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        ws = fs.createWriteStream(tempPath, { flags: "wx" });
+        ws = createWriteStream(tempPath, { flags: "wx" });
         break;
       } catch (err: any) {
         if (err.code !== "EEXIST") throw err;
 
         // Another writer may be in progress, or a previous attempt crashed.
-        if (fs.existsSync(finalPath)) {
+        const finalExists2 = await fs.stat(finalPath).then(
+          () => true,
+          () => false,
+        );
+        if (finalExists2) {
           await this.verifyExistingChunk(finalPath, expectedHash, expectedSize, isLastChunk);
           return { alreadyExisted: true };
         }
 
         try {
-          const st = fs.statSync(tempPath);
+          const st = await fs.stat(tempPath);
           const isStale = Date.now() - st.mtimeMs > STALE_TMP_MS;
           if (isStale && attempt === 0) {
-            fs.rmSync(tempPath, { force: true });
+            await fs.rm(tempPath, { force: true });
             continue;
           }
         } catch {
@@ -129,7 +138,7 @@ export class DiskChunkStore implements ChunkStore {
         throw new Error("HASH_MISMATCH");
       }
 
-      const stat = fs.statSync(tempPath);
+      const stat = await fs.stat(tempPath);
 
       if (isLastChunk) {
         if (stat.size <= 0 || stat.size > expectedSize) {
@@ -141,17 +150,17 @@ export class DiskChunkStore implements ChunkStore {
         }
       }
 
-      fs.renameSync(tempPath, finalPath);
+      await fs.rename(tempPath, finalPath);
 
       try {
-        fs.utimesSync(dir, new Date(), new Date());
+        await fs.utimes(dir, new Date(), new Date());
       } catch {
         /* empty */
       }
       return { alreadyExisted: false };
     } catch (err) {
       try {
-        fs.rmSync(tempPath, { force: true });
+        await fs.rm(tempPath, { force: true });
       } catch {
         /* empty */
       }
@@ -167,29 +176,37 @@ export class DiskChunkStore implements ChunkStore {
   }
 
   async hasChunk(uploadId: string, index: number): Promise<boolean> {
-    return fs.existsSync(this.chunkPath(uploadId, index));
+    const path = this.chunkPath(uploadId, index);
+    return await fs.stat(path).then(
+      () => true,
+      () => false,
+    );
   }
 
   async listChunks(uploadId: string): Promise<number[]> {
     const dir = this.dir(uploadId);
-    if (!fs.existsSync(dir)) return [];
+    const dirExists = await fs.stat(dir).then(
+      () => true,
+      () => false,
+    );
+    if (!dirExists) return [];
 
-    return fs
-      .readdirSync(dir)
+    const entries = await fs.readdir(dir);
+    return entries
       .filter((name) => /^\d+$/.test(name))
       .map(Number)
       .sort((a, b) => a - b);
   }
 
   openChunk(uploadId: string, index: number): Readable {
-    return fs.createReadStream(this.chunkPath(uploadId, index));
+    return createReadStream(this.chunkPath(uploadId, index));
   }
 
   async removeChunk(uploadId: string, index: number): Promise<void> {
-    fs.rmSync(this.chunkPath(uploadId, index), { force: true });
+    await fs.rm(this.chunkPath(uploadId, index), { force: true });
   }
 
   async cleanup(uploadId: string): Promise<void> {
-    fs.rmSync(this.dir(uploadId), { recursive: true, force: true });
+    await fs.rm(this.dir(uploadId), { recursive: true, force: true });
   }
 }

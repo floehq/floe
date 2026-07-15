@@ -1,16 +1,37 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { Readable } from "node:stream";
 import { createHash } from "node:crypto";
 
 import { S3ChunkStore } from "../src/store/s3.ts";
 
+let envTmpDir: string | undefined;
+let benchTmpDir: string;
+
+test.before(() => {
+  envTmpDir = process.env.UPLOAD_TMP_DIR;
+  benchTmpDir = mkdtempSync(path.join(tmpdir(), "floe-s3-test-"));
+  process.env.UPLOAD_TMP_DIR = benchTmpDir;
+});
+
+test.after(() => {
+  if (envTmpDir !== undefined) {
+    process.env.UPLOAD_TMP_DIR = envTmpDir;
+  } else {
+    delete process.env.UPLOAD_TMP_DIR;
+  }
+  rmSync(benchTmpDir, { recursive: true, force: true });
+});
+
 class HeadObjectCommand {
-  constructor(public readonly input: any) {}
+  constructor(public readonly input: Record<string, unknown>) {}
 }
 
 class PutObjectCommand {
-  constructor(public readonly input: any) {}
+  constructor(public readonly input: Record<string, unknown>) {}
 }
 
 async function collectBody(body: Readable): Promise<Buffer> {
@@ -22,17 +43,19 @@ async function collectBody(body: Readable): Promise<Buffer> {
 }
 
 function makeStore(overrides?: {
-  onPut?: (input: any) => Promise<void>;
+  onPut?: (input: Record<string, unknown>) => Promise<void>;
   headExists?: boolean;
-  headResult?: any;
+  headResult?: Record<string, unknown>;
 }) {
-  const store = Object.create(S3ChunkStore.prototype) as S3ChunkStore & { cfg: any };
+  const store = Object.create(S3ChunkStore.prototype) as S3ChunkStore & {
+    cfg: Record<string, unknown>;
+  };
   store.cfg = {
     bucket: "bucket",
     prefix: "prefix",
     maxChunkBytes: 1024 * 1024,
     client: {
-      async send(command: any) {
+      async send(command: HeadObjectCommand | PutObjectCommand) {
         if (command instanceof HeadObjectCommand) {
           if (overrides?.headExists) return overrides.headResult ?? {};
           throw new Error("NotFound");
@@ -81,7 +104,7 @@ test("s3 chunk store streams validated chunk bodies into put object", async () =
   assert.deepEqual(uploaded, chunk);
 });
 
-test("s3 chunk store rejects hash mismatch without buffering to a final object", async () => {
+test("s3 chunk store rejects hash mismatch before S3 PutObject", async () => {
   const chunk = Buffer.from("bad-hash");
   let putAttempted = false;
 
@@ -98,7 +121,9 @@ test("s3 chunk store rejects hash mismatch without buffering to a final object",
     /HASH_MISMATCH/,
   );
 
-  assert.equal(putAttempted, true);
+  // New spool-to-temp pattern validates hash AFTER writing to temp file
+  // but BEFORE any S3 PutObject call — so putAttempted is false.
+  assert.equal(putAttempted, false);
 });
 
 test("s3 chunk store validates existing chunk metadata before reusing it", async () => {

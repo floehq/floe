@@ -1,7 +1,13 @@
 import crypto from "crypto";
 import { createRequire } from "module";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import path from "node:path";
 import { Readable, Transform } from "stream";
+import { pipeline } from "stream/promises";
 
+import { parseBoolEnv } from "../utils/parseEnv.js";
+import { UploadConfig, ChunkConfig } from "../config/uploads.config.js";
 import type { ChunkStore } from "./chunk.js";
 
 const require = createRequire(import.meta.url);
@@ -26,24 +32,6 @@ function loadAwsS3(): AwsS3Module {
   }
 }
 
-function parseBoolEnv(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  if (raw === "1" || raw.toLowerCase() === "true") return true;
-  if (raw === "0" || raw.toLowerCase() === "false") return false;
-  throw new Error(`${name} must be one of: 1, 0, true, false`);
-}
-
-function parseIntEnv(name: string, fallback: number, min = 1): number {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n < min) {
-    throw new Error(`${name} must be an integer >= ${min}`);
-  }
-  return n;
-}
-
 type S3RuntimeConfig = {
   bucket: string;
   prefix: string;
@@ -52,56 +40,87 @@ type S3RuntimeConfig = {
   cmd: Omit<AwsS3Module, "S3Client">;
 };
 
-class ChunkValidationStream extends Transform {
-  private readonly hash = crypto.createHash("sha256");
-  private written = 0;
+/**
+ * Create a Transform stream that validates chunk size and computes
+ * a running SHA-256 hash. Does NOT do final hash comparison — the
+ * caller (spoolStreamToTempFile) owns the hash and compares after
+ * the stream completes.
+ */
+/**
+ * Create a Transform stream that validates chunk size and computes
+ * a running SHA-256 hash. Does NOT do final hash comparison — the
+ * caller (spoolStreamToTempFile) owns the hash and compares after
+ * the stream completes.
+ *
+ * Exported so the comparative benchmark can import it directly.
+ */
+export function createValidationStream(
+  expectedSize: number,
+  maxChunkBytes: number,
+  hash: crypto.Hash,
+) {
+  let written = 0;
 
-  constructor(
-    private readonly expectedHash: string,
-    private readonly expectedSize: number,
-    private readonly maxChunkBytes: number,
-    private readonly isLastChunk: boolean,
-  ) {
-    super();
-  }
-
-  override _transform(
-    chunk: Buffer | string,
-    _encoding: BufferEncoding,
-    callback: (error?: Error | null, data?: Buffer) => void,
-  ) {
-    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    this.written += buf.length;
-    if (this.written > this.expectedSize || this.written > this.maxChunkBytes) {
-      callback(new Error("CHUNK_TOO_LARGE"));
-      return;
-    }
-    this.hash.update(buf);
-    callback(null, buf);
-  }
-
-  override _flush(callback: (error?: Error | null) => void) {
-    const sha256 = this.hash.digest("hex");
-    if (sha256 !== this.expectedHash) {
-      callback(new Error("HASH_MISMATCH"));
-      return;
-    }
-
-    if (this.isLastChunk) {
-      if (this.written <= 0 || this.written > this.expectedSize) {
-        callback(new Error("INVALID_LAST_CHUNK_SIZE"));
+  return new Transform({
+    transform(chunk: Buffer, _enc, cb) {
+      written += chunk.length;
+      if (written > expectedSize || written > maxChunkBytes) {
+        cb(new Error("CHUNK_TOO_LARGE"));
         return;
       }
-    } else if (this.written !== this.expectedSize) {
-      callback(new Error("CHUNK_SIZE_MISMATCH"));
-      return;
-    }
 
-    callback();
-  }
+      hash.update(chunk);
+      cb(null, chunk);
+    },
+  });
+}
 
-  get contentLength() {
-    return this.expectedSize;
+/**
+ * Spool an upload stream to a temporary file on disk while validating
+ * size bounds and computing a SHA-256 hash.
+ *
+ * Writes into UPLOAD_TMP_DIR/_s3_spool (same volume operators already
+ * size and mount), not os.tmpdir(), so temp chunk data stays on the
+ * same disk as other Floe working files.
+ *
+ * Returns the temp file path, actual size, sha256 hex digest, and a
+ * cleanup function to remove the temp file when done.
+ *
+ * This decouples client-stream timing from S3 upload timing — the
+ * chunk is fully written and validated before any S3 PutObject call,
+ * so slow client uploads don't hold S3 connections open.
+ *
+ * Exported for comparative benchmark importing.
+ */
+export async function spoolStreamToTempFile(
+  stream: Readable,
+  expectedSize: number,
+  maxChunkBytes: number,
+): Promise<{
+  actualSize: number;
+  sha256: string;
+  tempPath: string;
+  cleanup: () => Promise<void>;
+}> {
+  const hash = crypto.createHash("sha256");
+  const validator = createValidationStream(expectedSize, maxChunkBytes, hash);
+  const spoolDir = path.join(UploadConfig.tmpDir, "_s3_spool");
+  await fsp.mkdir(spoolDir, { recursive: true });
+  const tempPath = path.join(spoolDir, `${crypto.randomUUID()}.chunk`);
+
+  try {
+    await pipeline(stream, validator, fs.createWriteStream(tempPath, { flags: "wx" }));
+    const stat = await fsp.stat(tempPath);
+    const actualSize = stat.size;
+    return {
+      actualSize,
+      sha256: hash.digest("hex"),
+      tempPath,
+      cleanup: () => fsp.rm(tempPath, { force: true }).catch(() => {}),
+    };
+  } catch (err) {
+    await fsp.rm(tempPath, { force: true }).catch(() => {});
+    throw err;
   }
 }
 
@@ -118,7 +137,7 @@ export class S3ChunkStore implements ChunkStore {
     const endpoint = (process.env.FLOE_S3_ENDPOINT ?? "").trim();
     const forcePathStyle = parseBoolEnv("FLOE_S3_FORCE_PATH_STYLE", true);
     const prefix = (process.env.FLOE_S3_PREFIX ?? "floe/chunks").replace(/\/+$/, "");
-    const maxChunkBytes = parseIntEnv("FLOE_CHUNK_MAX_BYTES", 20 * 1024 * 1024);
+    const maxChunkBytes = ChunkConfig.maxBytes;
     const accessKeyId = (process.env.FLOE_S3_ACCESS_KEY_ID ?? "").trim();
     const secretAccessKey = (process.env.FLOE_S3_SECRET_ACCESS_KEY ?? "").trim();
     const sessionToken = (process.env.FLOE_S3_SESSION_TOKEN ?? "").trim();
@@ -200,24 +219,38 @@ export class S3ChunkStore implements ChunkStore {
       // Continue for missing keys.
     }
 
-    const validator = new ChunkValidationStream(
-      expectedHash.toLowerCase(),
+    // Spool client stream to temp file first: validates size and hash,
+    // then upload from disk. This decouples client-stream timing from
+    // the S3 PutObject connection, avoiding slow-client backpressure
+    // on the S3 upload path.
+    const { actualSize, sha256, tempPath, cleanup } = await spoolStreamToTempFile(
+      stream,
       expectedSize,
       this.cfg.maxChunkBytes,
-      isLastChunk,
     );
-    const validatedStream = stream.pipe(validator);
 
     try {
+      if (sha256 !== expectedHash.toLowerCase()) {
+        throw new Error("HASH_MISMATCH");
+      }
+
+      if (isLastChunk) {
+        if (actualSize <= 0 || actualSize > expectedSize) {
+          throw new Error("INVALID_LAST_CHUNK_SIZE");
+        }
+      } else if (actualSize !== expectedSize) {
+        throw new Error("CHUNK_SIZE_MISMATCH");
+      }
+
       await this.cfg.client.send(
         new this.cfg.cmd.PutObjectCommand({
           Bucket: this.cfg.bucket,
           Key: key,
-          Body: validatedStream,
-          ContentLength: validator.contentLength,
+          Body: fs.createReadStream(tempPath),
+          ContentLength: actualSize,
           ContentType: "application/octet-stream",
           Metadata: {
-            sha256: expectedHash.toLowerCase(),
+            sha256,
           },
           IfNoneMatch: "*",
         }),
@@ -230,6 +263,8 @@ export class S3ChunkStore implements ChunkStore {
         return { alreadyExisted: true };
       }
       throw err;
+    } finally {
+      await cleanup();
     }
   }
 

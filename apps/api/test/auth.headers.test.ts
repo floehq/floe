@@ -5,12 +5,14 @@ import { applyRateLimitHeaders } from "../src/services/auth/auth.headers.ts";
 
 test("applyRateLimitHeaders uses remaining time until reset for Retry-After", () => {
   const headers: Record<string, string> = {};
-  const reply = {
+  const reply: {
+    header(name: string, value: string): typeof reply;
+  } = {
     header(name: string, value: string) {
       headers[name.toLowerCase()] = value;
       return this;
     },
-  } as any;
+  };
 
   applyRateLimitHeaders(reply, {
     allowed: false,
