@@ -3,25 +3,9 @@ import type { FastifyRequest } from "fastify";
 import { AuthExternalConfig } from "../../config/auth.config.js";
 import { extractPresentedCredential } from "./auth.credentials.js";
 import type { AuthContext, AuthSubjectType } from "./auth.context.js";
+import type { ExternalVerifyResponse } from "../../types/auth-external.contract.js";
 import { externalAuthCircuit } from "../circuit-breaker/instances.js";
 import { CircuitBreakerError } from "../circuit-breaker/index.js";
-
-type ExternalVerifyResponse = {
-  valid?: boolean;
-  reason?:
-    "invalid" | "expired" | "revoked" | "malformed" | "unauthorized" | "timeout" | "missing_claims";
-  authenticated?: boolean;
-  subjectType?: AuthSubjectType | "user_token";
-  subjectId?: string;
-  keyId?: string;
-  orgId?: string;
-  projectId?: string;
-  scopes?: string[];
-  ownerAddress?: string;
-  walletAddress?: string;
-  tier?: string;
-  expiresAt?: string;
-};
 
 const EXTERNAL_AUTH_CACHE_MAX = 10_000;
 const externalAuthCache = new Map<string, { expiresAt: number; context: AuthContext }>();

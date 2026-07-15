@@ -31,10 +31,7 @@ import {
   normalizeFinalizeFailure,
   shouldPersistFinalizeFailure,
 } from "./finalize.shared.js";
-import {
-  emitAuditEvent,
-  emitInfrastructureEvent,
-} from "../events/infrastructure.events.js";
+import { emitAuditEvent, emitInfrastructureEvent } from "../events/infrastructure.events.js";
 
 const finalFilePath = (uploadId: string) => path.join(UploadConfig.tmpDir, `${uploadId}.bin`);
 
@@ -524,9 +521,7 @@ export async function finalizeUpload(
       // Persist the computed checksum now that walrus_publish has produced it
       if (checksum && checksum !== meta?.checksum) {
         await redis.hset(metaKey, { checksum }).catch(() => {});
-        await redis
-          .hset(uploadKeys.session(uploadId), { checksum })
-          .catch(() => {});
+        await redis.hset(uploadKeys.session(uploadId), { checksum }).catch(() => {});
       }
     }
 
@@ -708,6 +703,7 @@ export async function finalizeUpload(
         subject: `system:finalize_worker`,
         apiKeyId: null,
         owner: session.owner ?? null,
+        tier: "authenticated",
       },
       before: {
         status: "finalizing",
@@ -818,6 +814,7 @@ export async function finalizeUpload(
         subject: `system:finalize_worker`,
         apiKeyId: null,
         owner: session.owner ?? null,
+        tier: "authenticated",
       },
       before: {
         status: "finalizing",
