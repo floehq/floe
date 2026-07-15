@@ -196,6 +196,14 @@ export class LruMap<V> {
     this.evictIfNeeded();
   }
 
+  has(key: string): boolean {
+    return this.map.has(key);
+  }
+
+  clear(): void {
+    this.map.clear();
+  }
+
   delete(key: string): boolean {
     return this.map.delete(key);
   }
@@ -259,6 +267,11 @@ function setMemoryFileFields(fileId: string, fields: any) {
 
 export function clearFileFieldsCache(fileId: string) {
   fileFieldsMemoryCache.delete(fileId);
+}
+
+/** @internal test-only hook — clears all cached file fields entries. */
+export function resetFileFieldsMemoryCacheForTests(): void {
+  fileFieldsMemoryCache.clear();
 }
 
 export function applyFileLookupHeaders(
