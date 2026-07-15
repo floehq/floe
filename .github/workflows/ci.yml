@@ -8,7 +8,7 @@ on:
   pull_request:
 
 env:
-  # Shared test credentials — must match service containers below
+  # Shared test credentials
   DATABASE_URL: postgresql://floe_test:floe_test@localhost:5432/floe_test
   REDIS_URL: redis://localhost:6379
   FLOE_S3_BUCKET: floe-test
@@ -142,7 +142,7 @@ jobs:
 
       - name: Cleanup containers
         if: always()
-        run: docker stop floe-redis floe-postgres floe-minio && docker rm floe-redis floe-postgres floe-minio
+        run: docker rm -f floe-redis floe-postgres floe-minio 2>/dev/null || true
 
   lint:
     name: Lint
