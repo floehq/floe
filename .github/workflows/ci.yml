@@ -34,49 +34,48 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 5
-
-      postgres:
-        image: postgres:16-alpine
-        ports:
-          - 5432:5432
-        env:
-          POSTGRES_USER: floe_test
-          POSTGRES_PASSWORD: floe_test
-          POSTGRES_DB: floe_test
-        options: >-
-          --health-cmd "pg_isready -U floe_test"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 5
-
-      minio:
-        image: minio/minio:latest
-        ports:
-          - 9000:9000
-          - 9001:9001
-        env:
-          MINIO_ROOT_USER: minioadmin
-          MINIO_ROOT_PASSWORD: minioadmin
-        options: >-
-          --health-cmd "curl -sf http://localhost:9000/minio/health/live"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 5
-        entrypoint: sh
-        command:
-          - -c
-          - mkdir -p /data/floe-test && minio server /data --console-address ":9001"
-
+  #      redis:
+  #        image: redis:7-alpine
+  #        ports:
+  #          - 6379:6379
+  #        options: >-
+  #          --health-cmd "redis-cli ping"
+  #          --health-interval 5s
+  #          --health-timeout 3s
+  #          --health-retries 5
+  #
+  #      postgres:
+  #        image: postgres:16-alpine
+  #        ports:
+  #          - 5432:5432
+  #        env:
+  #          POSTGRES_USER: floe_test
+  #          POSTGRES_PASSWORD: floe_test
+  #          POSTGRES_DB: floe_test
+  #        options: >-
+  #          --health-cmd "pg_isready -U floe_test"
+  #          --health-interval 5s
+  #          --health-timeout 3s
+  #          --health-retries 5
+  #
+  #      minio:
+  #        image: minio/minio:latest
+  #        ports:
+  #          - 9000:9000
+  #          - 9001:9001
+  #        env:
+  #          MINIO_ROOT_USER: minioadmin
+  #          MINIO_ROOT_PASSWORD: minioadmin
+  #        options: >-
+  #          --health-cmd "curl -sf http://localhost:9000/minio/health/live"
+  #          --health-interval 5s
+  #          --health-timeout 3s
+  #          --health-retries 5
+  #        entrypoint: sh
+  #        command:
+  #          - -c
+  #          - mkdir -p /data/floe-test && minio server /data --console-address ":9001"
+  #
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
