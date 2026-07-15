@@ -1,3 +1,7 @@
+// Force env-backed store before module imports so auth.config.ts singleton
+// uses EnvApiKeyStore rather than the CI's global PostgresApiKeyStore.
+process.env.FLOE_API_KEY_STORE = "env";
+
 import test, { beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
