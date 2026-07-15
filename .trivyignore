@@ -79,9 +79,11 @@ CVE-2026-9538
 # CVE-2026-13221  perl-base (affected)
 # Integer overflow in Perl through 5.43.9. Perl is present in the base image
 # but is not used by the Node.js application at runtime.
+# https://security-tracker.debian.org/tracker/CVE-2026-13221
 CVE-2026-13221
 
 # CVE-2026-57432  perl-base (affected)
 # Integer overflow in Perl through 5.43.10. Same rationale: Perl is unused
 # by the headless Node.js HTTP server.
+# https://security-tracker.debian.org/tracker/CVE-2026-57432
 CVE-2026-57432
