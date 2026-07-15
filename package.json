@@ -10,7 +10,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces",
+    "build": "npm run build --workspace=apps/sdk && npm run build --workspace=apps/api && npm run build --workspace=apps/cli",
     "dev": "npm run dev --workspace=apps/api",
     "start": "npm run start --workspace=apps/api",
     "upload": "./floe.sh",

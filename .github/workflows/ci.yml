@@ -145,6 +145,18 @@ jobs:
           FLOE_POSTGRES_REQUIRED: "1"
           NODE_ENV: test
 
+      - name: Build SDK
+        run: npm run build --workspace=apps/sdk
+
+      - name: Test SDK
+        run: npm test --workspace=apps/sdk
+
+      - name: Build CLI
+        run: npm run build --workspace=apps/cli
+
+      - name: Lint CLI
+        run: npm run lint --workspace=apps/cli
+
       - name: Cleanup containers
         if: always()
         run: docker rm -f floe-redis floe-postgres floe-minio 2>/dev/null || true

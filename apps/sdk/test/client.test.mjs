@@ -335,8 +335,11 @@ test("getVersion and checkCompatibility expose typed server compatibility", asyn
   assert.equal(cliCompatibility.reason, "outside_supported_range");
 });
 
-test("SDK exports a stable diagnostic version constant", () => {
-  assert.equal(SDK_VERSION, "0.2.4");
+test("SDK exports a stable diagnostic version constant", async () => {
+  const pkg = JSON.parse(
+    await fs.readFile(new URL("../package.json", import.meta.url), "utf8"),
+  );
+  assert.equal(SDK_VERSION, pkg.version);
   assert.equal(FloeClient.VERSION, SDK_VERSION);
 });
 
