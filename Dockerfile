@@ -1,4 +1,4 @@
-FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS deps
+FROM node:26-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb AS deps
 
 WORKDIR /app
 
@@ -20,7 +20,7 @@ RUN npm prune --omit=dev --workspaces
 # CVEs for packages that were already removed by npm prune.
 RUN rm -f node_modules/.package-lock.json
 
-FROM node:24-bookworm-slim@sha256:6f7b03f7c2c8e2e784dcf9295400527b9b1270fd37b7e9a7285cf83b6951452d AS runtime
+FROM node:26-bookworm-slim@sha256:2d49d876e96237d76de412761cf05dbfe5aee325cc4406a4d41d5824c5bb8beb AS runtime
 
 # Fix OS-level CVEs in final image — unqualified upgrade catches all
 # available Debian security patches without needing to hand-list packages.
