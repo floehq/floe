@@ -25,6 +25,9 @@ type InfrastructureEventActor = {
   subject: string;
   apiKeyId: string | null;
   owner: string | null;
+  orgId?: string;
+  projectId?: string;
+  tier: RequestIdentity["tier"];
 };
 
 export type InfrastructureEvent = {
@@ -57,6 +60,9 @@ export function requestEventActor(identity: RequestIdentity): InfrastructureEven
     subject: identity.subject,
     apiKeyId: identity.keyId ?? null,
     owner: identity.owner ?? null,
+    orgId: identity.orgId ?? undefined,
+    projectId: identity.projectId ?? undefined,
+    tier: identity.tier,
   };
 }
 
