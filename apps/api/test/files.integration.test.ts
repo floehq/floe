@@ -104,7 +104,10 @@ function parseRangeHeader(
 }
 
 async function createRouteApp(customAuthProvider?: Record<string, unknown>) {
-  const handlers = new Map<string, (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown>();
+  const handlers = new Map<
+    string,
+    (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown
+  >();
   const authProvider = {
     async authorizeFileAccess() {
       return { allowed: true };
@@ -126,16 +129,31 @@ async function createRouteApp(customAuthProvider?: Record<string, unknown>) {
     ...customAuthProvider,
   };
   const app = {
-    get(path: string, handler: (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown) {
+    get(
+      path: string,
+      handler: (
+        req: Record<string, unknown>,
+        reply: Record<string, unknown>,
+      ) => Promise<unknown> | unknown,
+    ) {
       handlers.set(`GET ${path}`, handler);
     },
-    post(path: string, handler: (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown) {
+    post(
+      path: string,
+      handler: (
+        req: Record<string, unknown>,
+        reply: Record<string, unknown>,
+      ) => Promise<unknown> | unknown,
+    ) {
       handlers.set(`POST ${path}`, handler);
     },
     route(definition: {
       method: string[];
       url: string;
-      handler: (req: Record<string, unknown>, reply: Record<string, unknown>) => Promise<unknown> | unknown;
+      handler: (
+        req: Record<string, unknown>,
+        reply: Record<string, unknown>,
+      ) => Promise<unknown> | unknown;
     }) {
       for (const method of definition.method) {
         handlers.set(`${method} ${definition.url}`, definition.handler);
@@ -249,8 +267,8 @@ before(async () => {
 
 afterEach(() => {
   // Keep DATABASE_URL from the environment (needed for auth.config.ts module-level
-// initialization when FLOE_API_KEY_STORE=postgres is set globally in CI).
-// Tests that need a specific Postgres state use postgresModule.setPostgresForTests().
+  // initialization when FLOE_API_KEY_STORE=postgres is set globally in CI).
+  // Tests that need a specific Postgres state use postgresModule.setPostgresForTests().
   delete process.env.FLOE_PUBLIC_STREAM_BASE_URL;
   postgresModule.setPostgresForTests(null, false);
   suiModule.getSuiClient().getObject = originalGetObject;

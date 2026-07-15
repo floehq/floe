@@ -343,8 +343,12 @@ function renderSliGauges(): string[] {
     lines.push(...renderGauge(prefix + "_good", `SLI successful requests for ${name}`));
     lines.push(...renderGauge(prefix + "_slow", `SLI slow requests for ${name}`));
     lines.push(...renderGauge(prefix + "_success_rate", `SLI success rate for ${name}`));
-    lines.push(...renderGauge(prefix + "_within_budget_rate", `SLI within budget rate for ${name}`));
-    lines.push(...renderGauge(prefix + "_error_budget_remaining", `SLI error budget remaining for ${name}`));
+    lines.push(
+      ...renderGauge(prefix + "_within_budget_rate", `SLI within budget rate for ${name}`),
+    );
+    lines.push(
+      ...renderGauge(prefix + "_error_budget_remaining", `SLI error budget remaining for ${name}`),
+    );
     lines.push(...renderGauge(prefix + "_burn_rate", `SLI burn rate for ${name}`));
     lines.push(...renderGauge(prefix + "_within_slo", `SLI within SLO indicator for ${name}`));
   }
@@ -366,9 +370,7 @@ export function recordHttpRequestAndSli(params: {
   recordApiSli(success, params.durationMs);
 }
 
-export function setWalrusConnectionPoolMetrics(params: {
-  activeConnections: number;
-}): void {
+export function setWalrusConnectionPoolMetrics(params: { activeConnections: number }): void {
   setGauge("floe_walrus_pool_active_connections", params.activeConnections);
 }
 
@@ -481,9 +483,18 @@ export function renderPrometheusMetrics(): string {
       "floe_sui_finalize_duration_ms",
       "Sui metadata finalize duration in milliseconds",
     ),
-    ...renderGauge("floe_circuit_breaker_state", "Circuit breaker state (1=closed, 2=half_open, 3=open)"),
-    ...renderCounter("floe_circuit_breaker_transitions_total", "Circuit breaker state transitions by name and direction"),
-    ...renderCounter("floe_circuit_breaker_calls_total", "Circuit breaker calls by name, allowed, and success"),
+    ...renderGauge(
+      "floe_circuit_breaker_state",
+      "Circuit breaker state (1=closed, 2=half_open, 3=open)",
+    ),
+    ...renderCounter(
+      "floe_circuit_breaker_transitions_total",
+      "Circuit breaker state transitions by name and direction",
+    ),
+    ...renderCounter(
+      "floe_circuit_breaker_calls_total",
+      "Circuit breaker calls by name, allowed, and success",
+    ),
     ...renderCounter("floe_stream_read_errors_total", "Stream read errors by reason"),
     ...renderHistogram(
       "floe_metadata_lookup_duration_ms",

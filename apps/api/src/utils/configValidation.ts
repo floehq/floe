@@ -79,20 +79,18 @@ export function validateConfig(): ConfigValidationResult {
   const authTokenSecret = requireEnv("FLOE_AUTH_TOKEN_SECRET");
   if (authProvider === "token") {
     if (!authTokenSecret) {
-      errors.push(
-        "FLOE_AUTH_TOKEN_SECRET is required when FLOE_AUTH_PROVIDER=token",
-      );
+      errors.push("FLOE_AUTH_TOKEN_SECRET is required when FLOE_AUTH_PROVIDER=token");
     } else if (authTokenSecret.length < 16) {
       errors.push(
         "FLOE_AUTH_TOKEN_SECRET must be at least 16 characters when FLOE_AUTH_PROVIDER=token" +
-        " (current length: " + authTokenSecret.length + ")",
+          " (current length: " +
+          authTokenSecret.length +
+          ")",
       );
     }
   } else {
     if (authTokenSecret && authTokenSecret.length < 16) {
-      warnings.push(
-        "FLOE_AUTH_TOKEN_SECRET is too short (< 16 chars); consider a longer secret",
-      );
+      warnings.push("FLOE_AUTH_TOKEN_SECRET is too short (< 16 chars); consider a longer secret");
     }
   }
 
@@ -104,7 +102,7 @@ export function validateConfig(): ConfigValidationResult {
     if (allowPublicInProd !== "1" && allowPublicInProd !== "true") {
       errors.push(
         "FLOE_ACCESS_POLICY=public with NODE_ENV=production requires " +
-        "FLOE_ALLOW_PUBLIC_IN_PROD=1 as an explicit opt-in",
+          "FLOE_ALLOW_PUBLIC_IN_PROD=1 as an explicit opt-in",
       );
     }
   }
@@ -114,9 +112,7 @@ export function validateConfig(): ConfigValidationResult {
   if (!databaseUrl) {
     const postgresRequired = process.env.FLOE_POSTGRES_REQUIRED?.trim().toLowerCase();
     if (postgresRequired === "1" || postgresRequired === "true") {
-      warnings.push(
-        "FLOE_POSTGRES_REQUIRED is set but DATABASE_URL is not configured",
-      );
+      warnings.push("FLOE_POSTGRES_REQUIRED is set but DATABASE_URL is not configured");
     }
   }
 
@@ -143,7 +139,9 @@ export function validateConfig(): ConfigValidationResult {
     } else if (metricsToken.length < 16) {
       errors.push(
         "FLOE_METRICS_TOKEN must be at least 16 characters" +
-        " (current length: " + metricsToken.length + ")",
+          " (current length: " +
+          metricsToken.length +
+          ")",
       );
     }
   }

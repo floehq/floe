@@ -41,45 +41,45 @@ export async function finalizeFileMetadata(input: FinalizeFileInput): Promise<Fi
   return suiCircuit.call(async () => {
     const tx = new Transaction();
 
-  tx.moveCall({
-    target: `${getSuiPackageId()}::file::create_with_owner`,
-    arguments: [
-      tx.pure.string(input.blobId),
-      input.blobObjectId
-        ? tx.pure.option("address", input.blobObjectId)
-        : tx.pure.option("address", null),
-      tx.pure.u64(input.sizeBytes),
-      tx.pure.string(input.mimeType),
-      input.checksum ? tx.pure.option("string", input.checksum) : tx.pure.option("string", null),
-      input.owner ? tx.pure.option("address", input.owner) : tx.pure.option("address", null),
-      input.walrusEndEpoch !== undefined
-        ? tx.pure.option("u64", input.walrusEndEpoch)
-        : tx.pure.option("u64", null),
-      tx.object(SUI_CLOCK_OBJECT_ID),
-    ],
-  });
-
-  let result;
-  try {
-    result = await getSuiSigner().signAndExecuteTransaction({
-      transaction: tx,
-      options: {
-        showObjectChanges: true,
-      },
+    tx.moveCall({
+      target: `${getSuiPackageId()}::file::create_with_owner`,
+      arguments: [
+        tx.pure.string(input.blobId),
+        input.blobObjectId
+          ? tx.pure.option("address", input.blobObjectId)
+          : tx.pure.option("address", null),
+        tx.pure.u64(input.sizeBytes),
+        tx.pure.string(input.mimeType),
+        input.checksum ? tx.pure.option("string", input.checksum) : tx.pure.option("string", null),
+        input.owner ? tx.pure.option("address", input.owner) : tx.pure.option("address", null),
+        input.walrusEndEpoch !== undefined
+          ? tx.pure.option("u64", input.walrusEndEpoch)
+          : tx.pure.option("u64", null),
+        tx.object(SUI_CLOCK_OBJECT_ID),
+      ],
     });
-  } catch (err) {
-    throw new Error(`SUI_FINALIZE_SUBMIT_FAILED:${(err as Error)?.message ?? "unknown"}`);
-  }
 
-  const created = result.objectChanges?.find(
-    (c: any) => c.type === "created" && c.objectType?.includes("::file::FileMeta"),
-  );
+    let result;
+    try {
+      result = await getSuiSigner().signAndExecuteTransaction({
+        transaction: tx,
+        options: {
+          showObjectChanges: true,
+        },
+      });
+    } catch (err) {
+      throw new Error(`SUI_FINALIZE_SUBMIT_FAILED:${(err as Error)?.message ?? "unknown"}`);
+    }
 
-  if (!created || !("objectId" in created)) {
-    throw new Error("SUI_FILE_CREATE_FAILED");
-  }
+    const created = result.objectChanges?.find(
+      (c: any) => c.type === "created" && c.objectType?.includes("::file::FileMeta"),
+    );
 
-  return { fileId: created.objectId };
+    if (!created || !("objectId" in created)) {
+      throw new Error("SUI_FILE_CREATE_FAILED");
+    }
+
+    return { fileId: created.objectId };
   });
 }
 
@@ -91,28 +91,28 @@ export async function renewFileMetadata(params: {
   return suiCircuit.call(async () => {
     const tx = new Transaction();
 
-  if (params.blobObjectId) {
-    tx.moveCall({
-      target: `${getSuiPackageId()}::file::update_walrus_info`,
-      arguments: [
-        tx.object(params.fileId),
-        tx.pure.address(params.blobObjectId),
-        tx.pure.u64(params.walrusEndEpoch),
-      ],
-    });
-  } else {
-    tx.moveCall({
-      target: `${getSuiPackageId()}::file::update_expiry`,
-      arguments: [tx.object(params.fileId), tx.pure.u64(params.walrusEndEpoch)],
-    });
-  }
+    if (params.blobObjectId) {
+      tx.moveCall({
+        target: `${getSuiPackageId()}::file::update_walrus_info`,
+        arguments: [
+          tx.object(params.fileId),
+          tx.pure.address(params.blobObjectId),
+          tx.pure.u64(params.walrusEndEpoch),
+        ],
+      });
+    } else {
+      tx.moveCall({
+        target: `${getSuiPackageId()}::file::update_expiry`,
+        arguments: [tx.object(params.fileId), tx.pure.u64(params.walrusEndEpoch)],
+      });
+    }
 
-  try {
-    await getSuiSigner().signAndExecuteTransaction({
-      transaction: tx,
-    });
-  } catch (err) {
-    throw new Error(`SUI_RENEW_SUBMIT_FAILED:${(err as Error)?.message ?? "unknown"}`);
-  }
+    try {
+      await getSuiSigner().signAndExecuteTransaction({
+        transaction: tx,
+      });
+    } catch (err) {
+      throw new Error(`SUI_RENEW_SUBMIT_FAILED:${(err as Error)?.message ?? "unknown"}`);
+    }
   });
 }

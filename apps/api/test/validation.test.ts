@@ -89,15 +89,16 @@ describe("validateContentType", () => {
   it("rejects unknown MIME types", () => {
     assert.throws(() => validateContentType("text/html"), /not in the allowed list/);
     assert.throws(() => validateContentType("application/x-msdownload"), /not in the allowed list/);
-    assert.throws(() => validateContentType("application/x-shockwave-flash"), /not in the allowed list/);
+    assert.throws(
+      () => validateContentType("application/x-shockwave-flash"),
+      /not in the allowed list/,
+    );
   });
 
   it("allows FLOE_ALLOWED_CONTENT_TYPES override", async () => {
     process.env.FLOE_ALLOWED_CONTENT_TYPES = "text/html,application/x-msdownload";
     // Re-import to get fresh state
-    const { validateContentType: vct2 } = await import(
-      "../src/utils/validation.js"
-    );
+    const { validateContentType: vct2 } = await import("../src/utils/validation.js");
     assert.equal(vct2("text/html"), "text/html");
     assert.equal(vct2("application/x-msdownload"), "application/x-msdownload");
     // Should NOT accept types not in the override list

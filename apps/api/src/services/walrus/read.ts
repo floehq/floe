@@ -51,7 +51,8 @@ export function startWalrusPoolMetrics(intervalMs = 5000): void {
       interface AgentInternal {
         _poolMap?: Map<string, Dispatcher>;
       }
-      const poolMap = (walrusPool as unknown as AgentInternal)._poolMap as Map<string, Dispatcher> | undefined;
+      const poolMap = (walrusPool as unknown as AgentInternal)._poolMap as
+        Map<string, Dispatcher> | undefined;
       if (poolMap) {
         for (const [, client] of poolMap) {
           const c = client as { busyConnections?: number; pending?: number };
@@ -83,7 +84,9 @@ let lastGoodAggregatorIdx = 0;
 
 function isRetryableNetworkError(err: unknown): boolean {
   const msg = (err as Error)?.message ? String((err as Error).message) : "";
-  const causeMsg = (err as { cause?: Error })?.cause?.message ? String((err as { cause?: Error })?.cause?.message) : "";
+  const causeMsg = (err as { cause?: Error })?.cause?.message
+    ? String((err as { cause?: Error })?.cause?.message)
+    : "";
 
   return (
     msg.includes("fetch failed") ||
@@ -257,7 +260,11 @@ export async function checkWalrusBlobExists(params: {
     fallbackBases.map(async (base) => {
       const r = await headCheck(base);
       if (!r.exists && r.status !== 0 && r.status !== 404) {
-        return { exists: true, aggregatorIdx: urls.indexOf(base), reason: `unexpected_status:${r.status}` };
+        return {
+          exists: true,
+          aggregatorIdx: urls.indexOf(base),
+          reason: `unexpected_status:${r.status}`,
+        };
       }
       return { exists: r.exists, aggregatorIdx: r.exists ? urls.indexOf(base) : -1 };
     }),
@@ -290,165 +297,165 @@ export async function fetchWalrusBlob(params: {
 }): Promise<{ res: Response; aggregatorUrl: string }> {
   return walrusReadCircuit.call(async () => {
     const urls = WalrusEnv.aggregatorUrls;
-  const headers: Record<string, string> = {};
-  if (params.rangeHeader) headers["Range"] = params.rangeHeader;
-  if (params.requestId) headers["x-request-id"] = params.requestId;
+    const headers: Record<string, string> = {};
+    if (params.rangeHeader) headers["Range"] = params.rangeHeader;
+    if (params.requestId) headers["x-request-id"] = params.requestId;
 
-  const startIdx =
-    Number.isInteger(lastGoodAggregatorIdx) &&
-    lastGoodAggregatorIdx >= 0 &&
-    lastGoodAggregatorIdx < urls.length
-      ? lastGoodAggregatorIdx
-      : 0;
+    const startIdx =
+      Number.isInteger(lastGoodAggregatorIdx) &&
+      lastGoodAggregatorIdx >= 0 &&
+      lastGoodAggregatorIdx < urls.length
+        ? lastGoodAggregatorIdx
+        : 0;
 
-  let lastErr: unknown = null;
-  let lastStatus: number | null = null;
+    let lastErr: unknown = null;
+    let lastStatus: number | null = null;
 
-  for (let aggAttempt = 0; aggAttempt < urls.length; aggAttempt++) {
-    const idx = (startIdx + aggAttempt) % urls.length;
-    const base = normalizeBaseUrl(urls[idx]);
-    const url = `${base}/v1/blobs/${encodeURIComponent(params.blobId)}`;
+    for (let aggAttempt = 0; aggAttempt < urls.length; aggAttempt++) {
+      const idx = (startIdx + aggAttempt) % urls.length;
+      const base = normalizeBaseUrl(urls[idx]);
+      const url = `${base}/v1/blobs/${encodeURIComponent(params.blobId)}`;
 
-    for (let attempt = 0; attempt <= WalrusReadLimits.maxSegmentRetries; attempt++) {
-      if (params.signal?.aborted) {
-        throw Object.assign(new Error("AbortError"), { name: "AbortError" });
-      }
-
-      const attemptStartedAt = Date.now();
-      try {
-        const res = await fetchWithTimeout({ url, headers, signal: params.signal });
-
-        // Some aggregators can be out-of-sync or on a different network.
-        // Try other aggregators before concluding the blob is missing.
-        if (res.status === 404) {
-          observeWalrusSegmentFetch({
-            outcome: "not_found",
-            durationMs: Date.now() - attemptStartedAt,
-            statusClass: "4xx",
-          });
-          lastStatus = res.status;
-          try {
-            await res.body?.cancel();
-          } catch {
-            /* ignore */
-          }
-          break;
+      for (let attempt = 0; attempt <= WalrusReadLimits.maxSegmentRetries; attempt++) {
+        if (params.signal?.aborted) {
+          throw Object.assign(new Error("AbortError"), { name: "AbortError" });
         }
 
-        if (isRetryableStatus(res.status)) {
-          observeWalrusSegmentFetch({
-            outcome: "retryable_status",
-            durationMs: Date.now() - attemptStartedAt,
-            statusClass: res.status >= 500 ? "5xx" : "4xx",
-          });
-          lastStatus = res.status;
-          try {
-            await res.body?.cancel();
-          } catch {
-            /* ignore */
+        const attemptStartedAt = Date.now();
+        try {
+          const res = await fetchWithTimeout({ url, headers, signal: params.signal });
+
+          // Some aggregators can be out-of-sync or on a different network.
+          // Try other aggregators before concluding the blob is missing.
+          if (res.status === 404) {
+            observeWalrusSegmentFetch({
+              outcome: "not_found",
+              durationMs: Date.now() - attemptStartedAt,
+              statusClass: "4xx",
+            });
+            lastStatus = res.status;
+            try {
+              await res.body?.cancel();
+            } catch {
+              /* ignore */
+            }
+            break;
           }
+
+          if (isRetryableStatus(res.status)) {
+            observeWalrusSegmentFetch({
+              outcome: "retryable_status",
+              durationMs: Date.now() - attemptStartedAt,
+              statusClass: res.status >= 500 ? "5xx" : "4xx",
+            });
+            lastStatus = res.status;
+            try {
+              await res.body?.cancel();
+            } catch {
+              /* ignore */
+            }
+            const delay = WalrusReadLimits.baseRetryDelayMs * Math.max(1, attempt + 1);
+            await sleep(delay, params.signal);
+            continue;
+          }
+
+          observeWalrusSegmentFetch({
+            outcome: "success",
+            durationMs: Date.now() - attemptStartedAt,
+            statusClass: "2xx",
+          });
+          lastGoodAggregatorIdx = idx;
+
+          const body = res.body;
+          if (body) {
+            const idleTimeoutStream = new TransformStream({
+              flush(controller) {
+                controller.terminate();
+              },
+            });
+            const writer = idleTimeoutStream.writable.getWriter();
+            let idleTimer: ReturnType<typeof setTimeout> | null = null;
+            let idleDone = false;
+
+            const resetIdle = () => {
+              if (idleTimer) clearTimeout(idleTimer);
+              if (idleDone) return;
+              idleTimer = setTimeout(() => {
+                idleDone = true;
+                writer.close().catch(() => {});
+              }, BODY_IDLE_TIMEOUT_MS);
+            };
+
+            resetIdle();
+            const reader = body.getReader();
+
+            void (async () => {
+              try {
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) {
+                    if (!idleDone) {
+                      clearTimeout(idleTimer!);
+                      await writer.close();
+                    }
+                    break;
+                  }
+                  resetIdle();
+                  await writer.write(value);
+                }
+              } catch (err) {
+                await writer.abort(err).catch(() => {});
+              }
+            })();
+
+            const wrappedRes = new Response(idleTimeoutStream.readable, {
+              status: res.status,
+              statusText: res.statusText,
+              headers: res.headers,
+            });
+            return { res: wrappedRes, aggregatorUrl: base };
+          }
+
+          return { res, aggregatorUrl: base };
+        } catch (err) {
+          const durationMs = Date.now() - attemptStartedAt;
+          lastErr = err;
+
+          if ((params.signal && params.signal.aborted) || (err as Error)?.name === "AbortError") {
+            observeWalrusSegmentFetch({
+              outcome: "aborted",
+              durationMs,
+              statusClass: "none",
+            });
+            throw err;
+          }
+
+          if (!isRetryableNetworkError(err)) {
+            observeWalrusSegmentFetch({
+              outcome: "other_error",
+              durationMs,
+              statusClass: "none",
+            });
+            throw err;
+          }
+          observeWalrusSegmentFetch({
+            outcome: "network_error",
+            durationMs,
+            statusClass: "none",
+          });
+
           const delay = WalrusReadLimits.baseRetryDelayMs * Math.max(1, attempt + 1);
           await sleep(delay, params.signal);
-          continue;
         }
-
-        observeWalrusSegmentFetch({
-          outcome: "success",
-          durationMs: Date.now() - attemptStartedAt,
-          statusClass: "2xx",
-        });
-        lastGoodAggregatorIdx = idx;
-
-        const body = res.body;
-        if (body) {
-          const idleTimeoutStream = new TransformStream({
-            flush(controller) {
-              controller.terminate();
-            },
-          });
-          const writer = idleTimeoutStream.writable.getWriter();
-          let idleTimer: ReturnType<typeof setTimeout> | null = null;
-          let idleDone = false;
-
-          const resetIdle = () => {
-            if (idleTimer) clearTimeout(idleTimer);
-            if (idleDone) return;
-            idleTimer = setTimeout(() => {
-              idleDone = true;
-              writer.close().catch(() => {});
-            }, BODY_IDLE_TIMEOUT_MS);
-          };
-
-          resetIdle();
-          const reader = body.getReader();
-
-          void (async () => {
-            try {
-              while (true) {
-                const { done, value } = await reader.read();
-                if (done) {
-                  if (!idleDone) {
-                    clearTimeout(idleTimer!);
-                    await writer.close();
-                  }
-                  break;
-                }
-                resetIdle();
-                await writer.write(value);
-              }
-            } catch (err) {
-              await writer.abort(err).catch(() => {});
-            }
-          })();
-
-          const wrappedRes = new Response(idleTimeoutStream.readable, {
-            status: res.status,
-            statusText: res.statusText,
-            headers: res.headers,
-          });
-          return { res: wrappedRes, aggregatorUrl: base };
-        }
-
-        return { res, aggregatorUrl: base };
-      } catch (err) {
-        const durationMs = Date.now() - attemptStartedAt;
-        lastErr = err;
-
-        if ((params.signal && params.signal.aborted) || (err as Error)?.name === "AbortError") {
-          observeWalrusSegmentFetch({
-            outcome: "aborted",
-            durationMs,
-            statusClass: "none",
-          });
-          throw err;
-        }
-
-        if (!isRetryableNetworkError(err)) {
-          observeWalrusSegmentFetch({
-            outcome: "other_error",
-            durationMs,
-            statusClass: "none",
-          });
-          throw err;
-        }
-        observeWalrusSegmentFetch({
-          outcome: "network_error",
-          durationMs,
-          statusClass: "none",
-        });
-
-        const delay = WalrusReadLimits.baseRetryDelayMs * Math.max(1, attempt + 1);
-        await sleep(delay, params.signal);
       }
+
+      // Move to next aggregator after per-aggregator retry budget.
     }
 
-    // Move to next aggregator after per-aggregator retry budget.
-  }
-
-  if (lastErr) throw lastErr;
-  if (lastStatus !== null) {
-    throw new Error(`WALRUS_FETCH_FAILED status=${lastStatus}`);
-  }
-  throw new Error("WALRUS_FETCH_FAILED");
+    if (lastErr) throw lastErr;
+    if (lastStatus !== null) {
+      throw new Error(`WALRUS_FETCH_FAILED status=${lastStatus}`);
+    }
+    throw new Error("WALRUS_FETCH_FAILED");
   });
 }

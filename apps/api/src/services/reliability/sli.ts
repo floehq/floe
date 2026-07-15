@@ -50,8 +50,7 @@ export const SliConfig = {
 // ============================================================
 
 class SlidingWindow {
-  private readonly buckets: Map<number, { total: number; good: number; slow: number }> =
-    new Map();
+  private readonly buckets: Map<number, { total: number; good: number; slow: number }> = new Map();
   private readonly windowMs: number;
   private bucketMs: number;
 
@@ -85,7 +84,13 @@ class SlidingWindow {
     this.prune(now);
   }
 
-  snapshot(): { total: number; good: number; slow: number; successRate: number; withinBudgetRate: number } {
+  snapshot(): {
+    total: number;
+    good: number;
+    slow: number;
+    successRate: number;
+    withinBudgetRate: number;
+  } {
     this.prune(Date.now());
     let total = 0;
     let good = 0;
@@ -149,7 +154,8 @@ function computeSloStatus(
 ): SloStatus {
   const errorBudget = 1 - target;
   const actualErrorRate = sli.total > 0 ? 1 - sli.successRate : 0;
-  const errorBudgetRemaining = errorBudget > 0 ? Math.max(0, (errorBudget - actualErrorRate) / errorBudget) : 0;
+  const errorBudgetRemaining =
+    errorBudget > 0 ? Math.max(0, (errorBudget - actualErrorRate) / errorBudget) : 0;
   const burnRate = sli.total > 0 && errorBudget > 0 ? actualErrorRate / errorBudget : 0;
 
   return {
