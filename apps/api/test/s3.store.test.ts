@@ -68,7 +68,9 @@ function makeStore(overrides?: {
           if (overrides?.put412) {
             const err = new Error("Precondition Failed");
             err.name = "PreconditionFailed";
-            (err as any).$metadata = { httpStatusCode: 412 };
+            (err as { $metadata?: { httpStatusCode?: number } }).$metadata = {
+              httpStatusCode: 412,
+            };
             throw err;
           }
           await overrides?.onPut?.(command.input);

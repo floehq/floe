@@ -196,7 +196,13 @@ export async function touchUploadActivity(params: {
   const result = await redis.eval(
     script,
     [sessionKey, metaKey, uploadKeys.gcIndex(), uploadKeys.activeIndex(), chunksKey],
-    [params.uploadId, String(sessionTtlSeconds()), String(metaTtlSeconds()), chunkIndexArg, ...kvArgs],
+    [
+      params.uploadId,
+      String(sessionTtlSeconds()),
+      String(metaTtlSeconds()),
+      chunkIndexArg,
+      ...kvArgs,
+    ],
   );
   return Number(result) === 1;
 }
