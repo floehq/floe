@@ -169,7 +169,12 @@ export default async function opsApiKeysRoutes(app: FastifyInstance) {
       });
     } catch (err) {
       if (err instanceof Error && err.message.includes("not found")) {
-        return sendApiError(reply, 404, "API_KEY_NOT_FOUND", "API key not found or already revoked");
+        return sendApiError(
+          reply,
+          404,
+          "API_KEY_NOT_FOUND",
+          "API key not found or already revoked",
+        );
       }
       throw err;
     }

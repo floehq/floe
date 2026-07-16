@@ -183,10 +183,7 @@ export class PostgresApiKeyStore implements ApiKeyStore {
       throw new Error(`API key not found or already revoked: ${id}`);
     }
 
-    await pg.query(
-      "update floe_api_keys set revoked_at = now() where id = $1",
-      [id],
-    );
+    await pg.query("update floe_api_keys set revoked_at = now() where id = $1", [id]);
 
     const { id: newId, secret, secretHash } = generateApiKey();
 

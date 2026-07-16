@@ -3,7 +3,12 @@ import crypto from "node:crypto";
 
 import { AuthApiKeyConfig, type RateLimitTier } from "../../config/auth.config.js";
 import { extractPresentedCredential } from "./auth.credentials.js";
-import { type ApiKeyStore, type StoredApiKey, type AdminApiKeyRecord, type AdminApiKeyRotateRecord } from "./auth.api-key-store.js";
+import {
+  type ApiKeyStore,
+  type StoredApiKey,
+  type AdminApiKeyRecord,
+  type AdminApiKeyRotateRecord,
+} from "./auth.api-key-store.js";
 import type { AuthContext } from "./auth.context.js";
 
 /**

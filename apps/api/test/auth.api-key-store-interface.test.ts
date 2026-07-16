@@ -4,13 +4,21 @@ import type { ApiKeyStore, StoredApiKey } from "../src/services/auth/auth.api-ke
 
 // Stub store that tracks calls to verify interface contract
 class StubApiKeyStore implements ApiKeyStore {
-  async findByHash(_hash: Buffer): Promise<StoredApiKey | null> { return null; }
-  async findById(_id: string): Promise<StoredApiKey | null> { return null; }
-  async listActive(): Promise<StoredApiKey[]> { return []; }
+  async findByHash(_hash: Buffer): Promise<StoredApiKey | null> {
+    return null;
+  }
+  async findById(_id: string): Promise<StoredApiKey | null> {
+    return null;
+  }
+  async listActive(): Promise<StoredApiKey[]> {
+    return [];
+  }
   async create(_params: { owner?: string; scopes: string[]; tier: "public" | "authenticated" }) {
     return { id: "stub", secret: "floe_stub_secret", createdAt: new Date() };
   }
-  async revoke(_id: string): Promise<boolean> { return true; }
+  async revoke(_id: string): Promise<boolean> {
+    return true;
+  }
   async rotate(_id: string) {
     return { id: _id, secret: "floe_rotated_secret", rotatedAt: new Date() };
   }
