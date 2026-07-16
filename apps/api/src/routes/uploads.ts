@@ -445,6 +445,16 @@ async function persistUploadActionIdempotencyRecord(params: {
 }
 
 export default async function uploadRoutes(app: FastifyInstance) {
+  // Wire S3 fast-path: if Redis already records a chunk as received,
+  // writeChunk skips spool+PutObject and goes straight to HeadObject.
+  if ("isChunkReceived" in chunkStore) {
+    (chunkStore as { isChunkReceived: (typeof chunkStore)["isChunkReceived"] }).isChunkReceived =
+      async (uploadId: string, index: number) => {
+        const redis = getRedis();
+        return (await redis.sismember(uploadKeys.chunks(uploadId), String(index))) === 1;
+      };
+  }
+
   app.post(
     "/v1/uploads/create",
     {
