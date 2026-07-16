@@ -1106,3 +1106,57 @@ test("cancel keeps gc tracking when terminal artifact cleanup fails", async () =
     await cleanupUpload(uploadId);
   }
 });
+
+test("chunk upload adds chunk index to chunks set atomically with touchUploadActivity", async () => {
+  const uploadId = await seedUpload({ totalChunks: 3 });
+  const app = await createRouteApp();
+  const chunk = Buffer.from("test");
+  const expectedHash = createHash("sha256").update(chunk).digest("hex");
+  try {
+    const redis = redisModule.getRedis();
+    const { uploadKeys } = keysModule;
+
+    const res0 = await app.inject({
+      method: "PUT",
+      url: `/v1/uploads/${uploadId}/chunk/0`,
+      routePath: "/v1/uploads/:uploadId/chunk/:index",
+      params: { uploadId, index: "0" },
+      headers: { "x-chunk-sha256": expectedHash },
+      filePart: makeFilePart(chunk),
+    });
+    const res1 = await app.inject({
+      method: "PUT",
+      url: `/v1/uploads/${uploadId}/chunk/1`,
+      routePath: "/v1/uploads/:uploadId/chunk/:index",
+      params: { uploadId, index: "1" },
+      headers: { "x-chunk-sha256": expectedHash },
+      filePart: makeFilePart(chunk),
+    });
+
+    const chunks = await redis.smembers<string[]>(uploadKeys.chunks(uploadId));
+    const meta = await redis.hgetall<Record<string, string>>(uploadKeys.meta(uploadId));
+
+    assert.equal(res0.statusCode, 200);
+    assert.equal(res1.statusCode, 200);
+    assert.deepEqual(chunks.sort(), ["0", "1"]);
+    assert.equal(meta.lastChunkIndex, "1");
+    assert.equal(Number(meta.lastChunkAt) > 0, true);
+  } finally {
+    await cleanupUpload(uploadId);
+  }
+});
+
+test("touchUploadActivity does not add to chunks set when chunkIndex is omitted", async () => {
+  const uploadId = await seedUpload();
+  const redis = redisModule.getRedis();
+  const { uploadKeys } = keysModule;
+  try {
+    await sessionModule.touchUploadActivity({ uploadId });
+    const chunks = await redis.smembers<string[]>(uploadKeys.chunks(uploadId));
+    assert.deepEqual(chunks, []);
+    assert.equal(await redis.sismember(uploadKeys.gcIndex(), uploadId), 1);
+    assert.equal(await redis.sismember(uploadKeys.activeIndex(), uploadId), 1);
+  } finally {
+    await cleanupUpload(uploadId);
+  }
+});

@@ -44,9 +44,11 @@ async function collectBody(body: Readable): Promise<Buffer> {
 
 function makeStore(overrides?: {
   onPut?: (input: Record<string, unknown>) => Promise<void>;
+  put412?: boolean;
   headExists?: boolean;
   headResult?: Record<string, unknown>;
 }) {
+  const calls = { head: 0, put: 0 };
   const store = Object.create(S3ChunkStore.prototype) as S3ChunkStore & {
     cfg: Record<string, unknown>;
   };
@@ -57,10 +59,20 @@ function makeStore(overrides?: {
     client: {
       async send(command: HeadObjectCommand | PutObjectCommand) {
         if (command instanceof HeadObjectCommand) {
+          calls.head++;
           if (overrides?.headExists) return overrides.headResult ?? {};
           throw new Error("NotFound");
         }
         if (command instanceof PutObjectCommand) {
+          calls.put++;
+          if (overrides?.put412) {
+            const err = new Error("Precondition Failed");
+            err.name = "PreconditionFailed";
+            (err as { $metadata?: { httpStatusCode?: number } }).$metadata = {
+              httpStatusCode: 412,
+            };
+            throw err;
+          }
           await overrides?.onPut?.(command.input);
           return {};
         }
@@ -72,7 +84,7 @@ function makeStore(overrides?: {
       PutObjectCommand,
     },
   };
-  return store;
+  return { store, calls };
 }
 
 test("s3 chunk store streams validated chunk bodies into put object", async () => {
@@ -81,7 +93,7 @@ test("s3 chunk store streams validated chunk bodies into put object", async () =
   let bodyWasReadable = false;
   let uploaded: Buffer | null = null;
 
-  const store = makeStore({
+  const { store, calls } = makeStore({
     async onPut(input) {
       bodyWasReadable = input.Body instanceof Readable;
       uploaded = await collectBody(input.Body);
@@ -102,13 +114,14 @@ test("s3 chunk store streams validated chunk bodies into put object", async () =
   assert.deepEqual(result, { alreadyExisted: false });
   assert.equal(bodyWasReadable, true);
   assert.deepEqual(uploaded, chunk);
+  assert.equal(calls.head, 0, "HeadObject should not be called on fresh write");
 });
 
 test("s3 chunk store rejects hash mismatch before S3 PutObject", async () => {
   const chunk = Buffer.from("bad-hash");
   let putAttempted = false;
 
-  const store = makeStore({
+  const { store, calls } = makeStore({
     async onPut(input) {
       putAttempted = true;
       await collectBody(input.Body);
@@ -124,18 +137,19 @@ test("s3 chunk store rejects hash mismatch before S3 PutObject", async () => {
   // New spool-to-temp pattern validates hash AFTER writing to temp file
   // but BEFORE any S3 PutObject call — so putAttempted is false.
   assert.equal(putAttempted, false);
+  assert.equal(calls.head, 0, "HeadObject should not be called on hash mismatch");
 });
 
-test("s3 chunk store validates existing chunk metadata before reusing it", async () => {
+test("s3 chunk store calls HeadObject only after PutObject 412 (not upfront)", async () => {
   const chunk = Buffer.from("already-there");
   const expectedHash = createHash("sha256").update(chunk).digest("hex");
-  const store = makeStore({
+
+  const { store, calls } = makeStore({
+    put412: true,
     headExists: true,
     headResult: {
       ContentLength: chunk.length,
-      Metadata: {
-        sha256: expectedHash,
-      },
+      Metadata: { sha256: expectedHash },
     },
   });
 
@@ -149,18 +163,20 @@ test("s3 chunk store validates existing chunk metadata before reusing it", async
   );
 
   assert.deepEqual(result, { alreadyExisted: true });
+  assert.equal(calls.put, 1, "PutObject called once (fails with 412)");
+  assert.equal(calls.head, 1, "HeadObject called once (after 412)");
 });
 
-test("s3 chunk store rejects existing chunk hash mismatch", async () => {
+test("s3 chunk store rejects existing chunk hash mismatch after 412", async () => {
   const chunk = Buffer.from("already-there");
   const expectedHash = createHash("sha256").update(chunk).digest("hex");
-  const store = makeStore({
+
+  const { store, calls } = makeStore({
+    put412: true,
     headExists: true,
     headResult: {
       ContentLength: chunk.length,
-      Metadata: {
-        sha256: "0".repeat(64),
-      },
+      Metadata: { sha256: "0".repeat(64) },
     },
   });
 
@@ -168,4 +184,6 @@ test("s3 chunk store rejects existing chunk hash mismatch", async () => {
     () => store.writeChunk("upload-4", 0, Readable.from(chunk), expectedHash, chunk.length, false),
     /HASH_MISMATCH/,
   );
+  assert.equal(calls.put, 1, "PutObject called once (fails with 412)");
+  assert.equal(calls.head, 1, "HeadObject called once (after 412)");
 });

@@ -184,41 +184,6 @@ export class S3ChunkStore implements ChunkStore {
   ): Promise<{ alreadyExisted: boolean }> {
     const key = this.chunkKey(uploadId, index);
 
-    try {
-      const head = await this.cfg.client.send(
-        new this.cfg.cmd.HeadObjectCommand({
-          Bucket: this.cfg.bucket,
-          Key: key,
-        }),
-      );
-      const contentLength = Number(head?.ContentLength ?? head?.contentLength);
-      const storedHash = String(
-        head?.Metadata?.sha256 ?? head?.metadata?.sha256 ?? "",
-      ).toLowerCase();
-      if (Number.isFinite(contentLength)) {
-        if (isLastChunk) {
-          if (contentLength <= 0 || contentLength > expectedSize) {
-            throw new Error("INVALID_LAST_CHUNK_SIZE");
-          }
-        } else if (contentLength !== expectedSize) {
-          throw new Error("CHUNK_SIZE_MISMATCH");
-        }
-      }
-      if (storedHash && storedHash !== expectedHash.toLowerCase()) {
-        throw new Error("HASH_MISMATCH");
-      }
-      return { alreadyExisted: true };
-    } catch (err: any) {
-      if (
-        err?.message === "HASH_MISMATCH" ||
-        err?.message === "CHUNK_SIZE_MISMATCH" ||
-        err?.message === "INVALID_LAST_CHUNK_SIZE"
-      ) {
-        throw err;
-      }
-      // Continue for missing keys.
-    }
-
     // Spool client stream to temp file first: validates size and hash,
     // then upload from disk. This decouples client-stream timing from
     // the S3 PutObject connection, avoiding slow-client backpressure
@@ -242,27 +207,66 @@ export class S3ChunkStore implements ChunkStore {
         throw new Error("CHUNK_SIZE_MISMATCH");
       }
 
-      await this.cfg.client.send(
-        new this.cfg.cmd.PutObjectCommand({
-          Bucket: this.cfg.bucket,
-          Key: key,
-          Body: fs.createReadStream(tempPath),
-          ContentLength: actualSize,
-          ContentType: "application/octet-stream",
-          Metadata: {
-            sha256,
-          },
-          IfNoneMatch: "*",
-        }),
-      );
-      return { alreadyExisted: false };
-    } catch (err: any) {
-      const status = Number(err?.$metadata?.httpStatusCode ?? 0);
-      const code = String(err?.name ?? "");
-      if (status === 412 || code === "PreconditionFailed") {
+      // Try PutObject with IfNoneMatch first — saves a HeadObject
+      // round-trip on every fresh chunk write (the common case).
+      try {
+        await this.cfg.client.send(
+          new this.cfg.cmd.PutObjectCommand({
+            Bucket: this.cfg.bucket,
+            Key: key,
+            Body: fs.createReadStream(tempPath),
+            ContentLength: actualSize,
+            ContentType: "application/octet-stream",
+            Metadata: {
+              sha256,
+            },
+            IfNoneMatch: "*",
+          }),
+        );
+        return { alreadyExisted: false };
+      } catch (putErr: any) {
+        const status = Number(putErr?.$metadata?.httpStatusCode ?? 0);
+        const code = String(putErr?.name ?? "");
+        if (status !== 412 && code !== "PreconditionFailed") {
+          throw putErr;
+        }
+
+        // 412 — chunk already exists. HeadObject to confirm and
+        // validate metadata (hash, size) before returning.
+        try {
+          const head = await this.cfg.client.send(
+            new this.cfg.cmd.HeadObjectCommand({
+              Bucket: this.cfg.bucket,
+              Key: key,
+            }),
+          );
+          const contentLength = Number(head?.ContentLength ?? head?.contentLength);
+          const storedHash = String(
+            head?.Metadata?.sha256 ?? head?.metadata?.sha256 ?? "",
+          ).toLowerCase();
+          if (Number.isFinite(contentLength)) {
+            if (isLastChunk) {
+              if (contentLength <= 0 || contentLength > expectedSize) {
+                throw new Error("INVALID_LAST_CHUNK_SIZE");
+              }
+            } else if (contentLength !== expectedSize) {
+              throw new Error("CHUNK_SIZE_MISMATCH");
+            }
+          }
+          if (storedHash && storedHash !== expectedHash.toLowerCase()) {
+            throw new Error("HASH_MISMATCH");
+          }
+        } catch (headErr: any) {
+          if (
+            headErr?.message === "HASH_MISMATCH" ||
+            headErr?.message === "CHUNK_SIZE_MISMATCH" ||
+            headErr?.message === "INVALID_LAST_CHUNK_SIZE"
+          ) {
+            throw headErr;
+          }
+        }
         return { alreadyExisted: true };
       }
-      throw err;
     } finally {
       await cleanup();
     }
