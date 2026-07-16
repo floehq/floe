@@ -219,6 +219,12 @@ async function resolveReusableWalrusBlob(params: {
     indexed.blobObjectId ??
     (await getBlobObjectIdByBlobId(indexed.blobId).catch(() => null)) ??
     undefined;
+
+  const currentEpochPromise = getCurrentWalrusEpoch().catch((err) => {
+    params.log?.warn({ err }, "Failed to fetch current Walrus epoch during finalize reuse");
+    return null;
+  });
+
   if (blobObjectId) {
     const blobState = await getWalrusBlobState(blobObjectId).catch((err) => {
       params.log?.warn({ err, blobObjectId }, "Failed to inspect reusable Walrus blob state");
@@ -231,10 +237,7 @@ async function resolveReusableWalrusBlob(params: {
 
   if (walrusEndEpoch === undefined) return null;
 
-  const currentWalrusEpoch = await getCurrentWalrusEpoch().catch((err) => {
-    params.log?.warn({ err }, "Failed to fetch current Walrus epoch during finalize reuse");
-    return null;
-  });
+  const currentWalrusEpoch = await currentEpochPromise;
   if (currentWalrusEpoch === null) {
     return null;
   }
