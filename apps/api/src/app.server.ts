@@ -11,6 +11,7 @@ import path from "path";
 import uploadRoutes from "./routes/uploads.js";
 import healthRoute from "./routes/health.js";
 import { filesRoutes } from "./routes/files.js";
+import opsApiKeysRoutes from "./routes/ops-api-keys.js";
 import { closeRedis, initRedis } from "./state/redis.js";
 import { closePostgres, initPostgres, isPostgresConfigured } from "./state/postgres.js";
 import { initS3IfEnabled } from "./state/s3.js";
@@ -34,6 +35,7 @@ import { ensureFilesTable } from "./db/files.repository.js";
 import { chunkStore } from "./store/index.js";
 import { initStreamCache } from "./services/stream/stream.cache.js";
 import { dumpConfig } from "./utils/configDump.js";
+import { initSuiSigner } from "./state/sui.js";
 import {
   initErrorReporter,
   closeErrorReporter,
@@ -275,7 +277,7 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
         title: "Floe API",
         description:
           "Resumable chunk uploads with S3 storage, Walrus blob publish, and Sui metadata finalization.",
-        version: "0.2.5",
+        version: "1.0.0",
       },
       servers: [{ url: "http://localhost:3000", description: "Development" }],
       components: {
@@ -354,6 +356,7 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
     await initRedis();
     await initS3IfEnabled(app.log);
     await initPostgres(app.log);
+    await initSuiSigner();
     await ensureFilesTable();
     await validateUploadTmpDir();
     if (TopologyConfig.features.streamCache) {
@@ -415,6 +418,9 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
   }
   if (TopologyConfig.routes.files) {
     await app.register(filesRoutes);
+  }
+  if (TopologyConfig.routes.ops) {
+    await app.register(opsApiKeysRoutes);
   }
   await app.register(healthRoute);
 

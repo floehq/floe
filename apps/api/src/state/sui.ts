@@ -3,6 +3,7 @@ import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 import { decodeSuiPrivateKey } from "@mysten/sui/cryptography";
 import { fromB64, fromHEX } from "@mysten/sui/utils";
 import { EnvSuiSigner } from "../sui/sui.signer.js";
+import { KmsSuiSigner } from "../sui/sui.signer.kms.js";
 import type { SuiSigner } from "../sui/sui.signer.js";
 
 const MAINNET_RPC = "https://fullnode.mainnet.sui.io:443";
@@ -121,11 +122,51 @@ export function getSuiClient(): SuiClient {
   return _suiClient;
 }
 
+function parseSignerBackend(): "env" | "kms" {
+  const raw = process.env.FLOE_SIGNER_BACKEND?.trim().toLowerCase();
+  if (!raw || raw === "env") return "env";
+  if (raw === "kms") return "kms";
+  throw new Error("FLOE_SIGNER_BACKEND must be 'env' or 'kms'");
+}
+
 export function getSuiSigner(): SuiSigner {
   if (!_suiSigner) {
+    throw new Error("SuiSigner not initialized — call initSuiSigner() during startup");
+  }
+  return _suiSigner;
+}
+
+/**
+ * Initialize the Sui signer singleton. For the env backend this is synchronous
+ * internally; for the KMS backend it fetches the public key from AWS KMS so
+ * the process fails loudly at startup rather than on the first transaction.
+ */
+export async function initSuiSigner(): Promise<SuiSigner> {
+  if (_suiSigner) return _suiSigner;
+
+  const backend = parseSignerBackend();
+
+  if (backend === "kms") {
+    const keyId = process.env.FLOE_KMS_KEY_ID?.trim();
+    if (!keyId) {
+      throw new Error("FLOE_KMS_KEY_ID is required when FLOE_SIGNER_BACKEND=kms");
+    }
+    const address = process.env.FLOE_SIGNER_ADDRESS?.trim();
+    if (!address || !/^0x[0-9a-fA-F]{64}$/.test(address)) {
+      throw new Error(
+        "FLOE_SIGNER_ADDRESS must be a 0x-prefixed 64 hex character Sui address " +
+          "(required when FLOE_SIGNER_BACKEND=kms)",
+      );
+    }
+    const region = process.env.AWS_REGION?.trim();
+    const signer = new KmsSuiSigner({ keyId, address, client: getSuiClient(), region });
+    await signer.fetchPublicKey();
+    _suiSigner = signer;
+  } else {
     const key = parseSuiPrivateKey();
     const kp = createSignerFromEnv(key);
     _suiSigner = new EnvSuiSigner(kp, getSuiClient());
   }
+
   return _suiSigner;
 }

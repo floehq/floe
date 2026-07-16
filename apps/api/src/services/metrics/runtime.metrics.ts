@@ -1,4 +1,5 @@
 import { getAllSloStatuses, recordApiSli } from "../reliability/sli.js";
+import { getInstanceLabels, getInstanceInfoLabels } from "./instance.js";
 
 type LabelValue = string | number | boolean;
 type Labels = Record<string, LabelValue>;
@@ -24,13 +25,17 @@ function labelsToSortedPairs(labels?: Labels): Array<[string, string]> {
 }
 
 function labelsToKey(labels?: Labels): string {
-  const pairs = labelsToSortedPairs(labels);
+  const instanceLabels = getInstanceLabels();
+  const merged = { ...instanceLabels, ...labels };
+  const pairs = labelsToSortedPairs(merged);
   if (pairs.length === 0) return "";
   return pairs.map(([k, v]) => `${k}=${v}`).join(",");
 }
 
 function labelsToProm(labels?: Labels): string {
-  const pairs = labelsToSortedPairs(labels);
+  const instanceLabels = getInstanceLabels();
+  const merged = { ...instanceLabels, ...labels };
+  const pairs = labelsToSortedPairs(merged);
   if (pairs.length === 0) return "";
   const rendered = pairs.map(([k, v]) => `${k}="${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`);
   return `{${rendered.join(",")}}`;
@@ -512,6 +517,11 @@ export function renderPrometheusMetrics(): string {
     ),
     ...renderSliGauges(),
   );
+
+  const infoLabels = getInstanceInfoLabels();
+  lines.push("# HELP floe_instance_info Static metadata about this Floe instance");
+  lines.push("# TYPE floe_instance_info gauge");
+  lines.push(`floe_instance_info${labelsToProm(infoLabels)} 1`);
 
   return `${lines.join("\n")}\n`;
 }

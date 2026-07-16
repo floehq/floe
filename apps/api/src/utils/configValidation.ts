@@ -60,9 +60,23 @@ export function validateConfig(): ConfigValidationResult {
     errors.push("SUI_PACKAGE_ID is required for Sui metadata operations");
   }
 
-  const suiPrivateKey = requireEnv("SUI_PRIVATE_KEY");
-  if (!suiPrivateKey) {
-    errors.push("SUI_PRIVATE_KEY or SUI_SECRET_KEY is required for Sui signing");
+  const signerBackend = lowerEnv("FLOE_SIGNER_BACKEND") ?? "env";
+  if (signerBackend === "kms") {
+    const kmsKeyId = requireEnv("FLOE_KMS_KEY_ID");
+    if (!kmsKeyId) {
+      errors.push("FLOE_KMS_KEY_ID is required when FLOE_SIGNER_BACKEND=kms");
+    }
+    const signerAddress = requireEnv("FLOE_SIGNER_ADDRESS");
+    if (!signerAddress) {
+      errors.push("FLOE_SIGNER_ADDRESS is required when FLOE_SIGNER_BACKEND=kms");
+    } else if (!/^0x[0-9a-fA-F]{64}$/.test(signerAddress)) {
+      errors.push("FLOE_SIGNER_ADDRESS must be a 0x-prefixed 64 hex character Sui address");
+    }
+  } else {
+    const suiPrivateKey = requireEnv("SUI_PRIVATE_KEY");
+    if (!suiPrivateKey) {
+      errors.push("SUI_PRIVATE_KEY or SUI_SECRET_KEY is required for Sui signing");
+    }
   }
 
   // -- S3 (optional) --

@@ -17,15 +17,28 @@ export type StoredApiKey = {
   tier: RateLimitTier;
 };
 
+/** The plaintext secret — returned once on creation, never stored. */
+export type AdminApiKeyRecord = {
+  /** The public key identifier (floe_<id>_<secret>). */
+  id: string;
+  /** The full plaintext credential including secret. Shown once. */
+  secret: string;
+  /** When the key was created. */
+  createdAt: Date;
+};
+
+export type AdminApiKeyRotateRecord = {
+  id: string;
+  secret: string;
+  rotatedAt: Date;
+};
+
 /**
  * Read-side interface for API key storage.
  *
  * Implementations:
  *   - EnvApiKeyStore  — reads from FLOE_API_KEYS_JSON (env/config)
  *   - PostgresApiKeyStore — reads from a floe_api_keys table
- *
- * Create/revoke operations are NOT provided here — those belong in the
- * SaaS layer or a later core admin API.
  */
 export interface ApiKeyStore {
   /**
@@ -57,4 +70,17 @@ export interface ApiKeyStore {
    * List all non-revoked keys. Used for cache warming or debug inspection.
    */
   listActive(): Promise<StoredApiKey[]>;
+
+  /** Create a new API key. Returns the plaintext secret once. */
+  create(params: {
+    owner?: string;
+    scopes: string[];
+    tier: RateLimitTier;
+  }): Promise<AdminApiKeyRecord>;
+
+  /** Revoke an API key by id. Returns true if a key was revoked. */
+  revoke(id: string): Promise<boolean>;
+
+  /** Rotate an API key — revokes old, creates new. Returns new plaintext secret. */
+  rotate(id: string): Promise<AdminApiKeyRotateRecord>;
 }
