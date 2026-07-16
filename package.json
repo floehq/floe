@@ -15,7 +15,6 @@
     "start": "npm run start --workspace=apps/api",
     "upload": "./floe.sh",
     "bench:stream": "node scripts/stream-bench.mjs",
-    "bench:upload": "node scripts/upload-load.mjs",
     "measure:stream": "node ./scripts/measure-stream.mjs",
     "lint": "npm run lint --workspaces --if-present",
     "clean": "rm -rf node_modules && npm install"
