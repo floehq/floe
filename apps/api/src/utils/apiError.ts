@@ -48,8 +48,7 @@ export type ApiErrorCode =
   | "FILE_BLOB_UNAVAILABLE"
   | "MISSING_BLOB_OBJECT_ID"
   | "RENEWAL_FAILED"
-  | "AUTH_REQUIRED"
-  | "API_KEY_NOT_FOUND";
+  | "AUTH_REQUIRED";
 
 export interface ApiErrorResponse {
   error: {

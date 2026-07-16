@@ -30,98 +30,11 @@
 
 ## Testing
 
-### Test Framework
-
-Tests use the **Node.js built-in test runner** (`node:test`) with `tsx` as the TypeScript loader. No Jest, Vitest, or Mocha.
-
-### Running Tests
-
-| Command | Description |
-| --- | --- |
-| `npm test --workspace=apps/api` | All tests (includes `--experimental-test-coverage`) |
-| `npx tsx --test ./test/validation.test.ts` | Single file |
-| `npx tsx --test --no-coverage ./test/*.test.ts` | All tests without coverage |
-
-### Test Categories
-
-- **Unit tests** (`*.test.ts`) — no external dependencies, run anywhere. Mock all I/O.
-- **Integration tests** (`*.integration.test.ts`) — require one or more of: Redis, Postgres, MinIO (S3-compatible). Many spawn their own Redis on a random port (see `upload.integration.test.ts`).
-
-### Test File Map
-
-| File | Subsystem | Unit / Integration |
-| --- | --- | --- |
-| `auth.api-key-store-interface.test.ts` | Auth — API key store interface contract | Unit |
-| `auth.api-key.pg.test.ts` | Auth — Postgres API key store (unit) | Unit |
-| `auth.api-key.pg.integration.test.ts` | Auth — Postgres API key store (real Postgres) | Integration |
-| `auth.headers.test.ts` | Auth — Rate-limit header formatting | Unit |
-| `auth.identity.test.ts` | Auth — Identity resolution | Unit |
-| `auth.provider.test.ts` | Auth — Auth providers (local, external) | Unit |
-| `auth.rate-limit.test.ts` | Auth — Rate limiting logic | Unit |
-| `circuit-breaker.test.ts` | Infrastructure — Circuit breaker state machine | Unit |
-| `circuit-breaker.integration.test.ts` | Infrastructure — Circuit breaker with upstream services | Integration |
-| `db.test.ts` | Database — Connection and query helpers | Unit |
-| `files.integration.test.ts` | Files — Upload-to-finalize end-to-end flow | Integration |
-| `finalize.integration.test.ts` | Finalize — File metadata finalization (spawns Redis) | Integration |
-| `finalize.shared.test.ts` | Finalize — Shared utilities | Unit |
-| `gc.test.ts` | Garbage collection — Expired session cleanup | Unit |
-| `metrics-instance.test.ts` | Metrics — Instance-level metrics | Unit |
-| `ops-api-keys.test.ts` | Ops — Admin API key management routes | Unit |
-| `redis.adapter.test.ts` | Redis — Adapter abstraction layer | Unit |
-| `redis.native.test.ts` | Redis — Native client wrapper | Unit |
-| `runtime.bootstrap.test.ts` | Runtime — Server bootstrap and startup | Unit |
-| `s3.state.test.ts` | S3 — Connection state management | Unit |
-| `s3.store.test.ts` | S3 — Chunk store (unit) | Unit |
-| `s3.store.integration.test.ts` | S3 — Chunk store (real MinIO/S3) | Integration |
-| `spool-bench.test.ts` | Spool — Benchmark / performance test | Unit |
-| `state.test.ts` | State — Global state management | Unit |
-| `sui.signer.kms.test.ts` | Sui — KMS-backed transaction signer | Unit |
-| `sui.signer.test.ts` | Sui — Transaction signer | Unit |
-| `topology.config.test.ts` | Config — Topology / deployment config parsing | Unit |
-| `upload.integration.test.ts` | Upload — Chunked upload flow (spawns Redis) | Integration |
-| `validation.test.ts` | Validation — Filename, content-type, config validation | Unit |
-| `walrus.test.ts` | Walrus — Blob store client | Unit |
-
-### Integration Test Setup
-
-Start the required infrastructure before running integration tests:
-
-```bash
-docker compose -f docker-compose.test.yml up -d
-```
-
-This starts Redis and Postgres. Set the following environment variables:
-
-```bash
-export FLOE_API_KEY_STORE=postgres
-export FLOE_AUTH_PROVIDER=local
-export DATABASE_URL=postgresql://floe_test:floe_test@localhost:5432/floe_test
-export REDIS_URL=redis://localhost:6379
-export FLOE_S3_ENDPOINT=http://localhost:9000
-export FLOE_S3_BUCKET=floe-test
-export FLOE_S3_ACCESS_KEY_ID=minioadmin
-export FLOE_S3_SECRET_ACCESS_KEY=minioadmin
-```
-
-Or copy `.env.integration.example` to `.env` and source it. Some integration tests (e.g., `upload.integration.test.ts`, `finalize.integration.test.ts`) spawn their own Redis on a random port and do not need a running instance.
-
-### Writing New Tests
-
-- Follow existing patterns in `apps/api/test/`.
-- Use `node:test` primitives: `describe`, `it`, `test`, `before`, `after`, `beforeEach`, `afterEach`.
-- Use `node:assert/strict` for assertions.
-- Integration tests that need Redis should spawn their own instance on a random port (pattern from `upload.integration.test.ts`) to avoid port conflicts in parallel runs.
-- Place test helpers in `test/fixtures/`.
+- **Unit tests** use Node.js native `node:test` runner with `tsx` loader.
+- Run all tests: `npm test --workspace=apps/api`
+- Run a specific test file: `node --import tsx --test test/validation.test.ts`
+- **Integration tests** require Redis running locally.
 - **Coverage target:** 80%+ on auth, upload routes, and finalize service.
-
-### CI Pipeline
-
-GitHub Actions runs four parallel jobs on every push/PR:
-
-1. **Build and Test API** — starts Redis, Postgres, and MinIO via Docker; builds the API; runs migration check; runs the full test suite (unit + integration).
-2. **Lint** — ESLint + Prettier across all workspaces.
-3. **npm audit** — dependency vulnerability scan (high+ severity).
-4. **Trivy** — Docker image vulnerability scan (high/critical severity).
 
 ## Pull Request Process
 

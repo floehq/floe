@@ -1,5 +1,4 @@
 import { getAllSloStatuses, recordApiSli } from "../reliability/sli.js";
-import { getInstanceLabels, getInstanceInfoLabels } from "./instance.js";
 
 type LabelValue = string | number | boolean;
 type Labels = Record<string, LabelValue>;
@@ -25,17 +24,13 @@ function labelsToSortedPairs(labels?: Labels): Array<[string, string]> {
 }
 
 function labelsToKey(labels?: Labels): string {
-  const instanceLabels = getInstanceLabels();
-  const merged = { ...instanceLabels, ...labels };
-  const pairs = labelsToSortedPairs(merged);
+  const pairs = labelsToSortedPairs(labels);
   if (pairs.length === 0) return "";
   return pairs.map(([k, v]) => `${k}=${v}`).join(",");
 }
 
 function labelsToProm(labels?: Labels): string {
-  const instanceLabels = getInstanceLabels();
-  const merged = { ...instanceLabels, ...labels };
-  const pairs = labelsToSortedPairs(merged);
+  const pairs = labelsToSortedPairs(labels);
   if (pairs.length === 0) return "";
   const rendered = pairs.map(([k, v]) => `${k}="${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`);
   return `{${rendered.join(",")}}`;
