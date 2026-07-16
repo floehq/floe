@@ -35,6 +35,8 @@ export interface VerifiedApiKeyPrincipal {
  * All comparisons use timingSafeEqual — no plaintext comparison.
  */
 export class EnvApiKeyStore implements ApiKeyStore {
+  readonly supportsLifecycle = false;
+
   async findByHash(hash: Buffer): Promise<StoredApiKey | null> {
     for (const entry of AuthApiKeyConfig.keys) {
       const configuredDigest = crypto.createHash("sha256").update(entry.secret).digest();

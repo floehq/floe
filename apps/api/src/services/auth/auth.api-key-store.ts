@@ -41,6 +41,9 @@ export type AdminApiKeyRotateRecord = {
  *   - PostgresApiKeyStore — reads from a floe_api_keys table
  */
 export interface ApiKeyStore {
+  /** Whether this store supports key creation, revocation, and rotation. */
+  readonly supportsLifecycle?: boolean;
+
   /**
    * Look up a key by its SHA-256 hash.
    *
