@@ -1,5 +1,7 @@
 # Floe
 
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](CHANGELOG.md)
+
 Floe is a backend for uploading, finalizing, and reading large files with Walrus and Sui.
 
 It supports resumable chunk uploads, asynchronous finalize flow, stable file metadata, and byte-range reads through a versioned API.
