@@ -149,6 +149,7 @@ export async function touchUploadActivity(params: {
   const expiresAt = now + UploadConfig.sessionTtlMs;
   const sessionKey = uploadKeys.session(params.uploadId);
   const metaKey = uploadKeys.meta(params.uploadId);
+  const chunksKey = uploadKeys.chunks(params.uploadId);
   const fields = {
     updatedAt: String(now),
     expiresAt: String(expiresAt),
@@ -164,9 +165,11 @@ export async function touchUploadActivity(params: {
     local metaKey = KEYS[2]
     local gcKey = KEYS[3]
     local activeKey = KEYS[4]
+    local chunksKey = KEYS[5]
     local uploadId = ARGV[1]
     local sessionTtl = tonumber(ARGV[2])
     local metaTtl = tonumber(ARGV[3])
+    local chunkIndex = ARGV[4]
 
     if redis.call("EXISTS", sessionKey) == 0 then
       return 0
@@ -177,19 +180,23 @@ export async function touchUploadActivity(params: {
       return 0
     end
 
-    redis.call("HSET", sessionKey, unpack(ARGV, 4))
+    redis.call("HSET", sessionKey, unpack(ARGV, 5))
     redis.call("EXPIRE", sessionKey, sessionTtl)
-    redis.call("HSET", metaKey, unpack(ARGV, 4))
+    redis.call("HSET", metaKey, unpack(ARGV, 5))
     redis.call("EXPIRE", metaKey, metaTtl)
     redis.call("SADD", gcKey, uploadId)
     redis.call("SADD", activeKey, uploadId)
+    if chunkIndex ~= "" then
+      redis.call("SADD", chunksKey, chunkIndex)
+    end
     return 1
   `;
   const kvArgs = Object.entries(fields).flatMap(([field, value]) => [field, value]);
+  const chunkIndexArg = params.chunkIndex !== undefined ? String(params.chunkIndex) : "";
   const result = await redis.eval(
     script,
-    [sessionKey, metaKey, uploadKeys.gcIndex(), uploadKeys.activeIndex()],
-    [params.uploadId, String(sessionTtlSeconds()), String(metaTtlSeconds()), ...kvArgs],
+    [sessionKey, metaKey, uploadKeys.gcIndex(), uploadKeys.activeIndex(), chunksKey],
+    [params.uploadId, String(sessionTtlSeconds()), String(metaTtlSeconds()), chunkIndexArg, ...kvArgs],
   );
   return Number(result) === 1;
 }
