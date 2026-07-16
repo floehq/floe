@@ -216,3 +216,38 @@ describe("validateConfig — production + public access", () => {
       assert.equal(result.valid, true);
     }));
 });
+
+describe("validateConfig — publisher max-body-size warning", () => {
+  it("warns when FLOE_AUTH_MAX_FILE_SIZE_BYTES exceeds 10 MiB in publisher mode", () =>
+    withRequiredEnv(() => {
+      process.env.FLOE_WALRUS_STORE_MODE = "publisher";
+      process.env.FLOE_AUTH_MAX_FILE_SIZE_BYTES = String(15 * 1024 * 1024 * 1024);
+      const result = validateConfig();
+      assert.equal(result.valid, true);
+      assert.ok(result.warnings.some((w) => w.includes("--max-body-size")));
+    }));
+
+  it("does not warn when FLOE_AUTH_MAX_FILE_SIZE_BYTES is <= 10 MiB in publisher mode", () =>
+    withRequiredEnv(() => {
+      process.env.FLOE_WALRUS_STORE_MODE = "publisher";
+      process.env.FLOE_AUTH_MAX_FILE_SIZE_BYTES = String(10 * 1024 * 1024);
+      const result = validateConfig();
+      assert.ok(!result.warnings.some((w) => w.includes("--max-body-size")));
+    }));
+
+  it("does not warn in cli mode even with large file size", () =>
+    withRequiredEnv(() => {
+      process.env.FLOE_WALRUS_STORE_MODE = "cli";
+      process.env.FLOE_AUTH_MAX_FILE_SIZE_BYTES = String(15 * 1024 * 1024 * 1024);
+      const result = validateConfig();
+      assert.ok(!result.warnings.some((w) => w.includes("--max-body-size")));
+    }));
+
+  it("does not warn when FLOE_AUTH_MAX_FILE_SIZE_BYTES is unset in publisher mode", () =>
+    withRequiredEnv(() => {
+      process.env.FLOE_WALRUS_STORE_MODE = "publisher";
+      delete process.env.FLOE_AUTH_MAX_FILE_SIZE_BYTES;
+      const result = validateConfig();
+      assert.ok(!result.warnings.some((w) => w.includes("--max-body-size")));
+    }));
+});
