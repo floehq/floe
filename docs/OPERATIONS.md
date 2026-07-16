@@ -282,91 +282,6 @@ Interpretation:
 
 This does not replace full p50/p95 benchmarking, but it gives a reproducible branch-level check for read-path regressions and warm-cache benefit.
 
-## Load Testing
-
-`scripts/upload-load.mjs` exercises the full upload flow under concurrent load: session creation, chunk uploads, completion, and finalization polling. Use it to detect upload-path regressions and establish throughput baselines.
-
-### Prerequisites
-
-- running Floe API server
-- Redis (and optionally Postgres) available
-- API key when auth is required
-
-### Usage
-
-Basic run (10 sessions, 5 concurrent, 1 MiB chunks):
-
-```bash
-npm run bench:upload -- --api-key $FLOE_API_KEY
-```
-
-High concurrency:
-
-```bash
-npm run bench:upload -- --sessions 50 --concurrency 20
-```
-
-Custom chunk size and chunk count:
-
-```bash
-npm run bench:upload -- --chunk-size 524288 --file-chunks 8
-```
-
-Multiple rounds:
-
-```bash
-npm run bench:upload -- --runs 3 --out-dir tmp/bench-$(date +%s)
-```
-
-Full option reference:
-
-| Flag | Default | Description |
-|---|---|---|
-| `--base` | `http://localhost:3001` | API base URL |
-| `--api-key` | (none) | API key for auth |
-| `--sessions` | `10` | Number of upload sessions |
-| `--concurrency` | `5` | Max concurrent operations |
-| `--chunk-size` | `1048576` (1 MiB) | Chunk size in bytes |
-| `--file-chunks` | `4` | Chunks per file |
-| `--runs` | `1` | Full test rounds |
-| `--out-dir` | auto-timestamped | Output directory for CSV |
-
-### Output
-
-The script prints per-phase stats to stdout and writes a CSV to `tmp/upload-load/<timestamp>/upload-load.csv`.
-
-Phases measured:
-
-1. **create** — `POST /v1/uploads/create` latency
-2. **chunk** — `PUT /v1/uploads/:id/chunk/:index` latency and throughput
-3. **complete** — `POST /v1/uploads/:id/complete` latency
-4. **finalize** — wall-clock time waiting for upload to reach a terminal state
-
-#### Interpreting the numbers
-
-- **p50** — median latency; the experience of the typical request
-- **p95** — worst 5%; a good target for "acceptable tail latency"
-- **p99** — worst 1%; useful for catching outlier regressions even if p50 looks fine
-- **throughput (MiB/s)** — aggregate chunk upload bandwidth across all concurrent streams; higher is better but meaningless without context (network, disk, chunk size)
-- **error count** — any non-2xx response; zero is expected in a healthy environment, any errors should be investigated before claiming a baseline
-
-If p99 is significantly higher than p95, the bottleneck is likely a specific dependency (Redis, S3) or connection pool saturation rather than the API itself.
-
-### Recommended Baselines
-
-These are rough expectations for a local development machine with `disk` chunk backend and Redis on localhost:
-
-| Metric | Healthy range |
-|---|---|
-| create p50 | < 50 ms |
-| chunk p50 (1 MiB) | < 200 ms |
-| complete p50 | < 50 ms |
-| finalize p50 | < 5 s |
-| chunk throughput | > 50 MiB/s |
-| error rate | 0% |
-
-Actual numbers depend heavily on chunk size, S3/disk backend, and finalize dependencies (Walrus/Sui). Establish your own baseline on the target environment and compare against it after changes.
-
 ## Metrics
 
 Floe exports:
@@ -379,46 +294,6 @@ Floe exports:
 - stream TTFB
 - Walrus segment fetch totals and durations
 - stream read error counts
-
-## Multi-Instance Metrics
-
-When running multiple Floe instances (e.g., behind a load balancer or in a
-container orchestrator), each instance automatically labels all Prometheus
-metrics with a unique `instance` label.
-
-### Default Behavior
-
-By default, the instance ID is `hostname:PORT` (e.g., `web-3:3001`). This
-distinguishes metrics from different processes on the same host or different
-hosts in a cluster.
-
-### Custom Instance ID
-
-For orchestrated deployments (Kubernetes, ECS, Docker Compose), set
-`FLOE_INSTANCE_ID` to a stable, unique identifier:
-
-```dotenv
-FLOE_INSTANCE_ID=web-pod-3
-```
-
-Good values:
-- Kubernetes: `$(POD_NAME)` from the Downward API
-- ECS: `$(ECS_TASK_ID)`
-- Docker Compose: `$(HOSTNAME)`
-
-### Instance Info Gauge
-
-Every scrape includes a `floe_instance_info` gauge with static labels:
-
-```
-floe_instance_info{instance="web-3:3001",role="full",version="0.1.2",hostname="web-3"} 1
-```
-
-Use this in PromQL to filter by instance:
-
-```promql
-sum(rate(floe_http_requests_total[5m])) by (instance)
-```
 
 ## Infrastructure Event Output
 
@@ -556,8 +431,6 @@ When finalize backlog grows:
 2. inspect Walrus and Sui dependency failures
 3. tune `FLOE_FINALIZE_CONCURRENCY` only after confirming downstream capacity
 4. reduce ingest pressure if public traffic is saturating the queue
-
-> For detailed scaling guidance, concurrency tuning, and resource estimation, see [Finalize Scaling Guide](FINALIZE_SCALING.md).
 
 When Walrus failures spike:
 
