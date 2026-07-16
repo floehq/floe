@@ -295,6 +295,46 @@ Floe exports:
 - Walrus segment fetch totals and durations
 - stream read error counts
 
+## Multi-Instance Metrics
+
+When running multiple Floe instances (e.g., behind a load balancer or in a
+container orchestrator), each instance automatically labels all Prometheus
+metrics with a unique `instance` label.
+
+### Default Behavior
+
+By default, the instance ID is `hostname:PORT` (e.g., `web-3:3001`). This
+distinguishes metrics from different processes on the same host or different
+hosts in a cluster.
+
+### Custom Instance ID
+
+For orchestrated deployments (Kubernetes, ECS, Docker Compose), set
+`FLOE_INSTANCE_ID` to a stable, unique identifier:
+
+```dotenv
+FLOE_INSTANCE_ID=web-pod-3
+```
+
+Good values:
+- Kubernetes: `$(POD_NAME)` from the Downward API
+- ECS: `$(ECS_TASK_ID)`
+- Docker Compose: `$(HOSTNAME)`
+
+### Instance Info Gauge
+
+Every scrape includes a `floe_instance_info` gauge with static labels:
+
+```
+floe_instance_info{instance="web-3:3001",role="full",version="0.1.2",hostname="web-3"} 1
+```
+
+Use this in PromQL to filter by instance:
+
+```promql
+sum(rate(floe_http_requests_total[5m])) by (instance)
+```
+
 ## Infrastructure Event Output
 
 Floe can emit structured infrastructure lifecycle events into its normal application logs.
