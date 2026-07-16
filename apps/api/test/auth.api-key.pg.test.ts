@@ -41,9 +41,8 @@ function buildMockPg(overrides?: {
   rotateExistingAfterRevoke?: Array<Record<string, unknown>>;
   rowCount?: number;
 }): PgPool {
-  let rotateStep = 0;
   return {
-    query: async (sql: string, values?: unknown[]) => {
+    query: async (sql: string, _values?: unknown[]) => {
       if (sql.includes("create table")) {
         return { rows: [] };
       }
@@ -51,7 +50,10 @@ function buildMockPg(overrides?: {
         return { rows: [] };
       }
       // rotate: first query checks if key exists
-      if (sql.includes("select id from floe_api_keys where id =") && sql.includes("revoked_at is null")) {
+      if (
+        sql.includes("select id from floe_api_keys where id =") &&
+        sql.includes("revoked_at is null")
+      ) {
         return { rows: overrides?.rotateExisting ?? [] };
       }
       // rotate: revoke old key
@@ -443,10 +445,9 @@ test("PostgresApiKeyStore - create throws when postgres not available", async ()
   const { PostgresApiKeyStore } = await import(STORE_PATH);
   const store = new PostgresApiKeyStore();
 
-  await assert.rejects(
-    () => store.create({ scopes: ["*"], tier: "authenticated" }),
-    { message: "Postgres is required for API key creation" },
-  );
+  await assert.rejects(() => store.create({ scopes: ["*"], tier: "authenticated" }), {
+    message: "Postgres is required for API key creation",
+  });
 });
 
 test("PostgresApiKeyStore - revoke returns true when key is revoked", async () => {
@@ -473,10 +474,9 @@ test("PostgresApiKeyStore - revoke throws when postgres not available", async ()
   const { PostgresApiKeyStore } = await import(STORE_PATH);
   const store = new PostgresApiKeyStore();
 
-  await assert.rejects(
-    () => store.revoke("some-key"),
-    { message: "Postgres is required for API key revocation" },
-  );
+  await assert.rejects(() => store.revoke("some-key"), {
+    message: "Postgres is required for API key revocation",
+  });
 });
 
 test("PostgresApiKeyStore - rotate creates new key and revokes old", async () => {
@@ -498,28 +498,23 @@ test("PostgresApiKeyStore - rotate creates new key and revokes old", async () =>
 });
 
 test("PostgresApiKeyStore - rotate throws when key not found", async () => {
-  postgresModule.setPostgresForTests(
-    buildMockPg({ rotateExisting: [] }),
-    true,
-  );
+  postgresModule.setPostgresForTests(buildMockPg({ rotateExisting: [] }), true);
 
   const { PostgresApiKeyStore } = await import(STORE_PATH);
   const store = new PostgresApiKeyStore();
 
-  await assert.rejects(
-    () => store.rotate("nonexistent-key"),
-    { message: /API key not found or already revoked/ },
-  );
+  await assert.rejects(() => store.rotate("nonexistent-key"), {
+    message: /API key not found or already revoked/,
+  });
 });
 
 test("PostgresApiKeyStore - rotate throws when postgres not available", async () => {
   const { PostgresApiKeyStore } = await import(STORE_PATH);
   const store = new PostgresApiKeyStore();
 
-  await assert.rejects(
-    () => store.rotate("some-key"),
-    { message: "Postgres is required for API key rotation" },
-  );
+  await assert.rejects(() => store.rotate("some-key"), {
+    message: "Postgres is required for API key rotation",
+  });
 });
 
 test(
