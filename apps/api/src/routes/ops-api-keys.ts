@@ -45,6 +45,15 @@ export default async function opsApiKeysRoutes(app: FastifyInstance) {
   });
 
   app.post("/ops/api-keys", async (req, reply) => {
+    if (!store.supportsLifecycle) {
+      return sendApiError(
+        reply,
+        501,
+        "DEPENDENCY_UNAVAILABLE",
+        "API key lifecycle management requires FLOE_API_KEY_STORE=postgres",
+      );
+    }
+
     const authz = await req.server.authProvider.authorizeOpsAccess({
       req,
       action: "upload_admin",
@@ -60,14 +69,26 @@ export default async function opsApiKeysRoutes(app: FastifyInstance) {
 
     const body = (req.body ?? {}) as Record<string, unknown>;
     const owner = typeof body.owner === "string" ? body.owner : undefined;
-    const scopes = Array.isArray(body.scopes)
-      ? body.scopes.filter((s): s is string => typeof s === "string")
-      : ["*"];
-    const tier = body.tier === "public" ? "public" : ("authenticated" as const);
 
-    if (scopes.length === 0) {
-      return sendApiError(reply, 400, "INVALID_REQUEST_BODY", "At least one scope is required");
+    if (!Array.isArray(body.scopes) || body.scopes.length === 0) {
+      return sendApiError(
+        reply,
+        400,
+        "INVALID_REQUEST_BODY",
+        "scopes is required and must be a non-empty array of strings",
+      );
     }
+    const scopes = body.scopes.filter((s): s is string => typeof s === "string");
+    if (scopes.length === 0) {
+      return sendApiError(
+        reply,
+        400,
+        "INVALID_REQUEST_BODY",
+        "scopes must contain at least one valid string",
+      );
+    }
+
+    const tier = body.tier === "public" ? "public" : ("authenticated" as const);
 
     const result = await store.create({ owner, scopes, tier });
 
@@ -93,6 +114,15 @@ export default async function opsApiKeysRoutes(app: FastifyInstance) {
   });
 
   app.delete("/ops/api-keys/:keyId", async (req, reply) => {
+    if (!store.supportsLifecycle) {
+      return sendApiError(
+        reply,
+        501,
+        "DEPENDENCY_UNAVAILABLE",
+        "API key lifecycle management requires FLOE_API_KEY_STORE=postgres",
+      );
+    }
+
     const authz = await req.server.authProvider.authorizeOpsAccess({
       req,
       action: "upload_admin",
@@ -130,6 +160,15 @@ export default async function opsApiKeysRoutes(app: FastifyInstance) {
   });
 
   app.post("/ops/api-keys/:keyId/rotate", async (req, reply) => {
+    if (!store.supportsLifecycle) {
+      return sendApiError(
+        reply,
+        501,
+        "DEPENDENCY_UNAVAILABLE",
+        "API key lifecycle management requires FLOE_API_KEY_STORE=postgres",
+      );
+    }
+
     const authz = await req.server.authProvider.authorizeOpsAccess({
       req,
       action: "upload_admin",

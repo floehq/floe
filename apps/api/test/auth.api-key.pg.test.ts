@@ -13,6 +13,13 @@ type PgPool = {
     sql: string,
     values?: unknown[],
   ) => Promise<{ rows: Array<Record<string, unknown>>; rowCount?: number }>;
+  connect: () => Promise<{
+    query: (
+      sql: string,
+      values?: unknown[],
+    ) => Promise<{ rows: Array<Record<string, unknown>>; rowCount?: number }>;
+    release: () => void;
+  }>;
   end: () => Promise<void>;
 };
 
@@ -40,7 +47,55 @@ function buildMockPg(overrides?: {
   rotateExisting?: Array<Record<string, unknown>>;
   rotateExistingAfterRevoke?: Array<Record<string, unknown>>;
   rowCount?: number;
+  /** Shared mutable state for simulating concurrent transactions. */
+  shared?: {
+    keyAlive: boolean;
+    inserts: number;
+    lock: { holder: number; nextId: number; waiters: (() => void)[] };
+  };
 }): PgPool {
+  const shared = overrides?.shared ?? {
+    keyAlive: (overrides?.rotateExisting?.length ?? 0) > 0,
+    inserts: 0,
+    lock: { holder: 0, nextId: 1, waiters: [] as (() => void)[] },
+  };
+
+  async function clientQuery(sql: string, _values?: unknown[], txnId?: number) {
+    if (sql === "BEGIN") return { rows: [] as Array<Record<string, unknown>> };
+    if (sql === "COMMIT" || sql === "ROLLBACK") {
+      if (txnId && shared.lock.holder === txnId) {
+        shared.lock.holder = 0;
+        for (const r of shared.lock.waiters) r();
+        shared.lock.waiters = [];
+      }
+      return { rows: [] as Array<Record<string, unknown>> };
+    }
+    // rotate: SELECT ... FOR UPDATE — block until lock is free
+    if (sql.includes("select id from floe_api_keys") && sql.includes("for update")) {
+      if (txnId) {
+        while (shared.lock.holder !== 0 && shared.lock.holder !== txnId) {
+          await new Promise<void>((r) => shared.lock.waiters.push(r));
+        }
+        shared.lock.holder = txnId;
+      }
+      return { rows: shared.keyAlive ? [{ id: "old-key" }] : [] };
+    }
+    // rotate: revoke old key
+    if (sql.includes("update floe_api_keys set revoked_at")) {
+      if (shared.keyAlive) {
+        shared.keyAlive = false;
+        return { rows: [], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+    // rotate: insert new key
+    if (sql.includes("insert into floe_api_keys") && sql.includes("select owner from")) {
+      shared.inserts++;
+      return { rows: [] as Array<Record<string, unknown>> };
+    }
+    return { rows: [] as Array<Record<string, unknown>> };
+  }
+
   return {
     query: async (sql: string, _values?: unknown[]) => {
       if (sql.includes("create table")) {
@@ -49,7 +104,7 @@ function buildMockPg(overrides?: {
       if (sql.includes("create index")) {
         return { rows: [] };
       }
-      // rotate: first query checks if key exists
+      // rotate: first query checks if key exists (legacy pool-level path)
       if (
         sql.includes("select id from floe_api_keys where id =") &&
         sql.includes("revoked_at is null")
@@ -93,6 +148,13 @@ function buildMockPg(overrides?: {
         return { rows: overrides?.listActiveResult ?? [] };
       }
       return { rows: [] };
+    },
+    connect: async () => {
+      const txnId = shared.lock.nextId++;
+      return {
+        query: (sql: string, values?: unknown[]) => clientQuery(sql, values, txnId),
+        release: () => {},
+      };
     },
     end: async () => {},
   };
@@ -599,3 +661,34 @@ test(
     authConfig.AuthApiKeyConfig.keys.length = 0;
   },
 );
+
+test("PostgresApiKeyStore - concurrent rotate() on same key creates only one replacement", async () => {
+  const shared = {
+    keyAlive: true,
+    inserts: 0,
+    lock: { holder: 0, nextId: 1, waiters: [] as (() => void)[] },
+  };
+  postgresModule.setPostgresForTests(buildMockPg({ shared }), true);
+
+  const { PostgresApiKeyStore } = await import(STORE_PATH);
+  const store = new PostgresApiKeyStore();
+
+  // Fire two concurrent rotates on the same key id.
+  // The atomic transaction with SELECT ... FOR UPDATE ensures the second
+  // rotate sees the key already revoked after the first commits.
+  const [a, b] = await Promise.allSettled([store.rotate("old-key"), store.rotate("old-key")]);
+
+  const succeeded = [a, b].filter((r) => r.status === "fulfilled");
+  const failed = [a, b].filter((r) => r.status === "rejected");
+
+  assert.equal(succeeded.length, 1, "exactly one rotate should succeed");
+  assert.equal(failed.length, 1, "the other rotate should fail");
+  assert.equal(shared.inserts, 1, "only one replacement key should be inserted into the database");
+
+  // The failed one should have the "not found or already revoked" message
+  const err = (failed[0] as PromiseRejectedResult).reason;
+  assert.ok(
+    err instanceof Error && /not found or already revoked/.test(err.message),
+    `expected "not found or already revoked" error, got: ${err}`,
+  );
+});
