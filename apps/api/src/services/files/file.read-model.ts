@@ -4,11 +4,19 @@ import { isPostgresConfigured, isPostgresEnabled } from "../../state/postgres.js
 import { AuthModeConfig, AuthOwnerPolicyConfig } from "../../config/auth.config.js";
 import { parseBoolEnv } from "../../utils/parseEnv.js";
 
-// Latency fix: gate Sui RPC metadata fallback behind an env var.
-// When false (default), reads that miss Postgres return null instead of
-// falling back to a 200-2000ms Sui RPC call. This eliminates the cold-start
-// penalty — upload finalize should have already populated Postgres.
-const SUI_METADATA_FALLBACK_ENABLED = parseBoolEnv("FLOE_SUI_METADATA_FALLBACK", false);
+// Sui RPC metadata fallback behavior:
+// - If FLOE_SUI_METADATA_FALLBACK env var is explicitly set, use that value.
+// - Otherwise, default based on Postgres state:
+//   - Postgres disabled/degraded → enable fallback (finalize may not have written yet).
+//   - Postgres healthy → disable fallback (finalize should have populated Postgres;
+//     skipping the 200-2000ms Sui RPC call is the latency win).
+function shouldEnableSuiMetadataFallback(postgresState: PostgresReadState): boolean {
+  const envOverride = process.env.FLOE_SUI_METADATA_FALLBACK;
+  if (envOverride !== undefined) {
+    return parseBoolEnv("FLOE_SUI_METADATA_FALLBACK", false);
+  }
+  return postgresState !== "healthy";
+}
 
 const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
 
@@ -332,11 +340,10 @@ export async function getFileFieldsCached(fileId: string): Promise<CachedFileFie
     return { fields, source: "postgres", postgresState };
   }
 
-  // Latency fix: skip Sui RPC fallback by default. The 200-2000ms Sui RPC
-  // call is the dominant cold-start penalty. Upload finalize should have
-  // already populated Postgres. Set FLOE_SUI_METADATA_FALLBACK=true to
-  // re-enable for legacy data migration scenarios.
-  if (!SUI_METADATA_FALLBACK_ENABLED) {
+  // Skip Sui RPC fallback when Postgres is healthy and no explicit override.
+  // The Sui call adds 200-2000ms — only worthwhile when Postgres is unavailable
+  // or degraded (finalize may not have written yet).
+  if (!shouldEnableSuiMetadataFallback(postgresState)) {
     return { fields: null, source: null, postgresState };
   }
 
