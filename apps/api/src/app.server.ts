@@ -276,7 +276,7 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
         title: "Floe API",
         description:
           "Resumable chunk uploads with S3 storage, Walrus blob publish, and Sui metadata finalization.",
-        version: "0.2.5",
+        version: "1.0.0",
       },
       servers: [{ url: "http://localhost:3000", description: "Development" }],
       components: {
