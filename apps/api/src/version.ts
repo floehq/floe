@@ -1,5 +1,10 @@
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const pkg = require("../../package.json");
+
 export const FLOE_API_VERSION = "v1";
-export const FLOE_SERVER_VERSION = "0.1.2";
+export const FLOE_SERVER_VERSION: string = pkg.version;
 export const FLOE_SERVICE_NAME = `floe-api-${FLOE_API_VERSION}`;
 
 export const FLOE_CLIENT_COMPATIBILITY = {
