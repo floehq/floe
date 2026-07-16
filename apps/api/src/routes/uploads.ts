@@ -936,10 +936,9 @@ export default async function uploadRoutes(app: FastifyInstance) {
           expectedSize,
           isLastChunk,
         );
-        const persisted = await guardRedisDependency(reply, async () => {
-          await redis.sadd(uploadKeys.chunks(uploadId), String(idx));
-          return await touchUploadActivity({ uploadId, chunkIndex: idx });
-        });
+        const persisted = await guardRedisDependency(reply, () =>
+          touchUploadActivity({ uploadId, chunkIndex: idx }),
+        );
         if (persisted === REDIS_DEPENDENCY_UNAVAILABLE) return;
         if (!persisted) {
           await Promise.all([
