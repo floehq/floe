@@ -34,6 +34,7 @@ import { ensureFilesTable } from "./db/files.repository.js";
 import { chunkStore } from "./store/index.js";
 import { initStreamCache } from "./services/stream/stream.cache.js";
 import { dumpConfig } from "./utils/configDump.js";
+import { initSuiSigner } from "./state/sui.js";
 import {
   initErrorReporter,
   closeErrorReporter,
@@ -354,6 +355,7 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
     await initRedis();
     await initS3IfEnabled(app.log);
     await initPostgres(app.log);
+    await initSuiSigner();
     await ensureFilesTable();
     await validateUploadTmpDir();
     if (TopologyConfig.features.streamCache) {

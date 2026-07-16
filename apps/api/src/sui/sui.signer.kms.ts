@@ -30,7 +30,7 @@ export class KmsSuiSigner implements SuiSigner {
   readonly #keyId: string;
   readonly #client: SuiClient;
 
-  /** Cached public key (base64-encoded raw 32-byte Ed25519 public key). */
+  /** Cached raw 32-byte Ed25519 public key, base64-encoded. Populated by fetchPublicKey(). */
   #publicKeyB64: string | null = null;
 
   constructor(params: { keyId: string; address: string; client: SuiClient; region?: string }) {
@@ -119,7 +119,8 @@ export class KmsSuiSigner implements SuiSigner {
   }
 
   /**
-   * Get the raw Ed25519 public key bytes from KMS (cached after first call).
+   * Get the raw Ed25519 public key bytes (32 bytes) from the cache.
+   * Requires fetchPublicKey() to have been called first.
    */
   #getPublicKeyBytes(): Uint8Array {
     // In practice this will be populated by fetchPublicKey() at construction.
@@ -133,6 +134,15 @@ export class KmsSuiSigner implements SuiSigner {
   /**
    * Fetch and cache the public key from KMS. Must be called once after
    * construction and before any signing operations.
+   *
+   * AWS KMS returns a DER-encoded X.509 SubjectPublicKeyInfo (SPKI) blob.
+   * For ECC_NIST_EDWARDS25519 keys this is a fixed 44-byte structure:
+   *   30 2a                          — SEQUENCE of 42 bytes
+   *   30 05 06 03 2b 65 70          — algorithm OID 1.3.101.112 (Ed25519)
+   *   03 21 00                      — BIT STRING (33 bytes, 0 unused bits)
+   *   <32 bytes raw public key>
+   *
+   * We extract the last 32 bytes as the raw Ed25519 public key.
    */
   async fetchPublicKey(): Promise<void> {
     const result = await this.#kms.send(new GetPublicKeyCommand({ KeyId: this.#keyId }));
@@ -141,6 +151,15 @@ export class KmsSuiSigner implements SuiSigner {
       throw new Error("KMS GetPublicKey returned no key");
     }
 
-    this.#publicKeyB64 = Buffer.from(result.PublicKey).toString("base64");
+    const der = Buffer.from(result.PublicKey);
+
+    if (der.length < 44) {
+      throw new Error(
+        `KMS returned unexpectedly short DER public key (${der.length} bytes, expected >= 44)`,
+      );
+    }
+
+    const rawPubKey = der.subarray(-32);
+    this.#publicKeyB64 = Buffer.from(rawPubKey).toString("base64");
   }
 }

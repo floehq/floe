@@ -1,5 +1,6 @@
-import test from "node:test";
+import test, { mock } from "node:test";
 import assert from "node:assert/strict";
+import { KMSClient, GetPublicKeyCommand, SignCommand } from "@aws-sdk/client-kms";
 import { KmsSuiSigner } from "../src/sui/sui.signer.kms.js";
 
 /**
@@ -113,4 +114,116 @@ test("KmsSuiSigner - Sui signature format is flag(1) + pubkey(32) + sig(64) = 97
 
   const b64 = Buffer.from(suiSig).toString("base64");
   assert.ok(b64.length > 0, "base64 encoding should not be empty");
+});
+
+/**
+ * Build a realistic 44-byte Ed25519 SPKI DER blob that matches what
+ * AWS KMS GetPublicKeyCommand actually returns for ECC_NIST_EDWARDS25519 keys.
+ *
+ * Structure (44 bytes total):
+ *   30 2a                          — SEQUENCE of 42 bytes
+ *   30 05 06 03 2b 65 70          — algorithm OID 1.3.101.112 (Ed25519)
+ *   03 21 00                      — BIT STRING (33 bytes, 0 unused bits)
+ *   <32 bytes raw public key>
+ */
+function buildEd25519SpkiDer(rawPubKey: Uint8Array): Buffer {
+  assert.equal(rawPubKey.length, 32, "raw public key must be 32 bytes");
+  const header = Buffer.from([0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00]);
+  return Buffer.concat([header, Buffer.from(rawPubKey)]);
+}
+
+test("KmsSuiSigner.fetchPublicKey - extracts raw 32-byte key from DER SPKI blob", async () => {
+  const client = mockSuiClient();
+  const expectedAddress = KmsSuiSigner.deriveAddress(FAKE_PUBKEY);
+  const signer = new KmsSuiSigner({
+    keyId: "alias/test-key",
+    address: expectedAddress,
+    client,
+  });
+
+  const derBlob = buildEd25519SpkiDer(FAKE_PUBKEY);
+  assert.equal(derBlob.length, 44, "SPKI DER blob for Ed25519 must be 44 bytes");
+
+  // Mock KMSClient.prototype.send to return the DER blob
+  const sendMock = mock.method(KMSClient.prototype, "send", async (cmd: unknown) => {
+    if (cmd instanceof GetPublicKeyCommand) {
+      return { PublicKey: new Uint8Array(derBlob) };
+    }
+    if (cmd instanceof SignCommand) {
+      return { Signature: new Uint8Array(FAKE_SIGNATURE) };
+    }
+    throw new Error("unexpected KMS command");
+  });
+
+  try {
+    await signer.fetchPublicKey();
+
+    // Verify the signer address matches deriving directly from the raw key
+    assert.equal(signer.address, expectedAddress, "signer address must match deriveAddress(rawPubKey)");
+
+    // Verify #getPublicKeyBytes() now returns the extracted raw key (not the DER blob)
+    // by checking that signAndExecuteTransaction doesn't throw "public key not yet fetched"
+    // We can't fully execute (mock SuiClient lacks getReferenceGasPrice), but we can
+    // verify the key was cached by calling signPersonalMessage which only needs the key.
+    const sig = await signer.signPersonalMessage(new Uint8Array([1, 2, 3]));
+    assert.ok(sig.bytes, "signPersonalMessage should return bytes");
+    assert.ok(sig.signature, "signPersonalMessage should return signature");
+
+    // Verify the signature contains the correct public key (flag + pubkey + sig = 97 bytes)
+    const sigBuf = Buffer.from(sig.signature, "base64");
+    assert.equal(sigBuf.length, 97, "signature should be 97 bytes (1 + 32 + 64)");
+    assert.deepEqual(
+      Array.from(sigBuf.subarray(1, 33)),
+      Array.from(FAKE_PUBKEY),
+      "signature must embed the raw public key bytes",
+    );
+  } finally {
+    sendMock.mock.restore();
+  }
+});
+
+test("KmsSuiSigner.fetchPublicKey - rejects short DER blobs", async () => {
+  const client = mockSuiClient();
+  const signer = new KmsSuiSigner({
+    keyId: "alias/test-key",
+    address: KmsSuiSigner.deriveAddress(FAKE_PUBKEY),
+    client,
+  });
+
+  const sendMock = mock.method(KMSClient.prototype, "send", async () => {
+    return { PublicKey: new Uint8Array(20) }; // too short
+  });
+
+  try {
+    await assert.rejects(
+      () => signer.fetchPublicKey(),
+      /unexpectedly short/,
+      "should reject DER blobs shorter than 44 bytes",
+    );
+  } finally {
+    sendMock.mock.restore();
+  }
+});
+
+test("KmsSuiSigner.fetchPublicKey - rejects when KMS returns no key", async () => {
+  const client = mockSuiClient();
+  const signer = new KmsSuiSigner({
+    keyId: "alias/test-key",
+    address: KmsSuiSigner.deriveAddress(FAKE_PUBKEY),
+    client,
+  });
+
+  const sendMock = mock.method(KMSClient.prototype, "send", async () => {
+    return { PublicKey: undefined };
+  });
+
+  try {
+    await assert.rejects(
+      () => signer.fetchPublicKey(),
+      /GetPublicKey returned no key/,
+      "should throw when PublicKey is undefined",
+    );
+  } finally {
+    sendMock.mock.restore();
+  }
 });
