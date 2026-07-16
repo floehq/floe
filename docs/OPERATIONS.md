@@ -199,6 +199,15 @@ Recovery behavior:
 - retryable transient finalize failures stay in a recoverable state and are requeued on restart
 - timeout recovery races the worker and schedules retry instead of holding the slot indefinitely
 
+### Upload and Finalize Latency Optimizations
+
+The following optimizations reduce Redis and S3 round-trips on the hot paths:
+
+- **S3 HeadObject deferral**: chunk writes no longer issue a preemptive HeadObject before PutObject; the hash is only verified via HeadObject after a 412 precondition failure, saving one S3 round-trip on fresh writes.
+- **Atomic chunk tracking**: chunk index membership (`SADD chunks`), upload activity timestamps, session TTL refresh, and GC/active index updates are fused into a single Lua `eval` call in `touchUploadActivity`, eliminating a standalone Redis round-trip per chunk upload.
+- **Finalize parallelism**: checksum writes (`hset checksumSha256/checksumBlake3`) run concurrently, and Postgres `upsertIndexedFile` + `upsertBlobObjectMapping` run concurrently during finalize. The redundant `SCARD` check before the smembers loop was removed.
+- **Blob reuse epoch fetch**: `getCurrentWalrusEpoch` is fired before the blob state inspection in the reuse path, so both RPCs run in parallel.
+
 ## Garbage Collection
 
 GC reconciles tracked uploads and removes expired or terminal staging data.
