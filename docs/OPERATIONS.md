@@ -557,6 +557,8 @@ When finalize backlog grows:
 3. tune `FLOE_FINALIZE_CONCURRENCY` only after confirming downstream capacity
 4. reduce ingest pressure if public traffic is saturating the queue
 
+> For detailed scaling guidance, concurrency tuning, and resource estimation, see [Finalize Scaling Guide](FINALIZE_SCALING.md).
+
 When Walrus failures spike:
 
 1. verify aggregator health and fallback list
