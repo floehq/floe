@@ -11,6 +11,19 @@ import { CircuitBreakerError } from "../circuit-breaker/index.js";
 const BODY_IDLE_TIMEOUT_MS = 30_000;
 const HEAD_CHECK_TIMEOUT_MS = 15_000;
 
+/**
+ * Thrown by fetchWalrusBlob when ALL aggregators return 404 for a blob.
+ * Callers should map this to the appropriate user-facing error (e.g., 503).
+ */
+export class WalrusBlobNotFoundError extends Error {
+  readonly blobId: string;
+  constructor(blobId: string) {
+    super(`WALRUS_BLOB_NOT_FOUND blobId=${blobId}`);
+    this.name = "WalrusBlobNotFoundError";
+    this.blobId = blobId;
+  }
+}
+
 function normalizeBaseUrl(url: string): string {
   return url.replace(/\/$/, "");
 }
@@ -454,6 +467,9 @@ export async function fetchWalrusBlob(params: {
 
     if (lastErr) throw lastErr;
     if (lastStatus !== null) {
+      if (lastStatus === 404) {
+        throw new WalrusBlobNotFoundError(params.blobId);
+      }
       throw new Error(`WALRUS_FETCH_FAILED status=${lastStatus}`);
     }
     throw new Error("WALRUS_FETCH_FAILED");

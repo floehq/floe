@@ -76,6 +76,10 @@ Recommended hardening areas for production deployments:
 - principal-aware quotas and abuse controls
 - structured security event logging and alerting
 
+### Rate Limit Local Lease Bump
+
+The local lease size for `FLOE_RATE_LIMIT_FILE_META_LOCAL_LEASE` and `FLOE_RATE_LIMIT_FILE_STREAM_LOCAL_LEASE` was increased from 1 to 20. This allows a single Floe instance to serve up to 20 requests per tenant before the shared distributed rate limiter is consulted. The tradeoff: a single instance can burst ~19 requests past a tenant's configured limit before other instances or the shared limiter catches up. This is acceptable for single-instance deployments and small clusters, but deployments relying on precise per-tenant caps across many instances should monitor actual request rates against the configured limit and consider lowering the local lease size via env vars if tighter enforcement is required.
+
 ## Reporting
 
 If you find a security issue, report it privately to the maintainer before opening a public issue.
