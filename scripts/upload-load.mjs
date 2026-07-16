@@ -308,9 +308,10 @@ async function runLoadTest(args) {
     );
 
     const createLatencies = [];
-    for (const r of createResults) {
+    for (let i = 0; i < createResults.length; i++) {
+      const r = createResults[i];
       createLatencies.push(r.totalMs);
-      addRow("create", createResults.indexOf(r), "", Math.round(r.totalMs * 100) / 100, r.status);
+      addRow("create", i, "", Math.round(r.totalMs * 100) / 100, r.status);
       if (r.error) {
         errorCount++;
         console.error(`  create error: ${r.error}`);
@@ -329,10 +330,12 @@ async function runLoadTest(args) {
       }
     }
 
+    const chunkWallStart = performance.now();
     const totalChunkBytes = chunkItems.length * args.chunkSize;
     const chunkResults = await runWithConcurrency(chunkItems, args.concurrency, (item) =>
       uploadChunk(base, args.apiKey, item.uploadId, item.chunkIndex, args.chunkSize)
     );
+    const chunkWallMs = performance.now() - chunkWallStart;
 
     const chunkLatencies = [];
     for (let i = 0; i < chunkItems.length; i++) {
@@ -345,9 +348,8 @@ async function runLoadTest(args) {
       }
     }
     const chunkStats = summarize(chunkLatencies);
-    const totalChunkSec = chunkLatencies.reduce((a, b) => a + b, 0) / 1000;
-    const throughputMib = totalChunkBytes / (1024 * 1024) / Math.max(totalChunkSec, 0.001);
-    console.log(`  chunk: p50=${chunkStats.p50}ms p95=${chunkStats.p95}ms p99=${chunkStats.p99}ms throughput=${Math.round(throughputMib * 100) / 100} MiB/s`);
+    const throughputMib = (totalChunkBytes / (chunkWallMs / 1000)) / 1024 / 1024;
+    console.log(`  chunk: p50=${chunkStats.p50}ms p95=${chunkStats.p95}ms p99=${chunkStats.p99}ms throughput=${throughputMib.toFixed(1)} MiB/s`);
 
     // Phase 3: Complete sessions
     console.log(`\nPhase 3: Completing ${args.sessions} sessions...`);
