@@ -131,30 +131,42 @@ function parseSignerBackend(): "env" | "kms" {
 
 export function getSuiSigner(): SuiSigner {
   if (!_suiSigner) {
-    const backend = parseSignerBackend();
-
-    if (backend === "kms") {
-      const keyId = process.env.FLOE_KMS_KEY_ID?.trim();
-      if (!keyId) {
-        throw new Error("FLOE_KMS_KEY_ID is required when FLOE_SIGNER_BACKEND=kms");
-      }
-      const address = process.env.FLOE_SIGNER_ADDRESS?.trim();
-      if (!address || !/^0x[0-9a-fA-F]{64}$/.test(address)) {
-        throw new Error(
-          "FLOE_SIGNER_ADDRESS must be a 0x-prefixed 64 hex character Sui address " +
-            "(required when FLOE_SIGNER_BACKEND=kms)",
-        );
-      }
-      const region = process.env.AWS_REGION?.trim();
-      const signer = new KmsSuiSigner({ keyId, address, client: getSuiClient(), region });
-      // fetchPublicKey is called lazily on first use via a proxy pattern,
-      // but we eagerly fetch here to fail fast at startup if KMS is misconfigured.
-      _suiSigner = signer;
-    } else {
-      const key = parseSuiPrivateKey();
-      const kp = createSignerFromEnv(key);
-      _suiSigner = new EnvSuiSigner(kp, getSuiClient());
-    }
+    throw new Error("SuiSigner not initialized — call initSuiSigner() during startup");
   }
+  return _suiSigner;
+}
+
+/**
+ * Initialize the Sui signer singleton. For the env backend this is synchronous
+ * internally; for the KMS backend it fetches the public key from AWS KMS so
+ * the process fails loudly at startup rather than on the first transaction.
+ */
+export async function initSuiSigner(): Promise<SuiSigner> {
+  if (_suiSigner) return _suiSigner;
+
+  const backend = parseSignerBackend();
+
+  if (backend === "kms") {
+    const keyId = process.env.FLOE_KMS_KEY_ID?.trim();
+    if (!keyId) {
+      throw new Error("FLOE_KMS_KEY_ID is required when FLOE_SIGNER_BACKEND=kms");
+    }
+    const address = process.env.FLOE_SIGNER_ADDRESS?.trim();
+    if (!address || !/^0x[0-9a-fA-F]{64}$/.test(address)) {
+      throw new Error(
+        "FLOE_SIGNER_ADDRESS must be a 0x-prefixed 64 hex character Sui address " +
+          "(required when FLOE_SIGNER_BACKEND=kms)",
+      );
+    }
+    const region = process.env.AWS_REGION?.trim();
+    const signer = new KmsSuiSigner({ keyId, address, client: getSuiClient(), region });
+    await signer.fetchPublicKey();
+    _suiSigner = signer;
+  } else {
+    const key = parseSuiPrivateKey();
+    const kp = createSignerFromEnv(key);
+    _suiSigner = new EnvSuiSigner(kp, getSuiClient());
+  }
+
   return _suiSigner;
 }

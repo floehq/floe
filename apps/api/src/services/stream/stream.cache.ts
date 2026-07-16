@@ -308,15 +308,16 @@ export async function teeCachedStreamRange(params: {
     return { kind: "tee", cachePath: existingSession.cachePath, stream: cs };
   }
 
-  const releaseFillSlot = await acquireCacheFillSlot();
   const cachePath = streamRangeCachePath(params);
   await fsp.mkdir(path.dirname(cachePath), { recursive: true });
-  const tempPath = `${cachePath}.tmp-${process.pid}-${Date.now()}`;
   const expectedSize = params.end - params.start + 1;
   const broadcastStream = new PassThrough();
   const consumerStreams = new Set<PassThrough>();
   const fillStartedAt = Date.now();
 
+  // Register the session in the dedup map BEFORE acquireCacheFillSlot so
+  // concurrent requests for the same range join this session rather than
+  // issuing duplicate Walrus fetches.
   const session: InFlightTeeEntry = {
     cachePath,
     consumerStreams,
@@ -338,12 +339,11 @@ export async function teeCachedStreamRange(params: {
       if (!cs.destroyed) cs.destroy(err);
     }
   };
-  // Note: we do NOT forward `end` from broadcastStream to consumer streams.
-  // Consumer streams stay open until the cache write completes (or fails),
-  // so that truncation can be propagated as an error instead of a premature
-  // successful end.
   broadcastStream.on("data", fwdData);
   broadcastStream.on("error", fwdError);
+
+  const releaseFillSlot = await acquireCacheFillSlot();
+  const tempPath = `${cachePath}.tmp-${process.pid}-${Date.now()}`;
 
   const cleanupSession = () => {
     broadcastStream.off("data", fwdData);
@@ -498,13 +498,14 @@ export async function teeCachedStreamBlob(params: {
     return { kind: "tee", cachePath: existingSession.cachePath, stream: cs };
   }
 
-  const releaseFillSlot = await acquireCacheFillSlot();
   const filePath = streamCachePath(params.blobId);
-  const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   const broadcastStream = new PassThrough();
   const consumerStreams = new Set<PassThrough>();
   const fillStartedAt = Date.now();
 
+  // Register the session in the dedup map BEFORE any await so concurrent
+  // requests for the same blobId see this entry and join rather than
+  // issuing a duplicate Walrus fetch.
   const session: InFlightTeeEntry = {
     cachePath: filePath,
     consumerStreams,
@@ -532,6 +533,9 @@ export async function teeCachedStreamBlob(params: {
   // successful end.
   broadcastStream.on("data", fwdData);
   broadcastStream.on("error", fwdError);
+
+  const releaseFillSlot = await acquireCacheFillSlot();
+  const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
 
   const cleanupSession = () => {
     broadcastStream.off("data", fwdData);
