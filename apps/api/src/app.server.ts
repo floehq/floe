@@ -11,6 +11,7 @@ import path from "path";
 import uploadRoutes from "./routes/uploads.js";
 import healthRoute from "./routes/health.js";
 import { filesRoutes } from "./routes/files.js";
+import opsApiKeysRoutes from "./routes/ops-api-keys.js";
 import { closeRedis, initRedis } from "./state/redis.js";
 import { closePostgres, initPostgres, isPostgresConfigured } from "./state/postgres.js";
 import { initS3IfEnabled } from "./state/s3.js";
@@ -415,6 +416,9 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
   }
   if (TopologyConfig.routes.files) {
     await app.register(filesRoutes);
+  }
+  if (TopologyConfig.routes.ops) {
+    await app.register(opsApiKeysRoutes);
   }
   await app.register(healthRoute);
 
