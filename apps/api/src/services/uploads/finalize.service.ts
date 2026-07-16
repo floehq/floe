@@ -387,11 +387,6 @@ export async function finalizeUpload(
     let checksum: string | undefined;
 
     await runStage("verify_chunks", async () => {
-      const redisCount = await redis.scard(uploadKeys.chunks(uploadId));
-      if (redisCount !== session.totalChunks) {
-        throw new Error("INCOMPLETE_CHUNKS");
-      }
-
       // Use Redis chunk index (uploadKeys.chunks) instead of calling
       // S3 ListObjectsV2 — cheaper and sufficient for existence checks.
       const chunkMembers = await redis.smembers<string[]>(uploadKeys.chunks(uploadId));
@@ -520,8 +515,10 @@ export async function finalizeUpload(
 
       // Persist the computed checksum now that walrus_publish has produced it
       if (checksum && checksum !== meta?.checksum) {
-        await redis.hset(metaKey, { checksum }).catch(() => {});
-        await redis.hset(uploadKeys.session(uploadId), { checksum }).catch(() => {});
+        await Promise.all([
+          redis.hset(metaKey, { checksum }).catch(() => {}),
+          redis.hset(uploadKeys.session(uploadId), { checksum }).catch(() => {}),
+        ]);
       }
     }
 
@@ -596,34 +593,36 @@ export async function finalizeUpload(
     }
     committedCompletedState = true;
 
-    await upsertIndexedFile({
-      fileId,
-      blobId,
-      blobObjectId: walrusObjectId ?? null,
-      checksum: checksum ?? null,
-      ownerAddress: session.owner ?? null,
-      sizeBytes: session.sizeBytes,
-      mimeType: session.contentType ?? "application/octet-stream",
-      walrusEndEpoch: walrusEndEpoch ?? null,
-      createdAtMs: Date.now(),
-    }).catch((pgErr) => {
-      context.log?.warn(
-        { uploadId, fileId, blobId, err: pgErr },
-        "Failed to persist indexed file metadata to Postgres during finalize — Redis and Postgres are now divergent",
-      );
-    });
-    if (walrusObjectId) {
-      await upsertBlobObjectMapping({
+    await Promise.all([
+      upsertIndexedFile({
+        fileId,
         blobId,
-        blobObjectId: walrusObjectId,
+        blobObjectId: walrusObjectId ?? null,
         checksum: checksum ?? null,
+        ownerAddress: session.owner ?? null,
+        sizeBytes: session.sizeBytes,
+        mimeType: session.contentType ?? "application/octet-stream",
+        walrusEndEpoch: walrusEndEpoch ?? null,
+        createdAtMs: Date.now(),
       }).catch((pgErr) => {
         context.log?.warn(
-          { uploadId, blobId, blobObjectId: walrusObjectId, err: pgErr },
-          "Failed to persist blob-object mapping to Postgres during finalize — Redis and Postgres are now divergent",
+          { uploadId, fileId, blobId, err: pgErr },
+          "Failed to persist indexed file metadata to Postgres during finalize — Redis and Postgres are now divergent",
         );
-      });
-    }
+      }),
+      walrusObjectId
+        ? upsertBlobObjectMapping({
+            blobId,
+            blobObjectId: walrusObjectId,
+            checksum: checksum ?? null,
+          }).catch((pgErr) => {
+            context.log?.warn(
+              { uploadId, blobId, blobObjectId: walrusObjectId, err: pgErr },
+              "Failed to persist blob-object mapping to Postgres during finalize — Redis and Postgres are now divergent",
+            );
+          })
+        : Promise.resolve(),
+    ]);
 
     const cleanupStartedAt = Date.now();
     currentStage = "cleanup";
