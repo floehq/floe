@@ -128,7 +128,9 @@ test("KmsSuiSigner - Sui signature format is flag(1) + pubkey(32) + sig(64) = 97
  */
 function buildEd25519SpkiDer(rawPubKey: Uint8Array): Buffer {
   assert.equal(rawPubKey.length, 32, "raw public key must be 32 bytes");
-  const header = Buffer.from([0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00]);
+  const header = Buffer.from([
+    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+  ]);
   return Buffer.concat([header, Buffer.from(rawPubKey)]);
 }
 
@@ -159,7 +161,11 @@ test("KmsSuiSigner.fetchPublicKey - extracts raw 32-byte key from DER SPKI blob"
     await signer.fetchPublicKey();
 
     // Verify the signer address matches deriving directly from the raw key
-    assert.equal(signer.address, expectedAddress, "signer address must match deriveAddress(rawPubKey)");
+    assert.equal(
+      signer.address,
+      expectedAddress,
+      "signer address must match deriveAddress(rawPubKey)",
+    );
 
     // Verify #getPublicKeyBytes() now returns the extracted raw key (not the DER blob)
     // by checking that signAndExecuteTransaction doesn't throw "public key not yet fetched"
