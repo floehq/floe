@@ -282,7 +282,7 @@ function timestampSlug() {
 
 function csvEscape(value) {
   const raw = String(value ?? "");
-  if (!/[ ,"\n]/.test(raw) && !raw.includes(",")) return raw;
+  if (!/[ ,"\n]/.test(raw)) return raw;
   return `"${raw.replace(/"/g, '""')}"`;
 }
 
@@ -419,11 +419,23 @@ async function main() {
   await fs.mkdir(outputDir, { recursive: true });
   const csvPath = path.join(outputDir, "upload-load.csv");
   const headers = ["phase", "sessionIndex", "chunkIndex", "operationMs", "status"];
-  const csv = [
+  const lines = [
     headers.join(","),
     ...allRows.map((row) => headers.map((header) => csvEscape(row[header])).join(",")),
-  ].join("\n");
-  await fs.writeFile(csvPath, `${csv}\n`);
+  ];
+
+  for (const phase of ["create", "chunk", "complete", "finalize"]) {
+    const phaseRows = allRows.filter((r) => r.phase === phase);
+    const latencies = phaseRows.map((r) => r.operationMs);
+    if (latencies.length === 0) continue;
+    const s = summarize(latencies);
+    const ok = latencies.length - phaseRows.filter((r) => !r.status || r.status >= 400).length;
+    const errors = phaseRows.filter((r) => !r.status || r.status >= 400).length;
+    const stats = `p50=${s.p50} p95=${s.p95} p99=${s.p99} ok=${ok} errors=${errors}`;
+    lines.push(["summary", phase, "", stats, ""].map(csvEscape).join(","));
+  }
+
+  await fs.writeFile(csvPath, lines.join("\n") + "\n");
 
   // Overall summary
   for (const phase of ["create", "chunk", "complete", "finalize"]) {
