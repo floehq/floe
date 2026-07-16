@@ -45,44 +45,87 @@ Compatibility window:
 
 ## Local Development
 
-### Requirements
+### Prerequisites
 
 - Node.js `>=20`
-- Redis access
+- npm `>=9`
+- Docker and Docker Compose
 - Walrus aggregator access
 - Sui RPC access and a signing key
-- Walrus upload access through:
-  - `sdk` mode with `FLOE_WALRUS_SDK_BASE_URL`, or
-  - `cli` mode with a local `walrus` binary
 
-### Setup
+### Step 1 — Start infrastructure
+
+The project includes a `docker-compose.yml` that runs Redis, Postgres, and MinIO locally.
+Start them before anything else:
 
 ```bash
-git clone https://github.com/floehq/floe.git
-cd floe
+docker compose up -d
+```
+
+Verify the containers are healthy:
+
+```bash
+docker compose ps
+```
+
+See the [Docker Compose Services](#docker-compose-services) subsection below for ports and what each service does.
+
+### Step 2 — Configure environment
+
+```bash
+cp .env.example .env
+```
+
+Open `.env` and set the mandatory variables. For a minimal local setup the key
+vars to change from defaults are:
+
+| Variable | Default | Action |
+|---|---|---|
+| `FLOE_REDIS_PROVIDER` | `upstash` | Change to `native` for local Docker Redis |
+| `REDIS_URL` | — | Set to `redis://127.0.0.1:6379` |
+| `FLOE_S3_ACCESS_KEY_ID` | `minioadmin` | Keep default for local MinIO |
+| `FLOE_S3_SECRET_ACCESS_KEY` | `minioadmin` | Keep default for local MinIO |
+| `SUI_PRIVATE_KEY` | — | Set to your Sui testnet private key |
+| `SUI_PACKAGE_ID` | — | Set to your deployed package ID |
+| `FLOE_API_KEYS_JSON` | — | Add a test API key (see below) |
+| `FLOE_METRICS_TOKEN` | `change-me-strong-random-token` | Set to any random string |
+
+All other variables have sensible defaults for local development.
+
+### Step 3 — Install dependencies
+
+```bash
 npm install
 ```
 
-Minimal environment example:
+### Step 4 — Run the server
 
-```dotenv
-PORT=3001
-NODE_ENV=development
-UPLOAD_TMP_DIR=/var/lib/floe/upload
-FLOE_CHUNK_STORE_MODE=s3
-FLOE_S3_BUCKET=floe-staging
-FLOE_REDIS_PROVIDER=upstash
-UPSTASH_REDIS_REST_URL=https://<your-upstash-url>.upstash.io
-UPSTASH_REDIS_REST_TOKEN=<your-upstash-token>
-WALRUS_AGGREGATOR_URL=https://walrus-testnet-aggregator.nodes.guru
-FLOE_WALRUS_STORE_MODE=sdk
-FLOE_WALRUS_SDK_BASE_URL=https://publisher.walrus-testnet.walrus.space
-FLOE_NETWORK=testnet
-SUI_PRIVATE_KEY=suiprivkey...
-SUI_PACKAGE_ID=0x<your-package-id>
+```bash
+npm run dev
 ```
 
-API key example (for `FLOE_API_KEYS_JSON`):
+The server starts on **http://localhost:3001** by default.
+
+Additional run modes:
+
+```bash
+npm run dev -- --role read
+npm run dev -- --role write
+npm run dev -- --config ./config/floe.example.yaml
+```
+
+### Step 5 — Verify
+
+```bash
+curl http://localhost:3001/health
+```
+
+A healthy response returns status `"ok"` with a JSON body.
+
+### Step 6 — Create a test API key
+
+Add an API key to the `FLOE_API_KEYS_JSON` variable in your `.env` file.
+Use the JSON format with an `id`, `secret`, `owner`, `tier`, and `scopes`:
 
 ```json
 [
@@ -96,38 +139,64 @@ API key example (for `FLOE_API_KEYS_JSON`):
 ]
 ```
 
-Present this key as `x-api-key: floe_local-dev_aB3xY9zW8mNqR5vT2pL7cF4hJ1kD0sG6uE3wX` or `Authorization: Bearer floe_local-dev_aB3xY9zW8mNqR5vT2pL7cF4hJ1kD0sG6uE3wX`.
-
-Floe can also load a topology config file:
+The secret value is the key you present in requests. Pass it as a header or bearer token:
 
 ```bash
-npm run dev -- --config ./config/floe.example.yaml --role read
+# Header
+curl -H "x-api-key: floe_local-dev_aB3xY9zW8mNqR5vT2pL7cF4hJ1kD0sG6uE3wX" ...
+
+# Bearer token
+curl -H "Authorization: Bearer floe_local-dev_aB3xY9zW8mNqR5vT2pL7cF4hJ1kD0sG6uE3wX" ...
 ```
 
-Redis modes:
-
-- `FLOE_REDIS_PROVIDER=upstash` with `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`
-- `FLOE_REDIS_PROVIDER=native` with `REDIS_URL=redis://host:6379`
-
-### Run
+### Step 7 — Run tests
 
 ```bash
-npm run dev
+npm test --workspace=apps/api
 ```
 
-Examples:
+Integration tests require Redis running locally (provided by docker-compose).
 
-```bash
-npm run dev -- --role read
-npm run dev -- --role write
-npm run dev -- --config ./config/floe.example.yaml
-```
+### Step 8 — Useful commands
+
+| Command | Description |
+|---|---|
+| `npm run dev` | Start dev server with hot-reload |
+| `npm run build` | Build all workspaces (api, sdk, cli) |
+| `npm run start` | Start production build |
+| `npm run lint` | Lint all workspaces |
+| `npm run upload` | Upload a file via the CLI |
+| `npm run bench:stream` | Run stream benchmark |
+| `npm run bench:upload` | Run upload load test |
+| `npm run clean` | Remove `node_modules` and reinstall |
 
 ### Build
 
 ```bash
 npm run build --workspace=apps/api
 npm run start
+```
+
+### Docker Compose Services
+
+The `docker-compose.yml` at the project root runs three backing services for local development.
+
+| Service | Image | Ports | Purpose |
+|---|---|---|---|
+| **redis** | `redis:7-alpine` | `6379` | Upload state, chunk indexes, locks, rate limiting, queue state |
+| **postgres** | `postgres:16-alpine` | `5432` | Optional file metadata read model (user: `floe`, password: `floe`, database: `floe`) |
+| **minio** | `minio/minio:latest` | `9000` (API), `9001` (console) | S3-compatible object storage for chunk staging (user: `floe`, password: `floe_secret`) |
+
+To stop all services:
+
+```bash
+docker compose down
+```
+
+To wipe volumes (fresh start):
+
+```bash
+docker compose down -v
 ```
 
 ## Docker
