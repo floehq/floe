@@ -519,8 +519,8 @@ export function renderPrometheusMetrics(): string {
   );
 
   const infoLabels = getInstanceInfoLabels();
-  lines.push(`# HELP floe_instance_info Static metadata about this Floe instance`);
-  lines.push(`# TYPE floe_instance_info gauge`);
+  lines.push("# HELP floe_instance_info Static metadata about this Floe instance");
+  lines.push("# TYPE floe_instance_info gauge");
   lines.push(`floe_instance_info${labelsToProm(infoLabels)} 1`);
 
   return `${lines.join("\n")}\n`;

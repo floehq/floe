@@ -393,15 +393,6 @@ async function* cachedSegmentByteStream(params: {
   // --- Latency fix: double-buffer prefetch. Start fetching the next segment
   // while the current one is being streamed, hiding the Walrus RTT for all
   // segments after the first. ---
-  type SegmentTask =
-    | {
-        kind: "pending";
-        offset: number;
-        end: number;
-        size: number;
-        promise: Promise<SegmentResult>;
-      }
-    | { kind: "done"; result: SegmentResult; offset: number; end: number };
   type SegmentResult =
     | { kind: "tee"; stream: Readable; expected: number }
     | { kind: "cache_hit"; cachePath: string; expected: number }
