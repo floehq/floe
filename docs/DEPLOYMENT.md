@@ -166,6 +166,50 @@ Health recommendation:
 - use `/health` for cached readiness and dependency state
 - tune `FLOE_HEALTH_CACHE_TTL_MS` if you need a different readiness refresh window
 
+## AWS KMS Signing (Optional)
+
+By default, Floe uses a local Ed25519 private key (`SUI_PRIVATE_KEY`) for signing
+Sui transactions. For production deployments that require key material to never
+leave a hardware security boundary, configure AWS KMS signing.
+
+### Prerequisites
+
+1. Create an asymmetric Ed25519 key in AWS KMS
+2. Ensure your EC2/ECS task has an IAM role with `kms:Sign` and `kms:GetPublicKey` permissions
+3. Derive the Sui address from the KMS public key
+
+### IAM Policy
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["kms:Sign", "kms:GetPublicKey"],
+      "Resource": "arn:aws:kms:REGION:ACCOUNT:key/KEY_ID"
+    }
+  ]
+}
+```
+
+### Environment Variables
+
+```dotenv
+FLOE_SIGNER_BACKEND=kms
+FLOE_KMS_KEY_ID=alias/my-floe-signing-key
+FLOE_SIGNER_ADDRESS=0x<hex-encoded-64-char-address>
+```
+
+- `FLOE_KMS_KEY_ID` — the KMS key ID, alias, or ARN (must be Ed25519 asymmetric)
+- `FLOE_SIGNER_ADDRESS` — the Sui address derived from the KMS public key (0x + 64 hex chars)
+
+The address is derived as: `SHA3-256(0x00 || publicKey)[0..32]` using the standard
+Sui Ed25519 address derivation formula.
+
+When `FLOE_SIGNER_BACKEND=kms` is set, the startup validator will check `FLOE_KMS_KEY_ID`
+and `FLOE_SIGNER_ADDRESS` instead of `SUI_PRIVATE_KEY`.
+
 ## Deploy Flow
 
 1. Build and publish the container image.
