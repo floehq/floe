@@ -24,6 +24,8 @@ export function generateApiKey(): { id: string; secret: string; secretHash: stri
  * only SHA-256 hashes.
  */
 export class PostgresApiKeyStore implements ApiKeyStore {
+  readonly supportsLifecycle = true;
+
   /**
    * Legacy lookup by full SHA-256 hash of the entire credential.
    * Prefer findById for new deployments to avoid the timing side-channel
@@ -175,29 +177,45 @@ export class PostgresApiKeyStore implements ApiKeyStore {
     const pg = getPostgres();
     if (!pg) throw new Error("Postgres is required for API key rotation");
 
-    const existing = await pg.query(
-      "select id from floe_api_keys where id = $1 and revoked_at is null",
-      [id],
-    );
-    if (existing.rows.length === 0) {
-      throw new Error(`API key not found or already revoked: ${id}`);
+    const client = await pg.connect();
+    try {
+      await client.query("BEGIN");
+
+      // SELECT ... FOR UPDATE locks the row so a concurrent rotate()
+      // blocks until this transaction commits or rolls back. After
+      // COMMIT, the blocked transaction re-evaluates its WHERE clause
+      // under READ COMMITTED and sees revoked_at is already set.
+      const existing = await client.query(
+        "select id from floe_api_keys where id = $1 and revoked_at is null for update",
+        [id],
+      );
+      if (existing.rows.length === 0) {
+        await client.query("ROLLBACK");
+        throw new Error(`API key not found or already revoked: ${id}`);
+      }
+
+      await client.query("update floe_api_keys set revoked_at = now() where id = $1", [id]);
+
+      const { id: newId, secret, secretHash } = generateApiKey();
+
+      await client.query(
+        `insert into floe_api_keys (id, secret_hash, owner, scopes, tier)
+         values ($1, $2,
+           (select owner from floe_api_keys where id = $3),
+           (select scopes from floe_api_keys where id = $3),
+           (select tier from floe_api_keys where id = $3)
+         )`,
+        [newId, secretHash, id],
+      );
+
+      await client.query("COMMIT");
+      return { id: newId, secret, rotatedAt: new Date() };
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw err;
+    } finally {
+      client.release();
     }
-
-    await pg.query("update floe_api_keys set revoked_at = now() where id = $1", [id]);
-
-    const { id: newId, secret, secretHash } = generateApiKey();
-
-    await pg.query(
-      `insert into floe_api_keys (id, secret_hash, owner, scopes, tier)
-       values ($1, $2,
-         (select owner from floe_api_keys where id = $3),
-         (select scopes from floe_api_keys where id = $3),
-         (select tier from floe_api_keys where id = $3)
-       )`,
-      [newId, secretHash, id],
-    );
-
-    return { id: newId, secret, rotatedAt: new Date() };
   }
 }
 

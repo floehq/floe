@@ -4,8 +4,14 @@ import type { FastifyBaseLogger } from "fastify";
 
 const _require = createRequire(import.meta.url);
 
+export type PgPoolClient = {
+  query: (sql: string, values?: unknown[]) => Promise<{ rows: any[]; rowCount?: number }>;
+  release: (err?: Error | boolean) => void;
+};
+
 type PgPool = {
-  query: (sql: string, values?: unknown[]) => Promise<{ rows: any[] }>;
+  query: (sql: string, values?: unknown[]) => Promise<{ rows: any[]; rowCount?: number }>;
+  connect: () => Promise<PgPoolClient>;
   end: () => Promise<void>;
 };
 
