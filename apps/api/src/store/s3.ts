@@ -126,6 +126,7 @@ export async function spoolStreamToTempFile(
 
 export class S3ChunkStore implements ChunkStore {
   private readonly cfg: S3RuntimeConfig;
+  isChunkReceived?: (uploadId: string, index: number) => Promise<boolean>;
 
   constructor() {
     const bucket = (process.env.FLOE_S3_BUCKET ?? "").trim();
@@ -183,6 +184,54 @@ export class S3ChunkStore implements ChunkStore {
     isLastChunk: boolean,
   ): Promise<{ alreadyExisted: boolean }> {
     const key = this.chunkKey(uploadId, index);
+
+    // Fast path: if Redis already records this chunk as received, skip
+    // spool and PutObject entirely — go straight to HeadObject to
+    // validate hash/size on the existing S3 object.
+    if (this.isChunkReceived) {
+      const known = await this.isChunkReceived(uploadId, index).catch(() => false);
+      if (known) {
+        let headOk = false;
+        try {
+          const head = await this.cfg.client.send(
+            new this.cfg.cmd.HeadObjectCommand({
+              Bucket: this.cfg.bucket,
+              Key: key,
+            }),
+          );
+          const contentLength = Number(head?.ContentLength ?? head?.contentLength);
+          const storedHash = String(
+            head?.Metadata?.sha256 ?? head?.metadata?.sha256 ?? "",
+          ).toLowerCase();
+          if (Number.isFinite(contentLength)) {
+            if (isLastChunk) {
+              if (contentLength <= 0 || contentLength > expectedSize) {
+                throw new Error("INVALID_LAST_CHUNK_SIZE");
+              }
+            } else if (contentLength !== expectedSize) {
+              throw new Error("CHUNK_SIZE_MISMATCH");
+            }
+          }
+          if (storedHash && storedHash !== expectedHash.toLowerCase()) {
+            throw new Error("HASH_MISMATCH");
+          }
+          headOk = true;
+        } catch (headErr: any) {
+          if (
+            headErr?.message === "HASH_MISMATCH" ||
+            headErr?.message === "CHUNK_SIZE_MISMATCH" ||
+            headErr?.message === "INVALID_LAST_CHUNK_SIZE"
+          ) {
+            throw headErr;
+          }
+          // HeadObject failed (e.g. chunk missing from S3 despite Redis
+          // record) — fall through to normal spool+PutObject path.
+        }
+        if (headOk) {
+          return { alreadyExisted: true };
+        }
+      }
+    }
 
     // Spool client stream to temp file first: validates size and hash,
     // then upload from disk. This decouples client-stream timing from

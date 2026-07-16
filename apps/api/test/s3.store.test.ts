@@ -187,3 +187,62 @@ test("s3 chunk store rejects existing chunk hash mismatch after 412", async () =
   assert.equal(calls.put, 1, "PutObject called once (fails with 412)");
   assert.equal(calls.head, 1, "HeadObject called once (after 412)");
 });
+
+test("s3 chunk store skips spool and PutObject when isChunkReceived returns true", async () => {
+  const chunk = Buffer.from("known-chunk");
+  const expectedHash = createHash("sha256").update(chunk).digest("hex");
+
+  const { store, calls } = makeStore({
+    headExists: true,
+    headResult: {
+      ContentLength: chunk.length,
+      Metadata: { sha256: expectedHash },
+    },
+  });
+
+  (store as S3ChunkStore & { isChunkReceived: typeof store.isChunkReceived }).isChunkReceived =
+    async () => true;
+
+  const result = await store.writeChunk(
+    "upload-5",
+    0,
+    Readable.from(chunk),
+    expectedHash,
+    chunk.length,
+    false,
+  );
+
+  assert.deepEqual(result, { alreadyExisted: true });
+  assert.equal(calls.put, 0, "PutObject should not be called for known chunk");
+  assert.equal(calls.head, 1, "HeadObject called to confirm known chunk");
+});
+
+test("s3 chunk store falls through to PutObject when HeadObject fails for known chunk", async () => {
+  const chunk = Buffer.from("known-but-missing");
+  const expectedHash = createHash("sha256").update(chunk).digest("hex");
+
+  const { store, calls } = makeStore({
+    headExists: false,
+    put412: true,
+  });
+
+  (store as S3ChunkStore & { isChunkReceived: typeof store.isChunkReceived }).isChunkReceived =
+    async () => true;
+
+  const result = await store.writeChunk(
+    "upload-6",
+    0,
+    Readable.from(chunk),
+    expectedHash,
+    chunk.length,
+    false,
+  );
+
+  assert.deepEqual(result, { alreadyExisted: true });
+  assert.equal(calls.put, 1, "PutObject called once after fast-path HeadObject failed");
+  assert.equal(
+    calls.head,
+    2,
+    "HeadObject called twice: once in fast path (fails), once in PutObject 412 handler",
+  );
+});
