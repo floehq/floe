@@ -2,15 +2,26 @@ import crypto from "node:crypto";
 
 import type { RateLimitTier } from "../../config/auth.config.js";
 import { getPostgres } from "../../state/postgres.js";
-import { type ApiKeyStore, type StoredApiKey } from "./auth.api-key-store.js";
+import {
+  type ApiKeyStore,
+  type StoredApiKey,
+  type AdminApiKeyRecord,
+  type AdminApiKeyRotateRecord,
+} from "./auth.api-key-store.js";
+
+/** Generate a new API key credential. Returns { id, secret, secretHash }. */
+export function generateApiKey(): { id: string; secret: string; secretHash: string } {
+  const id = crypto.randomBytes(16).toString("hex");
+  const secretBytes = crypto.randomBytes(32);
+  const secret = `floe_${id}_${secretBytes.toString("hex")}`;
+  const secretHash = crypto.createHash("sha256").update(secret).digest("hex");
+  return { id, secret, secretHash };
+}
 
 /**
  * Postgres-backed API key store.
  * Reads from the floe_api_keys table — never stores plaintext secrets,
  * only SHA-256 hashes.
- *
- * Create/revoke operations are NOT provided here; the SaaS layer or a
- * later admin API writes to this table directly.
  */
 export class PostgresApiKeyStore implements ApiKeyStore {
   /**
@@ -112,19 +123,84 @@ export class PostgresApiKeyStore implements ApiKeyStore {
     );
 
     return out.rows
-      .filter((row: any) => {
+      .filter((row: Record<string, unknown>) => {
         const hash = String(row.secret_hash ?? "");
         if (!hash) return false;
         const buf = Buffer.from(hash, "hex");
         return buf.length === 32;
       })
-      .map((row: any) => ({
+      .map((row: Record<string, unknown>) => ({
         id: String(row.id),
         secretHash: Buffer.from(String(row.secret_hash), "hex"),
         owner: row.owner ? String(row.owner) : undefined,
         scopes: parseScopes(row.scopes),
         tier: parseTier(row.tier),
       }));
+  }
+
+  async create(params: {
+    owner?: string;
+    scopes: string[];
+    tier: RateLimitTier;
+  }): Promise<AdminApiKeyRecord> {
+    const pg = getPostgres();
+    if (!pg) throw new Error("Postgres is required for API key creation");
+
+    const { id, secret, secretHash } = generateApiKey();
+
+    await pg.query(
+      `insert into floe_api_keys (id, secret_hash, owner, scopes, tier)
+       values ($1, $2, $3, $4, $5)`,
+      [id, secretHash, params.owner ?? null, params.scopes, params.tier],
+    );
+
+    return { id, secret, createdAt: new Date() };
+  }
+
+  async revoke(id: string): Promise<boolean> {
+    const pg = getPostgres();
+    if (!pg) throw new Error("Postgres is required for API key revocation");
+
+    const result = await pg.query(
+      `update floe_api_keys
+       set revoked_at = now()
+       where id = $1 and revoked_at is null`,
+      [id],
+    );
+
+    return ((result as { rows: unknown[]; rowCount?: number }).rowCount ?? 0) > 0;
+  }
+
+  async rotate(id: string): Promise<AdminApiKeyRotateRecord> {
+    const pg = getPostgres();
+    if (!pg) throw new Error("Postgres is required for API key rotation");
+
+    const existing = await pg.query(
+      "select id from floe_api_keys where id = $1 and revoked_at is null",
+      [id],
+    );
+    if (existing.rows.length === 0) {
+      throw new Error(`API key not found or already revoked: ${id}`);
+    }
+
+    await pg.query(
+      "update floe_api_keys set revoked_at = now() where id = $1",
+      [id],
+    );
+
+    const { id: newId, secret, secretHash } = generateApiKey();
+
+    await pg.query(
+      `insert into floe_api_keys (id, secret_hash, owner, scopes, tier)
+       values ($1, $2,
+         (select owner from floe_api_keys where id = $3),
+         (select scopes from floe_api_keys where id = $3),
+         (select tier from floe_api_keys where id = $3)
+       )`,
+      [newId, secretHash, id],
+    );
+
+    return { id: newId, secret, rotatedAt: new Date() };
   }
 }
 

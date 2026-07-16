@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 
 import { AuthApiKeyConfig, type RateLimitTier } from "../../config/auth.config.js";
 import { extractPresentedCredential } from "./auth.credentials.js";
-import { type ApiKeyStore, type StoredApiKey } from "./auth.api-key-store.js";
+import { type ApiKeyStore, type StoredApiKey, type AdminApiKeyRecord, type AdminApiKeyRotateRecord } from "./auth.api-key-store.js";
 import type { AuthContext } from "./auth.context.js";
 
 /**
@@ -79,6 +79,22 @@ export class EnvApiKeyStore implements ApiKeyStore {
         tier: entry.tier,
       };
     });
+  }
+
+  async create(_params: {
+    owner?: string;
+    scopes: string[];
+    tier: RateLimitTier;
+  }): Promise<AdminApiKeyRecord> {
+    throw new Error("EnvApiKeyStore does not support key creation; use PostgresApiKeyStore");
+  }
+
+  async revoke(_id: string): Promise<boolean> {
+    throw new Error("EnvApiKeyStore does not support key revocation; use PostgresApiKeyStore");
+  }
+
+  async rotate(_id: string): Promise<AdminApiKeyRotateRecord> {
+    throw new Error("EnvApiKeyStore does not support key rotation; use PostgresApiKeyStore");
   }
 }
 

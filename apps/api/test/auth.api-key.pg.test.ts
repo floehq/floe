@@ -37,34 +37,58 @@ function buildMockPg(overrides?: {
   findByHashResult?: Array<Record<string, unknown>>;
   findByIdResult?: Array<Record<string, unknown>>;
   listActiveResult?: Array<Record<string, unknown>>;
+  rotateExisting?: Array<Record<string, unknown>>;
+  rotateExistingAfterRevoke?: Array<Record<string, unknown>>;
+  rowCount?: number;
 }): PgPool {
+  let rotateStep = 0;
   return {
-    query: async (_sql: string, _values?: unknown[]) => {
+    query: async (sql: string, values?: unknown[]) => {
+      if (sql.includes("create table")) {
+        return { rows: [] };
+      }
+      if (sql.includes("create index")) {
+        return { rows: [] };
+      }
+      // rotate: first query checks if key exists
+      if (sql.includes("select id from floe_api_keys where id =") && sql.includes("revoked_at is null")) {
+        return { rows: overrides?.rotateExisting ?? [] };
+      }
+      // rotate: revoke old key
+      if (sql.includes("update floe_api_keys set revoked_at")) {
+        return { rows: [], rowCount: overrides?.rowCount ?? 1 };
+      }
+      // rotate: insert new key
+      if (sql.includes("insert into floe_api_keys") && sql.includes("select owner from")) {
+        return { rows: [] };
+      }
+      // create: insert
+      if (sql.includes("insert into floe_api_keys")) {
+        return { rows: [] };
+      }
+      // revoke: update
+      if (sql.includes("update floe_api_keys") && sql.includes("revoked_at = now()")) {
+        return { rows: [], rowCount: overrides?.rowCount ?? 1 };
+      }
       // findById uses WHERE id = $1
       if (
-        _sql.includes("from floe_api_keys") &&
-        _sql.includes("where id =") &&
-        _sql.includes("limit")
+        sql.includes("from floe_api_keys") &&
+        sql.includes("where id =") &&
+        sql.includes("limit")
       ) {
         return { rows: overrides?.findByIdResult ?? [] };
       }
       // findByHash uses WHERE secret_hash = $1
       if (
-        _sql.includes("from floe_api_keys") &&
-        _sql.includes("secret_hash") &&
-        _sql.includes("limit")
+        sql.includes("from floe_api_keys") &&
+        sql.includes("secret_hash") &&
+        sql.includes("limit")
       ) {
         return { rows: overrides?.findByHashResult ?? [] };
       }
       // listActive has ORDER BY
-      if (_sql.includes("from floe_api_keys") && _sql.includes("order by")) {
+      if (sql.includes("from floe_api_keys") && sql.includes("order by")) {
         return { rows: overrides?.listActiveResult ?? [] };
-      }
-      if (_sql.includes("create table")) {
-        return { rows: [] };
-      }
-      if (_sql.includes("create index")) {
-        return { rows: [] };
       }
       return { rows: [] };
     },
@@ -371,6 +395,131 @@ test("EnvApiKeyStore - parseKeyId handles edge cases", async () => {
   assert.ok(r2);
   assert.equal(r2.keyId, "KeyABC");
   assert.equal(r2.secretPart, "longsecretvaluehere");
+});
+
+test("generateApiKey produces floe_ prefixed credential with correct format", async () => {
+  const { generateApiKey } = await import(STORE_PATH);
+  const { id, secret, secretHash } = generateApiKey();
+
+  assert.equal(typeof id, "string");
+  assert.equal(id.length, 32, "key ID should be 32 hex chars");
+  assert.ok(secret.startsWith("floe_"), "should start with floe_");
+  assert.equal(secret.split("_").length, 3, "should have 3 parts: floe_<id>_<secret>");
+  assert.ok(secret.length > 40, "should be a long credential");
+  assert.equal(typeof secretHash, "string");
+  assert.equal(secretHash.length, 64, "hash should be 64 hex chars (SHA-256)");
+
+  const computedHash = crypto.createHash("sha256").update(secret).digest("hex");
+  assert.equal(secretHash, computedHash);
+});
+
+test("generateApiKey produces unique credentials on each call", async () => {
+  const { generateApiKey } = await import(STORE_PATH);
+  const results = Array.from({ length: 10 }, () => generateApiKey());
+  const ids = new Set(results.map((r) => r.id));
+  const secrets = new Set(results.map((r) => r.secret));
+  assert.equal(ids.size, 10, "all IDs should be unique");
+  assert.equal(secrets.size, 10, "all secrets should be unique");
+});
+
+test("PostgresApiKeyStore - create generates and stores a key", async () => {
+  postgresModule.setPostgresForTests(buildMockPg(), true);
+
+  const { PostgresApiKeyStore } = await import(STORE_PATH);
+  const store = new PostgresApiKeyStore();
+  const result = await store.create({
+    owner: "0xf35568c562fd25dccd58e4e9240d8a6f864de0a9854ddd1f7d8aa6ff5f9722a4",
+    scopes: ["uploads:write", "files:read"],
+    tier: "authenticated",
+  });
+
+  assert.equal(typeof result.id, "string");
+  assert.equal(result.id.length, 32);
+  assert.ok(result.secret.startsWith("floe_"));
+  assert.ok(result.createdAt instanceof Date);
+});
+
+test("PostgresApiKeyStore - create throws when postgres not available", async () => {
+  const { PostgresApiKeyStore } = await import(STORE_PATH);
+  const store = new PostgresApiKeyStore();
+
+  await assert.rejects(
+    () => store.create({ scopes: ["*"], tier: "authenticated" }),
+    { message: "Postgres is required for API key creation" },
+  );
+});
+
+test("PostgresApiKeyStore - revoke returns true when key is revoked", async () => {
+  postgresModule.setPostgresForTests(buildMockPg({ rowCount: 1 }), true);
+
+  const { PostgresApiKeyStore } = await import(STORE_PATH);
+  const store = new PostgresApiKeyStore();
+  const result = await store.revoke("some-key-id");
+
+  assert.equal(result, true);
+});
+
+test("PostgresApiKeyStore - revoke returns false when key not found", async () => {
+  postgresModule.setPostgresForTests(buildMockPg({ rowCount: 0 }), true);
+
+  const { PostgresApiKeyStore } = await import(STORE_PATH);
+  const store = new PostgresApiKeyStore();
+  const result = await store.revoke("nonexistent-key");
+
+  assert.equal(result, false);
+});
+
+test("PostgresApiKeyStore - revoke throws when postgres not available", async () => {
+  const { PostgresApiKeyStore } = await import(STORE_PATH);
+  const store = new PostgresApiKeyStore();
+
+  await assert.rejects(
+    () => store.revoke("some-key"),
+    { message: "Postgres is required for API key revocation" },
+  );
+});
+
+test("PostgresApiKeyStore - rotate creates new key and revokes old", async () => {
+  postgresModule.setPostgresForTests(
+    buildMockPg({
+      rotateExisting: [{ id: "old-key" }],
+    }),
+    true,
+  );
+
+  const { PostgresApiKeyStore } = await import(STORE_PATH);
+  const store = new PostgresApiKeyStore();
+  const result = await store.rotate("old-key");
+
+  assert.equal(typeof result.id, "string");
+  assert.notEqual(result.id, "old-key", "new ID should differ from old");
+  assert.ok(result.secret.startsWith("floe_"));
+  assert.ok(result.rotatedAt instanceof Date);
+});
+
+test("PostgresApiKeyStore - rotate throws when key not found", async () => {
+  postgresModule.setPostgresForTests(
+    buildMockPg({ rotateExisting: [] }),
+    true,
+  );
+
+  const { PostgresApiKeyStore } = await import(STORE_PATH);
+  const store = new PostgresApiKeyStore();
+
+  await assert.rejects(
+    () => store.rotate("nonexistent-key"),
+    { message: /API key not found or already revoked/ },
+  );
+});
+
+test("PostgresApiKeyStore - rotate throws when postgres not available", async () => {
+  const { PostgresApiKeyStore } = await import(STORE_PATH);
+  const store = new PostgresApiKeyStore();
+
+  await assert.rejects(
+    () => store.rotate("some-key"),
+    { message: "Postgres is required for API key rotation" },
+  );
 });
 
 test(
