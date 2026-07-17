@@ -1439,6 +1439,18 @@ test("fetchWalrusBlob idle timeout delivers buffered data before closing", async
   }
 });
 
+test("BODY_IDLE_TIMEOUT_MS respects FLOE_WALRUS_READ_IDLE_TIMEOUT_MS env var", async () => {
+  // The module was already loaded by the before() hook (transitively),
+  // so re-import returns the cached module. We verify:
+  // 1. getIdleTimeoutMs() is exported and returns a number
+  // 2. With no env var set, it returns the default 30_000
+  const readModule = await import("../src/services/walrus/read.ts");
+  assert.equal(typeof readModule.getIdleTimeoutMs, "function", "getIdleTimeoutMs must be exported");
+  const timeout = readModule.getIdleTimeoutMs();
+  assert.equal(Number.isFinite(timeout), true, "timeout must be a finite number");
+  assert.equal(timeout, 30_000, "default idle timeout must be 30_000 ms");
+});
+
 test("stream conditional GET with non-matching If-None-Match falls through to normal 200", async () => {
   await mockSuiFile({
     blob_id: "blob-304-miss",

@@ -8,7 +8,14 @@ import {
 import { walrusReadCircuit } from "../circuit-breaker/instances.js";
 import { CircuitBreakerError } from "../circuit-breaker/index.js";
 
-const BODY_IDLE_TIMEOUT_MS = 30_000;
+const BODY_IDLE_TIMEOUT_MS = parsePositiveIntEnv("FLOE_WALRUS_READ_IDLE_TIMEOUT_MS", 30_000);
+
+/**
+ * Expose for testing. Returns the configured idle timeout in ms.
+ */
+export function getIdleTimeoutMs(): number {
+  return BODY_IDLE_TIMEOUT_MS;
+}
 const HEAD_CHECK_TIMEOUT_MS = 15_000;
 
 /**
