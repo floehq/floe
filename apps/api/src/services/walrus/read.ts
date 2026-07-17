@@ -382,8 +382,10 @@ export async function fetchWalrusBlob(params: {
           const body = res.body;
           if (body) {
             const idleTimeoutStream = new TransformStream({
-              flush(controller) {
-                controller.terminate();
+              flush(_controller) {
+                // No-op: let the readable side close gracefully after
+                // delivering all buffered data. Using controller.terminate()
+                // here would discard unread data in the readable queue.
               },
             });
             const writer = idleTimeoutStream.writable.getWriter();

@@ -1367,6 +1367,78 @@ test("stream conditional GET with Range + stale If-Range falls through to full 2
   assert.equal(bytes.length, 10);
 });
 
+test("fetchWalrusBlob idle timeout delivers buffered data before closing", async () => {
+  // This test verifies that when the idle timeout fires, data already
+  // buffered in the TransformStream readable queue is delivered to the
+  // consumer rather than being discarded.
+
+  const blobId = "idle-timeout-buffered";
+  const sizeBytes = 1024;
+  const data = Uint8Array.from({ length: sizeBytes }, (_, i) => i & 0xff);
+
+  // Override the globalThis.fetch to simulate a slow stream that pauses
+  // mid-response then sends remaining data.
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const blobIdFromUrl = decodeURIComponent(url.split("/").pop() ?? "");
+    if (blobIdFromUrl !== blobId) return originalFetch(input, init);
+
+    // Create a ReadableStream that sends half the data, pauses for longer
+    // than idle timeout, then sends the rest.
+    let sent = false;
+    const stream = new ReadableStream({
+      pull(controller) {
+        if (!sent) {
+          // Send first half immediately
+          controller.enqueue(data.subarray(0, sizeBytes / 2));
+          sent = true;
+          // Schedule second half after a delay that exceeds idle timeout
+          setTimeout(() => {
+            try {
+              controller.enqueue(data.subarray(sizeBytes / 2));
+              controller.close();
+            } catch { /* already closed */ }
+          }, 100); // Short delay for test speed — actual idle timeout is 30s
+        }
+      },
+    });
+
+    return new Response(stream, {
+      status: 206,
+      headers: {
+        "content-range": `bytes 0-${sizeBytes - 1}/${sizeBytes}`,
+        "content-length": String(sizeBytes),
+      },
+    });
+  }) as typeof fetch;
+
+  try {
+    // Import fresh to pick up any changes
+    const readModule = await import("../src/services/walrus/read.ts");
+    const { res } = await readModule.fetchWalrusBlob({
+      blobId,
+      rangeHeader: `bytes 0-${sizeBytes - 1}`,
+    });
+
+    const reader = res.body!.getReader();
+    const chunks: Uint8Array[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+
+    const totalBytes = chunks.reduce((sum, c) => sum + c.byteLength, 0);
+    // We should receive ALL bytes — the idle timeout should not discard
+    // buffered data.
+    assert.equal(totalBytes, sizeBytes, `Expected ${sizeBytes} bytes, got ${totalBytes}`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("stream conditional GET with non-matching If-None-Match falls through to normal 200", async () => {
   await mockSuiFile({
     blob_id: "blob-304-miss",
