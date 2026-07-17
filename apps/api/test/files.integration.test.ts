@@ -18,6 +18,7 @@ process.env.FLOE_SUI_METADATA_FALLBACK = "true";
 
 type FilesRouteModule = typeof import("../src/routes/files.ts") & {
   getBlobExistenceCacheForTests: () => Map<string, number>;
+  getWalrusByteStreamForTests: () => (...args: never[]) => AsyncGenerator<Uint8Array>;
 };
 type PostgresModule = typeof import("../src/state/postgres.ts");
 type SuiModule = typeof import("../src/state/sui.ts");
@@ -1449,6 +1450,70 @@ test("BODY_IDLE_TIMEOUT_MS respects FLOE_WALRUS_READ_IDLE_TIMEOUT_MS env var", a
   const timeout = readModule.getIdleTimeoutMs();
   assert.equal(Number.isFinite(timeout), true, "timeout must be a finite number");
   assert.equal(timeout, 30_000, "default idle timeout must be 30_000 ms");
+});
+
+test("walrusByteStream detects Content-Range mismatch from aggregator", async () => {
+  const blobId = "range-mismatch-blob";
+  const fullData = Uint8Array.from({ length: 512 }, (_, i) => i & 0xff);
+  walrusSamples.set(blobId, fullData);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url.includes(encodeURIComponent(blobId))) {
+      const headers = init?.headers as Record<string, string> | undefined;
+      const rangeHeader = headers?.Range ?? headers?.range ?? null;
+      if (rangeHeader) {
+        const match = rangeHeader.match(/^bytes=(\d+)-(\d+)$/);
+        if (match) {
+          const reqStart = Number(match[1]);
+          const reqEnd = Number(match[2]);
+          const body = fullData.subarray(reqStart, reqEnd + 1);
+          const wrongStart = reqStart + 100;
+          const wrongEnd = reqEnd + 100;
+          return new Response(body, {
+            status: 206,
+            headers: {
+              "content-range": `bytes ${wrongStart}-${wrongEnd}/${fullData.byteLength}`,
+              "content-length": String(body.byteLength),
+            },
+          });
+        }
+      }
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+
+  try {
+    const walrusByteStream = filesRouteModule.getWalrusByteStreamForTests();
+    const ac = new AbortController();
+    const gen = walrusByteStream({
+      blobId,
+      start: 100,
+      end: 300,
+      maxSegmentBytes: 200,
+      signal: ac.signal,
+    });
+
+    let errorCaught = false;
+    let errorMessage = "";
+    try {
+      for await (const _ of gen) {
+        // should never yield
+      }
+    } catch (err) {
+      errorCaught = true;
+      errorMessage = err instanceof Error ? err.message : String(err);
+    }
+
+    assert.ok(errorCaught, "Expected Content-Range mismatch to throw an error");
+    assert.ok(
+      errorMessage.includes("CONTENT_RANGE_MISMATCH"),
+      `Expected CONTENT_RANGE_MISMATCH in error message, got: ${errorMessage}`,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("stream conditional GET with non-matching If-None-Match falls through to normal 200", async () => {
