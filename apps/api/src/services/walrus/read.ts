@@ -204,13 +204,21 @@ async function fetchWithTimeout(params: {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), WalrusReadLimits.timeoutMs);
 
-  const onAbort = () => controller.abort();
-  if (params.signal) {
-    if (params.signal.aborted) {
-      controller.abort();
-    } else {
-      params.signal.addEventListener("abort", onAbort, { once: true });
-    }
+  // We intentionally do NOT forward params.signal to controller.abort().
+  // Undici's fetch emits DOMException AbortErrors through
+  // processTicksAndRejections which surface as uncaught exceptions and
+  // crash the server (Node.js uncaughtException handler → process.exit).
+  //
+  // Instead we only listen for pre-abort (before fetch starts) and let
+  // the 10-min timeout handle mid-flight cancellation.  The caller's
+  // abort signal is checked in fetchWalrusBlob's retry loop between
+  // segments.
+
+  if (params.signal?.aborted) {
+    const err = new Error("request aborted");
+    err.name = "AbortError";
+    clearTimeout(timeout);
+    throw err;
   }
 
   try {
@@ -222,13 +230,6 @@ async function fetchWithTimeout(params: {
     });
   } finally {
     clearTimeout(timeout);
-    if (params.signal) {
-      try {
-        params.signal.removeEventListener("abort", onAbort);
-      } catch {
-        /* ignore */
-      }
-    }
   }
 }
 
