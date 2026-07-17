@@ -1382,7 +1382,8 @@ test("fetchWalrusBlob idle timeout delivers buffered data before closing", async
   const originalFetch = globalThis.fetch;
 
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const blobIdFromUrl = decodeURIComponent(url.split("/").pop() ?? "");
     if (blobIdFromUrl !== blobId) return originalFetch(input, init);
 
@@ -1400,7 +1401,9 @@ test("fetchWalrusBlob idle timeout delivers buffered data before closing", async
             try {
               controller.enqueue(data.subarray(sizeBytes / 2));
               controller.close();
-            } catch { /* already closed */ }
+            } catch {
+              /* already closed */
+            }
           }, 100); // Short delay for test speed — actual idle timeout is 30s
         }
       },
@@ -1459,7 +1462,8 @@ test("walrusByteStream detects Content-Range mismatch from aggregator", async ()
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     if (url.includes(encodeURIComponent(blobId))) {
       const headers = init?.headers as Record<string, string> | undefined;
       const rangeHeader = headers?.Range ?? headers?.range ?? null;

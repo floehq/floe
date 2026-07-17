@@ -39,6 +39,8 @@ import {
 
 export const shouldCacheFullObject = shouldCacheFullObjectPolicy;
 
+const noop = () => {};
+
 const STREAM_CACHE_DIR = path.join(UploadConfig.tmpDir, "_stream_cache");
 const STREAM_CACHE_FULL_DIR = path.join(STREAM_CACHE_DIR, "full");
 const STREAM_CACHE_RANGE_DIR = path.join(STREAM_CACHE_DIR, "ranges");
@@ -348,6 +350,11 @@ export async function teeCachedStreamRange(params: {
   const cleanupSession = () => {
     broadcastStream.off("data", fwdData);
     broadcastStream.off("error", fwdError);
+    // Suppress late async 'error' events from broadcastStream.destroy(err).
+    // Node.js streams emit 'error' via process.nextTick, so the event can
+    // fire AFTER cleanupSession removes the listener in the finally block,
+    // causing an uncaughtException.  A no-op handler prevents that.
+    broadcastStream.on("error", noop);
     inFlightTeeRangeFill.delete(rangeKey);
     releaseFillSlot();
   };
@@ -549,6 +556,7 @@ export async function teeCachedStreamBlob(params: {
   const cleanupSession = () => {
     broadcastStream.off("data", fwdData);
     broadcastStream.off("error", fwdError);
+    broadcastStream.on("error", noop);
     inFlightTeeCacheFill.delete(params.blobId);
     releaseFillSlot();
   };
