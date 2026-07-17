@@ -21,7 +21,11 @@ import {
   startUploadFinalizeWorker,
   stopUploadFinalizeWorker,
 } from "./services/uploads/finalize.queue.js";
-import { startWalrusPoolMetrics, stopWalrusPoolMetrics } from "./services/walrus/read.js";
+import {
+  startWalrusPoolMetrics,
+  stopWalrusPoolMetrics,
+  warmWalrusConnections,
+} from "./services/walrus/read.js";
 import { ChunkConfig, UploadConfig } from "./config/uploads.config.js";
 import { createDefaultAuthProvider, type AuthProvider } from "./services/auth/auth.provider.js";
 import {
@@ -364,6 +368,11 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
     }
     // Start periodic Walrus connection pool metrics collection
     startWalrusPoolMetrics();
+
+    // Pre-warm TCP + TLS connections to Walrus aggregators so the first
+    // client request skips DNS + TCP + TLS handshake (~300-600 ms).
+    // Fire-and-forget: never blocks startup.
+    warmWalrusConnections().catch(() => {});
 
     app.log.info({ config: dumpConfig() }, "Resolved FLOE_* configuration");
 

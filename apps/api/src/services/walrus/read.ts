@@ -100,6 +100,49 @@ export function stopWalrusPoolMetrics(): void {
   }
 }
 
+/**
+ * Pre-warm TCP + TLS connections to all configured Walrus aggregators.
+ * Called once at server boot so the first client request skips the
+ * DNS + TCP + TLS handshake overhead (~300-600 ms on cold start).
+ *
+ * Fire-and-forget: failures are logged but never block startup.
+ */
+export async function warmWalrusConnections(): Promise<void> {
+  let urls: string[];
+  try {
+    urls = WalrusEnv.aggregatorUrls;
+  } catch {
+    return; // env not configured — nothing to warm
+  }
+  if (!urls.length) return;
+
+  const pool = getWalrusPool();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5_000);
+
+  try {
+    await Promise.allSettled(
+      urls.map(async (rawUrl) => {
+        const base = normalizeBaseUrl(rawUrl);
+        try {
+          const res = await fetch(`${base}/v1/info`, {
+            dispatcher: pool as unknown as Dispatcher,
+            signal: controller.signal,
+            method: "HEAD",
+          } as RequestInit);
+          // Consume body to return connection to pool
+          await res.body?.cancel();
+        } catch {
+          // Aggregator may not support /v1/info — that's fine, the
+          // TCP + TLS handshake still warmed the pool.
+        }
+      }),
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 let lastGoodAggregatorIdx = 0;
 
 function isRetryableNetworkError(err: unknown): boolean {

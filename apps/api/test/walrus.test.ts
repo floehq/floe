@@ -146,6 +146,86 @@ test("walrus upload - describeWalrusWriters returns correct shape for sdk mode",
 });
 
 // ============================================================
+// Walrus Read - warmWalrusConnections
+// ============================================================
+test("warmWalrusConnections - fires HEAD requests to all aggregator URLs", async () => {
+  const prevAgg = process.env.WALRUS_AGGREGATOR_URL;
+  const prevFallback = process.env.WALRUS_AGGREGATOR_FALLBACK_URLS;
+  process.env.WALRUS_AGGREGATOR_URL = "https://aggregator.test:443";
+  process.env.WALRUS_AGGREGATOR_FALLBACK_URLS = "https://fallback.test:443";
+  const fetchCalls: string[] = [];
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      fetchCalls.push(
+        String(typeof url === "string" ? url : url instanceof URL ? url.href : url.url),
+      );
+      return new Response(null, { status: 200 });
+    }) as typeof globalThis.fetch;
+
+    const mod = await importFresh("../src/services/walrus/read.js");
+    await mod.warmWalrusConnections();
+
+    assert.ok(fetchCalls.length >= 2, `Expected >=2 fetch calls, got ${fetchCalls.length}`);
+    assert.ok(fetchCalls[0].includes("aggregator.test"), `First call URL: ${fetchCalls[0]}`);
+    assert.ok(fetchCalls[1].includes("fallback.test"), `Second call URL: ${fetchCalls[1]}`);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (prevAgg !== undefined) process.env.WALRUS_AGGREGATOR_URL = prevAgg;
+    else delete process.env.WALRUS_AGGREGATOR_URL;
+    if (prevFallback !== undefined) process.env.WALRUS_AGGREGATOR_FALLBACK_URLS = prevFallback;
+    else delete process.env.WALRUS_AGGREGATOR_FALLBACK_URLS;
+  }
+});
+
+test("warmWalrusConnections - does not throw when fetch fails", async () => {
+  const prevAgg = process.env.WALRUS_AGGREGATOR_URL;
+  const prevFallback = process.env.WALRUS_AGGREGATOR_FALLBACK_URLS;
+  process.env.WALRUS_AGGREGATOR_URL = "https://aggregator.test:443";
+  process.env.WALRUS_AGGREGATOR_FALLBACK_URLS = "";
+  const originalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as typeof globalThis.fetch;
+
+    const mod = await importFresh("../src/services/walrus/read.js");
+    await mod.warmWalrusConnections(); // should not throw
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (prevAgg !== undefined) process.env.WALRUS_AGGREGATOR_URL = prevAgg;
+    else delete process.env.WALRUS_AGGREGATOR_URL;
+    if (prevFallback !== undefined) process.env.WALRUS_AGGREGATOR_FALLBACK_URLS = prevFallback;
+    else delete process.env.WALRUS_AGGREGATOR_FALLBACK_URLS;
+  }
+});
+
+test("warmWalrusConnections - no-ops when no aggregator URLs", async () => {
+  const prevAgg = process.env.WALRUS_AGGREGATOR_URL;
+  const prevFallback = process.env.WALRUS_AGGREGATOR_FALLBACK_URLS;
+  delete process.env.WALRUS_AGGREGATOR_URL;
+  delete process.env.WALRUS_AGGREGATOR_FALLBACK_URLS;
+  const originalFetch = globalThis.fetch;
+  let fetchCalled = false;
+  try {
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return new Response(null, { status: 200 });
+    }) as typeof globalThis.fetch;
+
+    const mod = await importFresh("../src/services/walrus/read.js");
+    await mod.warmWalrusConnections();
+    assert.equal(fetchCalled, false, "fetch should not be called when no aggregator URLs");
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (prevAgg !== undefined) process.env.WALRUS_AGGREGATOR_URL = prevAgg;
+    else delete process.env.WALRUS_AGGREGATOR_URL;
+    if (prevFallback !== undefined) process.env.WALRUS_AGGREGATOR_FALLBACK_URLS = prevFallback;
+    else delete process.env.WALRUS_AGGREGATOR_FALLBACK_URLS;
+  }
+});
+
+// ============================================================
 // Walrus Read tests (via walrus.config parser)
 // ============================================================
 test("walrus config - asserts valid http URLs", async () => {
