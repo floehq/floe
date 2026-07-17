@@ -429,8 +429,17 @@ export async function teeCachedStreamRange(params: {
         cacheType: "range",
         durationMs: Date.now() - fillStartedAt,
       });
-      // Now that we've confirmed the write is complete and valid, end
-      // all consumer streams so they signal completion to their readers.
+      // Wait for the broadcast pipe to finish delivering all chunks to
+      // consumer streams before ending them. Ending consumers before the
+      // broadcast pipe finishes causes ERR_STREAM_WRITE_AFTER_END on
+      // late-arriving chunks, which truncates/corrupts the output.
+      await new Promise<void>((resolveBroadcast) => {
+        broadcastStream.once("end", resolveBroadcast);
+        broadcastStream.once("error", () => resolveBroadcast());
+        if (broadcastStream.destroyed || broadcastStream.readableEnded) {
+          resolveBroadcast();
+        }
+      });
       for (const cs of consumerStreams) {
         if (!cs.destroyed) cs.end();
       }
@@ -620,8 +629,15 @@ export async function teeCachedStreamBlob(params: {
         cacheType: "full",
         durationMs: Date.now() - fillStartedAt,
       });
-      // Now that we've confirmed the write is complete and valid, end
-      // all consumer streams so they signal completion to their readers.
+      // Wait for the broadcast pipe to finish delivering all chunks
+      // before ending consumer streams (same race fix as teeCachedStreamRange).
+      await new Promise<void>((resolveBroadcast) => {
+        broadcastStream.once("end", resolveBroadcast);
+        broadcastStream.once("error", () => resolveBroadcast());
+        if (broadcastStream.destroyed || broadcastStream.readableEnded) {
+          resolveBroadcast();
+        }
+      });
       for (const cs of consumerStreams) {
         if (!cs.destroyed) cs.end();
       }

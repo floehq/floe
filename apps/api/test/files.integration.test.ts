@@ -1038,6 +1038,48 @@ test("teeCachedStreamRange propagates truncation error to all concurrent consume
   );
 });
 
+test("teeCachedStreamRange delivers complete data when broadcast pipe lags behind write leg", async () => {
+  // Create a large enough payload that the broadcast leg finishes after the write leg.
+  // The race: cs.end() is called after writeDone but before broadcastNode finishes piping.
+  // With the bug, late chunks via fwdData hit ERR_STREAM_WRITE_AFTER_END.
+  const sizeBytes = 256 * 1024; // 256 KiB — enough to expose scheduling differences
+  const blobId = "tee-race-completeness";
+  const data = Uint8Array.from({ length: sizeBytes }, (_, i) => i & 0xff);
+  walrusSamples.set(blobId, data);
+
+  const result = await streamCacheModule.teeCachedStreamRange({
+    blobId,
+    start: 0,
+    end: sizeBytes - 1,
+  });
+
+  assert.equal(result.kind, "tee");
+
+  const collected: Uint8Array[] = [];
+  let totalBytes = 0;
+  let caughtError: Error | null = null;
+  try {
+    for await (const chunk of (result as { kind: "tee"; stream: Readable }).stream) {
+      collected.push(chunk as Uint8Array);
+      totalBytes += (chunk as Uint8Array).byteLength;
+    }
+  } catch (err) {
+    caughtError = err instanceof Error ? err : new Error(String(err));
+  }
+
+  assert.ok(!caughtError, `Stream should complete without error, got: ${caughtError?.message}`);
+  assert.equal(totalBytes, sizeBytes, `Expected ${sizeBytes} bytes, got ${totalBytes}`);
+
+  // Reconstruct the full byte array without spread (spread overflows the stack for large chunks)
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of collected) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  assert.deepEqual(bytes, data);
+});
+
 test("teeCachedStreamBlob propagates truncation error to all concurrent consumers", async () => {
   const blobId = "tee-full-truncation";
   const sizeBytes = 100;
