@@ -25,6 +25,19 @@ function lowerEnv(name: string): string | undefined {
   return process.env[name]?.trim().toLowerCase();
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+  }
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(0)} MiB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(0)} KiB`;
+  }
+  return `${bytes} B`;
+}
+
 /**
  * Validate critical configuration values.
  *
@@ -157,6 +170,23 @@ export function validateConfig(): ConfigValidationResult {
           metricsToken.length +
           ")",
       );
+    }
+  }
+
+  // -- Walrus publisher mode: max-body-size alignment --
+  const walrusStoreMode = (process.env.FLOE_WALRUS_STORE_MODE ?? "publisher").trim().toLowerCase();
+  if (walrusStoreMode === "publisher" || walrusStoreMode === "sdk") {
+    const maxFileBytes = requireEnv("FLOE_AUTH_MAX_FILE_SIZE_BYTES");
+    if (maxFileBytes) {
+      const parsed = Number(maxFileBytes);
+      if (Number.isFinite(parsed) && parsed > 10 * 1024 * 1024) {
+        warnings.push(
+          "FLOE_AUTH_MAX_FILE_SIZE_BYTES exceeds 10 MiB in publisher mode — confirm the Walrus publisher " +
+            "is started with --max-body-size set to at least " +
+            formatBytes(parsed) +
+            "; otherwise large uploads will be rejected upstream",
+        );
+      }
     }
   }
 

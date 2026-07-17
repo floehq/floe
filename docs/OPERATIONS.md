@@ -574,6 +574,8 @@ When Walrus failures spike:
 2. verify publisher or CLI path depending on `FLOE_WALRUS_STORE_MODE`
 3. inspect range-read instability separately from publish failures
 
+> For self-hosted aggregator caching, publisher `--max-body-size` deployment, and nginx `proxy_cache` guidance, see [Walrus Operations](WALRUS_OPERATIONS.md).
+
 When Sui failures spike:
 
 1. verify signer validity and balance

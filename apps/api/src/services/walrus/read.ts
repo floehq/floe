@@ -8,7 +8,14 @@ import {
 import { walrusReadCircuit } from "../circuit-breaker/instances.js";
 import { CircuitBreakerError } from "../circuit-breaker/index.js";
 
-const BODY_IDLE_TIMEOUT_MS = 30_000;
+const BODY_IDLE_TIMEOUT_MS = parsePositiveIntEnv("FLOE_WALRUS_READ_IDLE_TIMEOUT_MS", 30_000);
+
+/**
+ * Expose for testing. Returns the configured idle timeout in ms.
+ */
+export function getIdleTimeoutMs(): number {
+  return BODY_IDLE_TIMEOUT_MS;
+}
 const HEAD_CHECK_TIMEOUT_MS = 15_000;
 
 /**
@@ -382,8 +389,10 @@ export async function fetchWalrusBlob(params: {
           const body = res.body;
           if (body) {
             const idleTimeoutStream = new TransformStream({
-              flush(controller) {
-                controller.terminate();
+              flush(_controller) {
+                // No-op: let the readable side close gracefully after
+                // delivering all buffered data. Using controller.terminate()
+                // here would discard unread data in the readable queue.
               },
             });
             const writer = idleTimeoutStream.writable.getWriter();

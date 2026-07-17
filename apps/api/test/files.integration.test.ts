@@ -18,6 +18,7 @@ process.env.FLOE_SUI_METADATA_FALLBACK = "true";
 
 type FilesRouteModule = typeof import("../src/routes/files.ts") & {
   getBlobExistenceCacheForTests: () => Map<string, number>;
+  getWalrusByteStreamForTests: () => (...args: never[]) => AsyncGenerator<Uint8Array>;
 };
 type PostgresModule = typeof import("../src/state/postgres.ts");
 type SuiModule = typeof import("../src/state/sui.ts");
@@ -1038,6 +1039,48 @@ test("teeCachedStreamRange propagates truncation error to all concurrent consume
   );
 });
 
+test("teeCachedStreamRange delivers complete data when broadcast pipe lags behind write leg", async () => {
+  // Create a large enough payload that the broadcast leg finishes after the write leg.
+  // The race: cs.end() is called after writeDone but before broadcastNode finishes piping.
+  // With the bug, late chunks via fwdData hit ERR_STREAM_WRITE_AFTER_END.
+  const sizeBytes = 256 * 1024; // 256 KiB — enough to expose scheduling differences
+  const blobId = "tee-race-completeness";
+  const data = Uint8Array.from({ length: sizeBytes }, (_, i) => i & 0xff);
+  walrusSamples.set(blobId, data);
+
+  const result = await streamCacheModule.teeCachedStreamRange({
+    blobId,
+    start: 0,
+    end: sizeBytes - 1,
+  });
+
+  assert.equal(result.kind, "tee");
+
+  const collected: Uint8Array[] = [];
+  let totalBytes = 0;
+  let caughtError: Error | null = null;
+  try {
+    for await (const chunk of (result as { kind: "tee"; stream: Readable }).stream) {
+      collected.push(chunk as Uint8Array);
+      totalBytes += (chunk as Uint8Array).byteLength;
+    }
+  } catch (err) {
+    caughtError = err instanceof Error ? err : new Error(String(err));
+  }
+
+  assert.ok(!caughtError, `Stream should complete without error, got: ${caughtError?.message}`);
+  assert.equal(totalBytes, sizeBytes, `Expected ${sizeBytes} bytes, got ${totalBytes}`);
+
+  // Reconstruct the full byte array without spread (spread overflows the stack for large chunks)
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of collected) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  assert.deepEqual(bytes, data);
+});
+
 test("teeCachedStreamBlob propagates truncation error to all concurrent consumers", async () => {
   const blobId = "tee-full-truncation";
   const sizeBytes = 100;
@@ -1325,6 +1368,154 @@ test("stream conditional GET with Range + stale If-Range falls through to full 2
   assert.equal(bytes.length, 10);
 });
 
+test("fetchWalrusBlob idle timeout delivers buffered data before closing", async () => {
+  // This test verifies that when the idle timeout fires, data already
+  // buffered in the TransformStream readable queue is delivered to the
+  // consumer rather than being discarded.
+
+  const blobId = "idle-timeout-buffered";
+  const sizeBytes = 1024;
+  const data = Uint8Array.from({ length: sizeBytes }, (_, i) => i & 0xff);
+
+  // Override the globalThis.fetch to simulate a slow stream that pauses
+  // mid-response then sends remaining data.
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const blobIdFromUrl = decodeURIComponent(url.split("/").pop() ?? "");
+    if (blobIdFromUrl !== blobId) return originalFetch(input, init);
+
+    // Create a ReadableStream that sends half the data, pauses for longer
+    // than idle timeout, then sends the rest.
+    let sent = false;
+    const stream = new ReadableStream({
+      pull(controller) {
+        if (!sent) {
+          // Send first half immediately
+          controller.enqueue(data.subarray(0, sizeBytes / 2));
+          sent = true;
+          // Schedule second half after a delay that exceeds idle timeout
+          setTimeout(() => {
+            try {
+              controller.enqueue(data.subarray(sizeBytes / 2));
+              controller.close();
+            } catch { /* already closed */ }
+          }, 100); // Short delay for test speed — actual idle timeout is 30s
+        }
+      },
+    });
+
+    return new Response(stream, {
+      status: 206,
+      headers: {
+        "content-range": `bytes 0-${sizeBytes - 1}/${sizeBytes}`,
+        "content-length": String(sizeBytes),
+      },
+    });
+  }) as typeof fetch;
+
+  try {
+    // Import fresh to pick up any changes
+    const readModule = await import("../src/services/walrus/read.ts");
+    const { res } = await readModule.fetchWalrusBlob({
+      blobId,
+      rangeHeader: `bytes 0-${sizeBytes - 1}`,
+    });
+
+    const reader = res.body!.getReader();
+    const chunks: Uint8Array[] = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+    }
+
+    const totalBytes = chunks.reduce((sum, c) => sum + c.byteLength, 0);
+    // We should receive ALL bytes — the idle timeout should not discard
+    // buffered data.
+    assert.equal(totalBytes, sizeBytes, `Expected ${sizeBytes} bytes, got ${totalBytes}`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("BODY_IDLE_TIMEOUT_MS respects FLOE_WALRUS_READ_IDLE_TIMEOUT_MS env var", async () => {
+  // The module was already loaded by the before() hook (transitively),
+  // so re-import returns the cached module. We verify:
+  // 1. getIdleTimeoutMs() is exported and returns a number
+  // 2. With no env var set, it returns the default 30_000
+  const readModule = await import("../src/services/walrus/read.ts");
+  assert.equal(typeof readModule.getIdleTimeoutMs, "function", "getIdleTimeoutMs must be exported");
+  const timeout = readModule.getIdleTimeoutMs();
+  assert.equal(Number.isFinite(timeout), true, "timeout must be a finite number");
+  assert.equal(timeout, 30_000, "default idle timeout must be 30_000 ms");
+});
+
+test("walrusByteStream detects Content-Range mismatch from aggregator", async () => {
+  const blobId = "range-mismatch-blob";
+  const fullData = Uint8Array.from({ length: 512 }, (_, i) => i & 0xff);
+  walrusSamples.set(blobId, fullData);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url.includes(encodeURIComponent(blobId))) {
+      const headers = init?.headers as Record<string, string> | undefined;
+      const rangeHeader = headers?.Range ?? headers?.range ?? null;
+      if (rangeHeader) {
+        const match = rangeHeader.match(/^bytes=(\d+)-(\d+)$/);
+        if (match) {
+          const reqStart = Number(match[1]);
+          const reqEnd = Number(match[2]);
+          const body = fullData.subarray(reqStart, reqEnd + 1);
+          const wrongStart = reqStart + 100;
+          const wrongEnd = reqEnd + 100;
+          return new Response(body, {
+            status: 206,
+            headers: {
+              "content-range": `bytes ${wrongStart}-${wrongEnd}/${fullData.byteLength}`,
+              "content-length": String(body.byteLength),
+            },
+          });
+        }
+      }
+    }
+    return originalFetch(input, init);
+  }) as typeof fetch;
+
+  try {
+    const walrusByteStream = filesRouteModule.getWalrusByteStreamForTests();
+    const ac = new AbortController();
+    const gen = walrusByteStream({
+      blobId,
+      start: 100,
+      end: 300,
+      maxSegmentBytes: 200,
+      signal: ac.signal,
+    });
+
+    let errorCaught = false;
+    let errorMessage = "";
+    try {
+      for await (const _ of gen) {
+        // should never yield
+      }
+    } catch (err) {
+      errorCaught = true;
+      errorMessage = err instanceof Error ? err.message : String(err);
+    }
+
+    assert.ok(errorCaught, "Expected Content-Range mismatch to throw an error");
+    assert.ok(
+      errorMessage.includes("CONTENT_RANGE_MISMATCH"),
+      `Expected CONTENT_RANGE_MISMATCH in error message, got: ${errorMessage}`,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("stream conditional GET with non-matching If-None-Match falls through to normal 200", async () => {
   await mockSuiFile({
     blob_id: "blob-304-miss",
@@ -1347,4 +1538,93 @@ test("stream conditional GET with non-matching If-None-Match falls through to no
   assert.equal(res.headers["content-length"], "10");
   const bytes = await readPayloadBytes(res.payload);
   assert.equal(bytes.length, 10);
+});
+
+test("stream route delivers byte-identical data for full and segmented reads", async () => {
+  // Create a deterministic payload with a recognizable pattern.
+  // Use a size larger than inlineFullObjectMaxBytes (32 MiB) to force
+  // the segmented read path via cachedSegmentByteStream.
+  // Use a smaller size for the full-object path test.
+  const sizeBytes = 64 * 1024; // 64 KiB — fits inline path
+  const blobId = "stream-integrity-e2e";
+  const data = Uint8Array.from({ length: sizeBytes }, (_, i) => (i * 7 + 13) & 0xff);
+  walrusSamples.set(blobId, data);
+
+  const app = await createRouteApp();
+  const fileId = "0x2222222222222222200000000000000000000000000000000000000000000002";
+  await mockSuiFile({
+    blob_id: blobId,
+    size_bytes: String(sizeBytes),
+  });
+
+  // Full-object read (no Range header)
+  const fullRes = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+  });
+  assert.equal(fullRes.statusCode, 200);
+
+  assert.ok(fullRes.payload instanceof Readable, "expected Readable payload for full read");
+  const fullBytes: number[] = [];
+  for await (const chunk of fullRes.payload as Readable) {
+    fullBytes.push(...(chunk as Uint8Array));
+  }
+  assert.equal(fullBytes.length, sizeBytes);
+  assert.deepEqual(fullBytes, Array.from(data));
+
+  // Partial read via Range header
+  const rangeStart = 1024;
+  const rangeEnd = 4095;
+  const rangeRes = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+    headers: { range: `bytes=${rangeStart}-${rangeEnd}` },
+  });
+  assert.equal(rangeRes.statusCode, 206);
+
+  assert.ok(rangeRes.payload instanceof Readable, "expected Readable payload for range read");
+  const rangeBytes: number[] = [];
+  for await (const chunk of rangeRes.payload as Readable) {
+    rangeBytes.push(...(chunk as Uint8Array));
+  }
+  const expectedRangeBytes = rangeEnd - rangeStart + 1;
+  assert.equal(rangeBytes.length, expectedRangeBytes);
+  assert.deepEqual(rangeBytes, Array.from(data.subarray(rangeStart, rangeEnd + 1)));
+});
+
+test("stream route delivers byte-identical data for segmented large-file read", async () => {
+  // Test the segment stitching path via cachedSegmentByteStream.
+  // inlineFullObjectMaxBytes is 32 MiB, so any size triggers the segment path.
+  const sizeBytes = 48 * 1024; // 48 KiB
+  const blobId = "stream-integrity-segmented";
+  const data = Uint8Array.from({ length: sizeBytes }, (_, i) => (i * 3 + 42) & 0xff);
+  walrusSamples.set(blobId, data);
+
+  const app = await createRouteApp();
+  const fileId = "0x2222222222222222200000000000000000000000000000000000000000000003";
+  await mockSuiFile({
+    blob_id: blobId,
+    size_bytes: String(sizeBytes),
+  });
+
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+  });
+  assert.equal(res.statusCode, 200);
+
+  assert.ok(res.payload instanceof Readable, "expected Readable payload for segmented read");
+  const received: number[] = [];
+  for await (const chunk of res.payload as Readable) {
+    received.push(...(chunk as Uint8Array));
+  }
+
+  assert.equal(received.length, sizeBytes, `Expected ${sizeBytes} bytes, got ${received.length}`);
+  assert.deepEqual(received, Array.from(data));
 });

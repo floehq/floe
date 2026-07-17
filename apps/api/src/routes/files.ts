@@ -103,6 +103,11 @@ export function getBlobExistenceCacheForTests() {
   return blobExistenceCache;
 }
 
+/** @internal test-only hook */
+export function getWalrusByteStreamForTests() {
+  return walrusByteStream;
+}
+
 /**
  * Normalize a client-provided ETag (possibly quoted or weak) and compare
  * it against the server's raw blobId ETag value.
@@ -347,6 +352,25 @@ async function* walrusByteStream(params: {
         throw new Error(
           `WALRUS_MISSING_BODY status=${upstream.status} offset=${offset} end=${segEnd}`,
         );
+      }
+
+      // Validate Content-Range header matches the requested range.
+      // Aggregators out of sync or behind a misconfigured proxy can return
+      // data from the wrong offset, causing silent byte-level corruption.
+      if (upstream.status === 206 && !isFullObjectAttempt) {
+        const contentRange = upstream.headers.get("content-range");
+        if (contentRange) {
+          const rangeMatch = contentRange.match(/^bytes\s+(\d+)-(\d+)\/(\d+)$/);
+          if (rangeMatch) {
+            const respStart = Number(rangeMatch[1]);
+            const respEnd = Number(rangeMatch[2]);
+            if (respStart !== offset || respEnd !== segEnd) {
+              throw new Error(
+                `WALRUS_CONTENT_RANGE_MISMATCH requested=${offset}-${segEnd} got=${respStart}-${respEnd} content-range=${contentRange}`,
+              );
+            }
+          }
+        }
       }
 
       const rs = Readable.fromWeb(body as ReadableStream<Uint8Array>);
