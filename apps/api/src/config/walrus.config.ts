@@ -62,9 +62,10 @@ export const WalrusReadLimits = {
   // aggregator hiccups during long streams.
   mediaSegmentBytes: parsePositiveIntEnv("FLOE_STREAM_MEDIA_SEGMENT_BYTES", 8 * 1024 * 1024),
 
-  // Larger first read for cold full-object playback so players can start with
-  // fewer round-trips before normal stitched reads continue.
-  initialSegmentBytes: parsePositiveIntEnv("FLOE_STREAM_INITIAL_SEGMENT_BYTES", 32 * 1024 * 1024),
+  // Smaller first read for cold full-object playback so the first byte arrives
+  // quickly. VLC and other players can start decoding with just the MP4 header
+  // (~first 1MB), then subsequent 8MB segments stream in the background.
+  initialSegmentBytes: parsePositiveIntEnv("FLOE_STREAM_INITIAL_SEGMENT_BYTES", 1 * 1024 * 1024),
 
   // For small full-object reads, avoid stitched multi-range behavior entirely.
   inlineFullObjectMaxBytes: parsePositiveIntEnv(

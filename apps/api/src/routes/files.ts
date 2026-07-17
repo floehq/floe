@@ -554,11 +554,7 @@ export function chooseStreamReadPlan(params: {
   );
   const boundedInitialSegment = Math.min(
     WalrusReadLimits.maxRangeBytes,
-    Math.max(
-      boundedMediaSegment,
-      WalrusReadLimits.initialSegmentBytes,
-      WalrusReadLimits.inlineFullObjectMaxBytes,
-    ),
+    Math.max(1, WalrusReadLimits.initialSegmentBytes),
   );
 
   if (params.hasRangeHeader) {
@@ -1406,9 +1402,12 @@ export async function filesRoutes(app: FastifyInstance) {
         }
       }
 
-      // Segment stream path: peek the first iteration of the generator
-      // BEFORE sending the response, so we can map WalrusBlobNotFoundError
-      // to a proper 503 instead of a broken 200 stream.
+      // Segment stream path: start the generator and send response headers
+      // immediately.  Previously a generator peek blocked response headers
+      // until the first segment was fully fetched from Walrus (10+ s on
+      // cold start).  Now we let the stream handle WalrusBlobNotFoundError
+      // asynchronously — the client gets a broken stream instead of a
+      // clean 503, but the 99%+ case (blob exists) gets instant headers.
       const segmentGen = cachedSegmentByteStream({
         blobId,
         start,
@@ -1420,28 +1419,10 @@ export async function filesRoutes(app: FastifyInstance) {
         log: req.childLogger,
       });
 
-      let firstChunkResult: IteratorResult<Uint8Array>;
-      try {
-        firstChunkResult = await segmentGen.next();
-      } catch (err) {
-        detachAbortHooks();
-        if (err instanceof WalrusBlobNotFoundError) {
-          blobNegativeExistenceCache.set(blobId, Date.now() + BLOB_NEGATIVE_EXISTENCE_CACHE_TTL);
-          return reply.status(503).type("text/html").send(BLOB_NOT_AVAILABLE_HTML(blobId));
-        }
-        throw err;
-      }
-
-      // First segment succeeded — blob exists. Cache positive result and
-      // stream the first chunk + remaining generator.
-      blobExistenceCache.set(blobId, Date.now() + blobExistenceCacheTTL);
-      if (blobExistenceCache.size > BLOB_EXISTENCE_CACHE_MAX_ENTRIES * 0.8) {
-        pruneBlobExistenceCache();
-      }
-
       const streamStartMs = Date.now();
       let firstByteObserved = false;
       let totalStreamedBytes = 0;
+      let blobExistenceConfirmed = false;
 
       emitInfrastructureEvent(req.childLogger, {
         event: "stream_started",
@@ -1463,15 +1444,6 @@ export async function filesRoutes(app: FastifyInstance) {
 
       const stream = Readable.from(
         (async function* () {
-          if (!firstChunkResult.done && firstChunkResult.value.byteLength > 0) {
-            firstByteObserved = true;
-            observeStreamTtfb({
-              range: rangeHeader ? "partial" : "full",
-              durationMs: Date.now() - streamStartMs,
-            });
-            totalStreamedBytes += firstChunkResult.value.byteLength;
-            yield firstChunkResult.value;
-          }
           for await (const chunk of segmentGen) {
             if (!firstByteObserved && chunk.byteLength > 0) {
               firstByteObserved = true;
@@ -1479,6 +1451,14 @@ export async function filesRoutes(app: FastifyInstance) {
                 range: rangeHeader ? "partial" : "full",
                 durationMs: Date.now() - streamStartMs,
               });
+              // First chunk delivered — blob exists. Cache positive result.
+              if (!blobExistenceConfirmed) {
+                blobExistenceConfirmed = true;
+                blobExistenceCache.set(blobId, Date.now() + blobExistenceCacheTTL);
+                if (blobExistenceCache.size > BLOB_EXISTENCE_CACHE_MAX_ENTRIES * 0.8) {
+                  pruneBlobExistenceCache();
+                }
+              }
             }
             totalStreamedBytes += chunk.byteLength;
             yield chunk;

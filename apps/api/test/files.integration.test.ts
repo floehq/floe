@@ -487,7 +487,7 @@ test("chooseStreamReadPlan uses larger full reads and conservative ranged reads"
   });
 
   assert.equal(smallFull.initialSegmentBytes, 8 * 1024 * 1024);
-  assert.equal(largeFull.initialSegmentBytes, 32 * 1024 * 1024);
+  assert.equal(largeFull.initialSegmentBytes, 1 * 1024 * 1024);
   assert.equal(ranged.initialSegmentBytes, 8 * 1024 * 1024);
 });
 
