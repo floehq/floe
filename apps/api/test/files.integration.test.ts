@@ -1539,3 +1539,92 @@ test("stream conditional GET with non-matching If-None-Match falls through to no
   const bytes = await readPayloadBytes(res.payload);
   assert.equal(bytes.length, 10);
 });
+
+test("stream route delivers byte-identical data for full and segmented reads", async () => {
+  // Create a deterministic payload with a recognizable pattern.
+  // Use a size larger than inlineFullObjectMaxBytes (32 MiB) to force
+  // the segmented read path via cachedSegmentByteStream.
+  // Use a smaller size for the full-object path test.
+  const sizeBytes = 64 * 1024; // 64 KiB — fits inline path
+  const blobId = "stream-integrity-e2e";
+  const data = Uint8Array.from({ length: sizeBytes }, (_, i) => (i * 7 + 13) & 0xff);
+  walrusSamples.set(blobId, data);
+
+  const app = await createRouteApp();
+  const fileId = "0x2222222222222222200000000000000000000000000000000000000000000002";
+  await mockSuiFile({
+    blob_id: blobId,
+    size_bytes: String(sizeBytes),
+  });
+
+  // Full-object read (no Range header)
+  const fullRes = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+  });
+  assert.equal(fullRes.statusCode, 200);
+
+  assert.ok(fullRes.payload instanceof Readable, "expected Readable payload for full read");
+  const fullBytes: number[] = [];
+  for await (const chunk of fullRes.payload as Readable) {
+    fullBytes.push(...(chunk as Uint8Array));
+  }
+  assert.equal(fullBytes.length, sizeBytes);
+  assert.deepEqual(fullBytes, Array.from(data));
+
+  // Partial read via Range header
+  const rangeStart = 1024;
+  const rangeEnd = 4095;
+  const rangeRes = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+    headers: { range: `bytes=${rangeStart}-${rangeEnd}` },
+  });
+  assert.equal(rangeRes.statusCode, 206);
+
+  assert.ok(rangeRes.payload instanceof Readable, "expected Readable payload for range read");
+  const rangeBytes: number[] = [];
+  for await (const chunk of rangeRes.payload as Readable) {
+    rangeBytes.push(...(chunk as Uint8Array));
+  }
+  const expectedRangeBytes = rangeEnd - rangeStart + 1;
+  assert.equal(rangeBytes.length, expectedRangeBytes);
+  assert.deepEqual(rangeBytes, Array.from(data.subarray(rangeStart, rangeEnd + 1)));
+});
+
+test("stream route delivers byte-identical data for segmented large-file read", async () => {
+  // Test the segment stitching path via cachedSegmentByteStream.
+  // inlineFullObjectMaxBytes is 32 MiB, so any size triggers the segment path.
+  const sizeBytes = 48 * 1024; // 48 KiB
+  const blobId = "stream-integrity-segmented";
+  const data = Uint8Array.from({ length: sizeBytes }, (_, i) => (i * 3 + 42) & 0xff);
+  walrusSamples.set(blobId, data);
+
+  const app = await createRouteApp();
+  const fileId = "0x2222222222222222200000000000000000000000000000000000000000000003";
+  await mockSuiFile({
+    blob_id: blobId,
+    size_bytes: String(sizeBytes),
+  });
+
+  const res = await app.inject({
+    method: "GET",
+    url: `/v1/files/${fileId}/stream`,
+    routePath: "/v1/files/:fileId/stream",
+    params: { fileId },
+  });
+  assert.equal(res.statusCode, 200);
+
+  assert.ok(res.payload instanceof Readable, "expected Readable payload for segmented read");
+  const received: number[] = [];
+  for await (const chunk of res.payload as Readable) {
+    received.push(...(chunk as Uint8Array));
+  }
+
+  assert.equal(received.length, sizeBytes, `Expected ${sizeBytes} bytes, got ${received.length}`);
+  assert.deepEqual(received, Array.from(data));
+});
