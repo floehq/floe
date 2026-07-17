@@ -458,6 +458,14 @@ export async function teeCachedStreamRange(params: {
         if (!cs.destroyed) cs.destroy(innerError);
       }
       broadcastStream.destroy(innerError);
+      // AbortError means the client disconnected — consumer streams are
+      // already destroyed above. Re-throwing would bubble to
+      // process.on("uncaughtException") and crash the server because
+      // Node.js streams emit 'error' events via processTicksAndRejections
+      // which can escape the .catch() handler below.
+      if (innerError.name === "AbortError" || params.signal?.aborted) {
+        return;
+      }
       throw innerError;
     } finally {
       releaseReservation();
@@ -657,6 +665,12 @@ export async function teeCachedStreamBlob(params: {
         if (!cs.destroyed) cs.destroy(innerError);
       }
       broadcastStream.destroy(innerError);
+      // AbortError means the client disconnected — consumer streams are
+      // already destroyed above. Re-throwing would bubble to
+      // process.on("uncaughtException") and crash the server.
+      if (innerError.name === "AbortError" || params.signal?.aborted) {
+        return;
+      }
       throw innerError;
     } finally {
       releaseReservation();
