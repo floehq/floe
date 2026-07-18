@@ -5,8 +5,9 @@
 1. **Prerequisites:**
    - Node.js 20+
    - npm 9+
-   - Redis (for local testing)
-   - Docker (optional, for Postgres tests)
+   - Docker and Docker Compose
+   - Walrus aggregator access
+   - Sui RPC access and a signing key
 
 2. **Clone and install:**
    ```bash
@@ -15,9 +16,21 @@
    npm ci
    ```
 
-3. **Environment:**
-   - Copy `config/floe.example.yaml` to `config/floe.yaml` and adjust for your setup.
-   - Key env vars are documented in `docs/OPERATIONS.md`.
+3. **Start infrastructure:**
+   ```bash
+   docker compose up -d
+   ```
+
+4. **Configure environment:**
+   ```bash
+   cp .env.example .env
+   ```
+   Set `FLOE_REDIS_PROVIDER=native`, `REDIS_URL=redis://127.0.0.1:6379`, your Sui keys, and a test API key. See [Quick Start](../README.md#quick-start) for the minimum required variables.
+
+5. **Run the server:**
+   ```bash
+   npm run dev
+   ```
 
 ## Code Style
 
@@ -49,10 +62,10 @@ Tests use the **Node.js built-in test runner** (`node:test`) with `tsx` as the T
 
 ### Test File Map
 
-| File | Subsystem | Unit / Integration |
-| --- | --- | --- |
+| File | Subsystem | Type |
+|---|---|---|
 | `auth.api-key-store-interface.test.ts` | Auth — API key store interface contract | Unit |
-| `auth.api-key.pg.test.ts` | Auth — Postgres API key store (unit) | Unit |
+| `auth.api-key.pg.test.ts` | Auth — Postgres API key store | Unit |
 | `auth.api-key.pg.integration.test.ts` | Auth — Postgres API key store (real Postgres) | Integration |
 | `auth.headers.test.ts` | Auth — Rate-limit header formatting | Unit |
 | `auth.identity.test.ts` | Auth — Identity resolution | Unit |
@@ -63,10 +76,13 @@ Tests use the **Node.js built-in test runner** (`node:test`) with `tsx` as the T
 | `db.test.ts` | Database — Connection and query helpers | Unit |
 | `files.integration.test.ts` | Files — Upload-to-finalize end-to-end flow | Integration |
 | `finalize.integration.test.ts` | Finalize — File metadata finalization (spawns Redis) | Integration |
+| `finalize.service.test.ts` | Finalize — Finalize pipeline logic (dependency injection) | Unit |
 | `finalize.shared.test.ts` | Finalize — Shared utilities | Unit |
 | `gc.test.ts` | Garbage collection — Expired session cleanup | Unit |
+| `gc-subsystem.test.ts` | GC — Upload GC scheduler, reconciliation, distributed locking | Unit |
 | `metrics-instance.test.ts` | Metrics — Instance-level metrics | Unit |
 | `ops-api-keys.test.ts` | Ops — Admin API key management routes | Unit |
+| `ops-api-keys.lifecycle.test.ts` | Ops — API key create/rotate/revoke lifecycle | Unit |
 | `redis.adapter.test.ts` | Redis — Adapter abstraction layer | Unit |
 | `redis.native.test.ts` | Redis — Native client wrapper | Unit |
 | `runtime.bootstrap.test.ts` | Runtime — Server bootstrap and startup | Unit |
@@ -75,12 +91,21 @@ Tests use the **Node.js built-in test runner** (`node:test`) with `tsx` as the T
 | `s3.store.integration.test.ts` | S3 — Chunk store (real MinIO/S3) | Integration |
 | `spool-bench.test.ts` | Spool — Benchmark / performance test | Unit |
 | `state.test.ts` | State — Global state management | Unit |
-| `sui.signer.kms.test.ts` | Sui — KMS-backed transaction signer | Unit |
+| `stream-cache.test.ts` | Streaming — Cache truncation, abort, error propagation | Unit |
+| `stream-cache-advanced.test.ts` | Streaming — Concurrency, LRU eviction, dedup | Unit |
+| `stream-hardening.test.ts` | Streaming — Content-Range validation, orphan cleanup, pruning | Unit |
+| `stream-route-abort.test.ts` | Streaming — Route abort and cancellation behavior | Unit |
+| `sui-metadata-metrics.test.ts` | Sui — Metadata minting metrics | Unit |
 | `sui.signer.test.ts` | Sui — Transaction signer | Unit |
+| `sui.signer.kms.test.ts` | Sui — KMS-backed transaction signer | Unit |
 | `topology.config.test.ts` | Config — Topology / deployment config parsing | Unit |
 | `upload.integration.test.ts` | Upload — Chunked upload flow (spawns Redis) | Integration |
+| `upload-error-paths.test.ts` | Upload — Error paths and edge cases | Unit |
 | `validation.test.ts` | Validation — Filename, content-type, config validation | Unit |
 | `walrus.test.ts` | Walrus — Blob store client | Unit |
+| `walrus-backends.test.ts` | Walrus — Backend implementations (SDK, publisher, CLI) | Unit |
+| `walrus-read.test.ts` | Walrus — Read path, segment retry, idle timeout | Unit |
+| `walrus-upload.test.ts` | Walrus — Upload/publish path | Unit |
 
 ### Integration Test Setup
 
@@ -110,6 +135,7 @@ Or copy `.env.integration.example` to `.env` and source it. Some integration tes
 - Follow existing patterns in `apps/api/test/`.
 - Use `node:test` primitives: `describe`, `it`, `test`, `before`, `after`, `beforeEach`, `afterEach`.
 - Use `node:assert/strict` for assertions.
+- Run tests with `npx tsx --test` (NOT vitest).
 - Integration tests that need Redis should spawn their own instance on a random port (pattern from `upload.integration.test.ts`) to avoid port conflicts in parallel runs.
 - Place test helpers in `test/fixtures/`.
 - **Coverage target:** 80%+ on auth, upload routes, and finalize service.
@@ -118,10 +144,12 @@ Or copy `.env.integration.example` to `.env` and source it. Some integration tes
 
 GitHub Actions runs four parallel jobs on every push/PR:
 
-1. **Build and Test API** — starts Redis, Postgres, and MinIO via Docker; builds the API; runs migration check; runs the full test suite (unit + integration).
+1. **Build and Test API** — starts Redis, Postgres, and MinIO via Docker; builds the API; runs migration check; runs the full test suite (unit + integration); builds and tests the SDK and CLI.
 2. **Lint** — ESLint + Prettier across all workspaces.
 3. **npm audit** — dependency vulnerability scan (high+ severity).
 4. **Trivy** — Docker image vulnerability scan (high/critical severity).
+
+All four jobs must pass before a PR can be merged.
 
 ## Pull Request Process
 
@@ -131,6 +159,7 @@ GitHub Actions runs four parallel jobs on every push/PR:
 4. Run the linter: `npm run lint --workspace=apps/api`
 5. Ensure TypeScript compiles: `npm run build --workspace=apps/api`
 6. Submit a PR with a clear description of what and why.
+7. All CI jobs must be green (Build+Test, Lint, npm audit, Trivy).
 
 ## Commit Messages
 

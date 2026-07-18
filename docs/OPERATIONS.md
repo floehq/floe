@@ -159,13 +159,6 @@ Read behavior and observability:
 - `FLOE_EVENT_LOG_ENABLED` default `1`
 - `FLOE_METRICS_TOKEN`
 
-Auth mode defaults:
-
-- default auth mode: `hybrid`
-- verified auth method: API key via `x-api-key` or `Authorization: Bearer <key>`
-- `hybrid` mode requires auth for upload actions and allows public file reads
-- `private` mode requires auth for upload and file routes
-
 ## Current Defaults
 
 Core defaults from the current config:

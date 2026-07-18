@@ -76,9 +76,9 @@ Recommended hardening areas for production deployments:
 - principal-aware quotas and abuse controls
 - structured security event logging and alerting
 
-### Rate Limit Local Lease Bump
+### Rate Limit Local Lease
 
-The local lease size for `FLOE_RATE_LIMIT_FILE_META_LOCAL_LEASE` and `FLOE_RATE_LIMIT_FILE_STREAM_LOCAL_LEASE` was increased from 1 to 20. This allows a single Floe instance to serve up to 20 requests per tenant before the shared distributed rate limiter is consulted. The tradeoff: a single instance can burst ~19 requests past a tenant's configured limit before other instances or the shared limiter catches up. This is acceptable for single-instance deployments and small clusters, but deployments relying on precise per-tenant caps across many instances should monitor actual request rates against the configured limit and consider lowering the local lease size via env vars if tighter enforcement is required.
+Each Floe instance maintains a small local lease (default 20 requests per tenant) before consulting the shared distributed rate limiter. This reduces Redis round-trips for typical request patterns. In single-instance or small-cluster deployments, this is transparent. In larger deployments with precise per-tenant caps, monitor actual request rates against configured limits and adjust `FLOE_RATE_LIMIT_FILE_META_LOCAL_LEASE` or `FLOE_RATE_LIMIT_FILE_STREAM_LOCAL_LEASE` if tighter enforcement is required.
 
 ## API Key Lifecycle
 
@@ -100,9 +100,7 @@ All key lifecycle events (create, revoke, rotate) are logged via `emitAuditEvent
 
 ## Reporting
 
-If you find a security issue, report it privately to the maintainer before opening a public issue.
-
-Include:
+If you find a security vulnerability, report it privately to the maintainer before opening a public issue. Include:
 
 - affected endpoint or component
 - reproduction steps

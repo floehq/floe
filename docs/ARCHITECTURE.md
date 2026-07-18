@@ -111,7 +111,7 @@ The `FLOE_NODE_ROLE` environment variable (default: `full`) controls which compo
 - **`write`** — HTTP upload/control endpoints and finalize workers. No file read endpoints or stream cache. Use for dedicated write nodes in a split topology.
 - **`read`** — HTTP file read endpoints and stream cache. No upload routes, finalize workers, or GC. Use for dedicated read-only nodes behind a load balancer.
 
-Route and worker registration is gated by `TopologyConfig` at startup (`app.server.ts:397-423`).
+Route and worker registration is gated by `TopologyConfig` at startup in `app.server.ts`.
 
 ## Configuration
 

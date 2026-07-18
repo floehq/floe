@@ -1,12 +1,8 @@
 # Deployment Guide
 
-## Goal
-
-This branch establishes one intentional deployment baseline for Floe: a single build artifact that can run as `read`, `write`, or `full` by config, with explicit external dependencies and a persistent writable upload temp path.
-
 ## Baseline
 
-Recommended phase-1 beta runtime:
+Floe ships as a single build artifact that runs as `read`, `write`, or `full` by configuration. Production deployments require:
 
 - one or more HTTPS-exposed Floe services
 - persistent Redis
@@ -285,6 +281,5 @@ Expected behavior:
 
 ## Known Limits
 
-- this branch does not add provider-specific manifests like Fly, Railway, Render, or Kubernetes
 - TLS termination is assumed to happen at the hosting platform or reverse proxy
-- backup/restore remains an operational procedure, not infrastructure automation in this branch
+- Backup/restore remains an operational procedure, not infrastructure automation

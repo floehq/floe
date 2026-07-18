@@ -85,6 +85,9 @@ Rate limiting:
 - rate-limit headers are included on both allowed and rejected responses
 
 ### `GET /v1/uploads/:uploadId/status`
+
+Read upload state and received chunk indexes.
+
 Status responses may include finalize diagnostics when an upload is finalizing, failed, or completed after asynchronous finalize work. Important fields:
 
 - `finalizeAttemptState`: `running`, `retryable_failure`, `terminal_failure`, or `completed`
@@ -92,9 +95,6 @@ Status responses may include finalize diagnostics when an upload is finalizing, 
 - `lastFinalizeRetryDelayMs`: next scheduled retry delay for retryable failures
 - `failedReasonCode` and `failedRetryable`: terminal vs retryable failure details
 - `finalizeWarning` and `finalizeWarningAt`: post-commit warning recorded after status already reached `completed`
-
-
-Read upload state and received chunk indexes.
 
 Behavior notes:
 
