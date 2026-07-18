@@ -178,8 +178,14 @@ async function resolveFileFields(id: string): Promise<CachedFileFieldsResult> {
   if (fileId) {
     try {
       out = await getFileFieldsCached(fileId);
-    } catch {
-      // Fallback
+    } catch (err: any) {
+      const msg = String(err?.message ?? err ?? "");
+      const isNotFound =
+        /not.?found/i.test(msg) ||
+        /NOT_FOUND/i.test(msg) ||
+        err?.status === 404 ||
+        err?.statusCode === 404;
+      if (!isNotFound) throw err;
     }
   }
 
@@ -885,7 +891,7 @@ export async function filesRoutes(app: FastifyInstance) {
           checksum: normalized.checksum,
           walrusEndEpoch: walrusResult.endEpoch,
           createdAtMs: normalized.createdAt,
-        }).catch(() => {});
+        }).catch((err) => req.childLogger.warn({ err }, "Postgres index upsert failed after renewal"));
 
         // Emit audit event on successful renewal
         const auditAfter = {

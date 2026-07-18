@@ -1,6 +1,9 @@
 import type { FastifyBaseLogger } from "fastify";
 import { GcConfig } from "../../config/uploads.config.js";
+import { getRedis } from "../redis.js";
 import { runUploadGc } from "./upload.gc.worker.js";
+
+const GC_LOCK_KEY = "floe:gc:upload:distributed-lock";
 
 let timer: NodeJS.Timeout | null = null;
 let running: Promise<void> | null = null;
@@ -13,12 +16,22 @@ export function startUploadGc(log: FastifyBaseLogger) {
   timer = setInterval(async () => {
     if (running) return; // prevent overlap
 
+    const redis = getRedis();
+    const lockTtl = Math.max(Math.ceil(GcConfig.gcInterval / 1000) + 30, 60);
+    const acquired = await redis.set(GC_LOCK_KEY, "1", { nx: true, ex: lockTtl });
+
+    if (!acquired) {
+      log.debug("Upload GC skipped — distributed lock held by another instance");
+      return;
+    }
+
     running = runUploadGc(log)
       .catch((err) => {
         log.error(err, "Upload GC failed");
       })
-      .finally(() => {
+      .finally(async () => {
         running = null;
+        await redis.del(GC_LOCK_KEY).catch(() => {});
       });
   }, GcConfig.gcInterval);
 

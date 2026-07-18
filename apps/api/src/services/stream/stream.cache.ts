@@ -311,15 +311,15 @@ export async function teeCachedStreamRange(params: {
   }
 
   const cachePath = streamRangeCachePath(params);
-  await fsp.mkdir(path.dirname(cachePath), { recursive: true });
   const expectedSize = params.end - params.start + 1;
   const broadcastStream = new PassThrough();
   const consumerStreams = new Set<PassThrough>();
   const fillStartedAt = Date.now();
 
-  // Register the session in the dedup map BEFORE acquireCacheFillSlot so
-  // concurrent requests for the same range join this session rather than
-  // issuing duplicate Walrus fetches.
+  // Register the session in the dedup map BEFORE any await so concurrent
+  // requests for the same range join this session rather than issuing
+  // duplicate Walrus fetches.  The earlier the registration, the fewer
+  // duplicate fetches can slip through on the async boundary.
   const session: InFlightTeeEntry = {
     cachePath,
     consumerStreams,
@@ -327,6 +327,8 @@ export async function teeCachedStreamRange(params: {
     writeError: null,
   };
   inFlightTeeRangeFill.set(rangeKey, session);
+
+  await fsp.mkdir(path.dirname(cachePath), { recursive: true });
 
   const firstConsumer = new PassThrough();
   consumerStreams.add(firstConsumer);

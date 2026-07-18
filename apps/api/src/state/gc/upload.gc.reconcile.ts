@@ -25,6 +25,8 @@ export async function reconcileOrphanUploads(
     return { recovered: 0, scanned: 0 };
   }
 
+  const trackedIds = new Set(await redis.smembers(uploadKeys.gcIndex()));
+
   let recovered = 0;
   let scanned = 0;
 
@@ -46,7 +48,7 @@ export async function reconcileOrphanUploads(
     if (!isBin && !stat.isDirectory()) continue;
     scanned += 1;
 
-    const isTracked = await redis.sismember(uploadKeys.gcIndex(), uploadId);
+    const isTracked = trackedIds.has(uploadId);
 
     if (isTracked) continue;
 
