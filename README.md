@@ -1,253 +1,379 @@
-# Floe
+<p align="center">
+  <h1 align="center">Floe</h1>
+  <p align="center">
+    Developer-first video infrastructure built on Walrus decentralized storage and Sui blockchain.
+  </p>
+  <p align="center">
+    <a href="https://github.com/floehq/floe/actions/workflows/ci.yml"><img src="https://github.com/floehq/floe/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+    <a href="https://github.com/floehq/floe/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
+    <a href="https://github.com/floehq/floe/releases"><img src="https://img.shields.io/badge/version-1.0.0-blue.svg" alt="Version"></a>
+  </p>
+</p>
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](CHANGELOG.md)
+---
 
-Floe is a backend for uploading, finalizing, and reading large files with Walrus and Sui.
+Floe handles the hard parts of large file workflows -- resumable chunk uploads, asynchronous finalization, decentralized blob storage, and byte-range streaming -- through a versioned REST API with first-class TypeScript SDK and CLI clients.
 
-It supports resumable chunk uploads, asynchronous finalize flow, stable file metadata, and byte-range reads through a versioned API.
+## Key Features
 
-## Features
+- **Resumable Chunk Uploads** -- Upload files in any order with SHA-256 validation per chunk. Resume from where you left off.
+- **Asynchronous Finalize** -- Queue-backed 5-stage pipeline: verify, publish to Walrus, mint on Sui, commit, cleanup.
+- **Decentralized Storage** -- Files are stored on Walrus with on-chain metadata anchored to Sui for verifiable ownership.
+- **Byte-Range Streaming** -- Serve file bytes for playback with local disk caching and range-aware responses.
+- **Multi-Role Topology** -- Run `full`, `write`, or `read` nodes from a single build artifact.
+- **Pluggable Auth** -- Local, external, and token-based auth providers with scope-based access control.
+- **Rate Limiting** -- Redis-backed sliding window with per-scope, per-tier limits.
+- **Circuit Breakers** -- Automatic failure isolation for Walrus, Sui, and external auth dependencies.
+- **Observability** -- Prometheus metrics, structured infrastructure events, Sentry integration, SLI/SLO tracking.
 
-- resumable upload sessions for large files
-- chunk uploads with SHA-256 validation
-- asynchronous finalize flow backed by Walrus
-- Sui-based file metadata with stable `fileId` lookup
-- metadata, manifest, and stream endpoints
-- CLI and SDK clients in this workspace
+## Architecture
 
-## API Version
+```
+                          ┌─────────────┐
+                          │   Client    │
+                          │  (SDK/CLI)  │
+                          └──────┬──────┘
+                                 │
+                          ┌──────▼──────┐
+                          │  Floe API   │
+                          │  (Fastify)  │
+                          └──┬───┬───┬──┘
+                             │   │   │
+              ┌──────────────┘   │   └──────────────┐
+              │                  │                   │
+       ┌──────▼──────┐   ┌──────▼──────┐   ┌───────▼───────┐
+       │    Redis    │   │   Postgres  │   │  S3 / R2 /   │
+       │   (state)   │   │  (metadata) │   │    MinIO     │
+       └─────────────┘   └─────────────┘   └──────────────┘
+                                                     │
+                                              chunks staged here
+                                                     │
+                               ┌──────────────────────┘
+                               │
+                     ┌─────────▼─────────┐
+                     │      Walrus       │
+                     │ (blob finalized)  │
+                     └─────────┬─────────┘
+                               │
+                     ┌─────────▼─────────┐
+                     │        Sui        │
+                     │  (on-chain meta)  │
+                     └───────────────────┘
+```
 
-The current server API contract is `v1`.
-
-Compatibility window:
-
-- SDK: `>=0.2.0 <0.3.0`
-- CLI: `>=0.2.0 <0.3.0`
-
-## How It Works
-
-1. A client creates an upload session.
-2. The client uploads chunks in any order.
-3. Floe validates and stores uploaded chunks.
-4. The client requests finalize.
-5. Floe publishes the assembled file to Walrus.
-6. Floe records metadata on Sui and returns a `fileId`.
-7. Clients read the file through the file endpoints.
-
-## Components
-
-- **API**: Fastify server and route handlers
-- **Redis**: upload state, chunk indexes, locks, queue state, and rate limiting
-- **Postgres**: optional cache for file lookups
-- **Chunk store**: `s3`/R2/MinIO-compatible storage by default, `disk` optional
-- **Walrus**: blob storage for finalized files
-- **Sui**: file metadata and ownership anchor
-
-## Local Development
+## Quick Start
 
 ### Prerequisites
 
-- Node.js `>=20`
-- npm `>=9`
+- Node.js >= 20, npm >= 9
 - Docker and Docker Compose
 - Walrus aggregator access
 - Sui RPC access and a signing key
 
-### Step 1 — Start infrastructure
-
-The project includes a `docker-compose.yml` that runs Redis, Postgres, and MinIO locally.
-Start them before anything else:
+### 1. Start infrastructure
 
 ```bash
 docker compose up -d
 ```
 
-Verify the containers are healthy:
+This starts Redis, Postgres, and MinIO locally.
 
-```bash
-docker compose ps
-```
-
-See the [Docker Compose Services](#docker-compose-services) subsection below for ports and what each service does.
-
-### Step 2 — Configure environment
+### 2. Configure
 
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` and set the mandatory variables. For a minimal local setup the key
-vars to change from defaults are:
+Minimum variables to set for local development:
 
 | Variable | Default | Action |
 |---|---|---|
-| `FLOE_REDIS_PROVIDER` | `upstash` | Change to `native` for local Docker Redis |
-| `REDIS_URL` | — | Set to `redis://127.0.0.1:6379` |
-| `FLOE_S3_ACCESS_KEY_ID` | `minioadmin` | Keep default for local MinIO |
-| `FLOE_S3_SECRET_ACCESS_KEY` | `minioadmin` | Keep default for local MinIO |
-| `SUI_PRIVATE_KEY` | — | Set to your Sui testnet private key |
-| `SUI_PACKAGE_ID` | — | Set to your deployed package ID |
-| `FLOE_API_KEYS_JSON` | — | Add a test API key (see below) |
-| `FLOE_METRICS_TOKEN` | `change-me-strong-random-token` | Set to any random string |
+| `FLOE_REDIS_PROVIDER` | `upstash` | Change to `native` |
+| `REDIS_URL` | -- | Set to `redis://127.0.0.1:6379` |
+| `SUI_PRIVATE_KEY` | -- | Your Sui testnet key |
+| `SUI_PACKAGE_ID` | -- | Your deployed package ID |
+| `FLOE_API_KEYS_JSON` | -- | Add a test API key (see below) |
 
-All other variables have sensible defaults for local development.
-
-### Step 3 — Install dependencies
+### 3. Install and run
 
 ```bash
 npm install
-```
-
-### Step 4 — Run the server
-
-```bash
 npm run dev
 ```
 
-The server starts on **http://localhost:3001** by default.
+Server starts at **http://localhost:3001**.
 
-Additional run modes:
-
-```bash
-npm run dev -- --role read
-npm run dev -- --role write
-npm run dev -- --config ./config/floe.example.yaml
-```
-
-### Step 5 — Verify
+### 4. Verify
 
 ```bash
 curl http://localhost:3001/health
 ```
 
-A healthy response returns status `"ok"` with a JSON body.
+## API Overview
 
-### Step 6 — Create a test API key
+All endpoints are prefixed with `/v1`. Full reference in [`docs/API.md`](docs/API.md).
 
-Add an API key to the `FLOE_API_KEYS_JSON` variable in your `.env` file.
-Use the JSON format with an `id`, `secret`, `owner`, `tier`, and `scopes`:
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/v1/uploads/create` | Create upload session |
+| `PUT` | `/v1/uploads/:id/chunk/:index` | Upload a chunk |
+| `GET` | `/v1/uploads/:id/status` | Upload status |
+| `POST` | `/v1/uploads/:id/complete` | Trigger finalize |
+| `DELETE` | `/v1/uploads/:id` | Cancel upload |
+| `GET` | `/v1/files/:id/metadata` | File metadata |
+| `GET` | `/v1/files/:id/stream` | Byte-range stream |
+| `HEAD` | `/v1/files/:id/stream` | Stream headers |
+| `POST` | `/v1/files/:id/renew` | Extend storage |
+| `GET` | `/v1/files/:id/manifest` | Read manifest |
+| `GET` | `/health` | Health check |
+| `GET` | `/docs` | OpenAPI / Swagger UI |
+
+### Create an API key
+
+Add a key to `FLOE_API_KEYS_JSON` in your `.env`:
 
 ```json
 [
   {
     "id": "local-dev",
     "secret": "floe_local-dev_aB3xY9zW8mNqR5vT2pL7cF4hJ1kD0sG6uE3wX",
-    "owner": "0xf35568c562fd25dccd58e4e9240d8a6f864de0a9854ddd1f7d8aa6ff5f9722a4",
+    "owner": "0x...",
     "tier": "authenticated",
     "scopes": ["*"]
   }
 ]
 ```
 
-The secret value is the key you present in requests. Pass it as a header or bearer token:
+Pass it as a header or bearer token:
 
 ```bash
-# Header
 curl -H "x-api-key: floe_local-dev_aB3xY9zW8mNqR5vT2pL7cF4hJ1kD0sG6uE3wX" ...
-
-# Bearer token
-curl -H "Authorization: Bearer floe_local-dev_aB3xY9zW8mNqR5vT2pL7cF4hJ1kD0sG6uE3wX" ...
 ```
 
-### Step 7 — Run tests
+## SDK
+
+The TypeScript SDK provides typed clients for all API operations.
 
 ```bash
-npm test --workspace=apps/api
+npm install @floehq/sdk
 ```
 
-Integration tests require Redis running locally (provided by docker-compose).
+```typescript
+import { FloeClient } from "@floehq/sdk";
 
-### Step 8 — Useful commands
+const client = new FloeClient({
+  baseUrl: "http://localhost:3001",
+  apiKey: "your-api-key",
+});
 
-| Command | Description |
-|---|---|
-| `npm run dev` | Start dev server with hot-reload |
-| `npm run build` | Build all workspaces (api, sdk, cli) |
-| `npm run start` | Start production build |
-| `npm run lint` | Lint all workspaces |
-| `npm run upload` | Upload a file via the CLI |
-| `npm run bench:stream` | Run stream benchmark |
-| `npm run bench:upload` | Run upload load test |
-| `npm run clean` | Remove `node_modules` and reinstall |
+// Upload a file with progress tracking
+const upload = await client.uploadFile("./video.mp4", {
+  epochs: 3,
+  onProgress: ({ uploaded, total }) =>
+    console.log(`${((uploaded / total) * 100).toFixed(1)}%`),
+});
 
-### Build
+// Wait for finalize
+await client.waitForUploadReady(upload.uploadId);
+
+// Stream the file
+const stream = await client.streamFile(upload.fileId);
+for await (const chunk of stream) {
+  // process chunk
+}
+
+// Download to disk (Node.js)
+await client.downloadFileToPath(upload.fileId, "./downloaded.mp4");
+```
+
+**Key methods:** `createUpload`, `uploadChunk`, `uploadBlob`, `uploadBytes`, `uploadFile`, `completeUpload`, `waitForUploadReady`, `streamFile`, `downloadFile`, `getFileMetadata`, `renewFile`, `getHealth`.
+
+Full type definitions and all 40+ exported interfaces are documented in [`apps/sdk/src/`](apps/sdk/src/).
+
+## CLI
+
+The CLI wraps the SDK for terminal workflows.
 
 ```bash
-npm run build --workspace=apps/api
-npm run start
+npm install -g @floehq/cli
 ```
 
-### Docker Compose Services
-
-The `docker-compose.yml` at the project root runs three backing services for local development.
-
-| Service | Image | Ports | Purpose |
-|---|---|---|---|
-| **redis** | `redis:7-alpine` | `6379` | Upload state, chunk indexes, locks, rate limiting, queue state |
-| **postgres** | `postgres:16-alpine` | `5432` | Optional file metadata read model (user: `floe`, password: `floe`, database: `floe`) |
-| **minio** | `minio/minio:latest` | `9000` (API), `9001` (console) | S3-compatible object storage for chunk staging (user: `floe`, password: `floe_secret`) |
-
-To stop all services:
+### Upload
 
 ```bash
-docker compose down
+# Upload a file
+floe upload ./video.mp4 --epochs 3
+
+# Upload with parallel chunks
+foe upload ./video.mp4 --parallel 4
+
+# Resume a failed upload
+floe upload ./video.mp4 --resume <uploadId>
+
+# Check status
+floe status <uploadId>
 ```
 
-To wipe volumes (fresh start):
+### File operations
 
 ```bash
-docker compose down -v
+# Get metadata
+floe metadata <fileId>
+
+# Stream raw bytes to stdout
+floe stream <fileId> > output.bin
+
+# Download to file
+floe download <fileId> ./output.mp4
+
+# Extend storage duration
+floe renew <fileId> --epochs 5
+
+# Get stream URL
+floe stream-url <fileId>
 ```
+
+### Ops and diagnostics
+
+```bash
+# Check deployment health
+floe ops health
+
+# Show effective config
+floe config show
+
+# Runtime diagnostics
+floe doctor
+```
+
+Global flags: `--base-url`, `--api-key`, `--json`, `--verbose`, `--no-compat-check`.
 
 ## Docker
+
+### Build
 
 ```bash
 docker build -t floe-api:latest .
 ```
 
-For container deployments:
-
-- mount a persistent writable path at `UPLOAD_TMP_DIR`
-- use `/health` for health checks
-- if local MinIO runs on the host, use `host.docker.internal` instead of `127.0.0.1`
-
-## CLI
-
-Floe includes a root launcher at `./floe.sh` that delegates to `scripts/floe.sh`.
+### Run
 
 ```bash
-./floe.sh "path/to/file.mp4" --parallel 3 --epochs 3
-npm run upload -- "path/to/file.mp4" --parallel 3 --epochs 3
+docker run -p 3001:3001 \
+  -e REDIS_URL=redis://host:6379 \
+  -e SUI_PRIVATE_KEY=your-key \
+  -e SUI_PACKAGE_ID=your-package \
+  floe-api:latest
 ```
 
-Resume or override the API base:
+- Mount a persistent path at the upload temp directory for chunk staging
+- Use `/health` for container health checks
+- If MinIO runs on the host, use `host.docker.internal` instead of `127.0.0.1`
+
+## Configuration
+
+Floe is configured through environment variables or YAML. See [`config/floe.example.yaml`](config/floe.example.yaml) for the full reference.
+
+**Key groups:**
+
+| Group | Variables | Purpose |
+|---|---|---|
+| Server | `FLOE_PORT`, `FLOE_NODE_ROLE` | HTTP port, node topology role |
+| Storage | `FLOE_S3_*`, `FLOE_CHUNK_STORE` | S3/R2/MinIO chunk staging |
+| Redis | `FLOE_REDIS_PROVIDER`, `REDIS_URL` | State, locks, queues, rate limiting |
+| Postgres | `DATABASE_URL` | File metadata read model |
+| Walrus | `WALRUS_AGGREGATOR_URLS`, `WALRUS_EPOCHS` | Blob storage and renewal |
+| Sui | `SUI_NETWORK`, `SUI_PRIVATE_KEY`, `SUI_PACKAGE_ID` | Blockchain metadata |
+| Auth | `FLOE_AUTH_MODE`, `FLOE_API_KEYS_JSON` | Authentication and access control |
+| Upload | `FLOE_MAX_FILE_SIZE`, `FLOE_MAX_CHUNK_SIZE` | Upload limits |
+| Stream | `FLOE_STREAM_CACHE_*` | Byte-range caching behavior |
+| Observability | `FLOE_METRICS_TOKEN`, `SENTRY_DSN` | Metrics and error tracking |
+
+### Node Roles
+
+| Role | Routes | Workers | Stream Cache |
+|---|---|---|---|
+| `full` | uploads, files, ops | finalize, uploadGc | Yes |
+| `write` | uploads, ops | finalize, uploadGc | No |
+| `read` | files | -- | Yes |
+
+## Testing
 
 ```bash
-./floe.sh "path/to/file.mp4" --resume <uploadId>
-./floe.sh "path/to/file.mp4" --api http://localhost:3001/v1/uploads
+# Run the full test suite
+npm test --workspace=apps/api
+
+# Run with coverage
+npm test --workspace=apps/api -- --experimental-test-coverage
 ```
 
-Prepare a non-faststart MP4 before upload:
+Integration tests require Redis and Postgres (provided by `docker compose up -d`).
+
+## Benchmarks
 
 ```bash
-./floe.sh "path/to/file.mp4" --faststart
-```
-
-## Benchmark
-
-```bash
+# Stream benchmark
 npm run bench:stream -- --base http://localhost:3001 --file <fileId>
+
+# Upload load test
+npm run bench:upload -- --sessions 10 --concurrency 4
+
+# Measure cold vs warm stream latency
+npm run measure:stream
 ```
 
-This writes CSV output under `tmp/stream-load/<timestamp>/`.
+CSV output is written to `tmp/stream-load/<timestamp>/`.
 
 ## Documentation
 
-- `docs/API.md` - API routes and response contract
-- `docs/DEPLOYMENT.md` - deployment and restart flow
-- `docs/OPERATIONS.md` - runtime model, configuration, metrics, and runbook notes
-- `docs/SECURITY.md` - auth model and security notes
+| Document | Description |
+|---|---|
+| [`docs/API.md`](docs/API.md) | Full API reference, endpoints, error codes, auth model |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System overview, component map, data flow |
+| [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Deployment guide, container build, restart flow |
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Runtime config, GC, metrics, runbooks |
+| [`docs/SECURITY.md`](docs/SECURITY.md) | Auth model, provider contracts, API key lifecycle |
+| [`docs/EXTERNAL_AUTH.md`](docs/EXTERNAL_AUTH.md) | External auth provider contract |
+| [`docs/INFRA_EVENTS.md`](docs/INFRA_EVENTS.md) | Infrastructure event catalog |
+| [`docs/FINALIZE_SCALING.md`](docs/FINALIZE_SCALING.md) | Finalize queue scaling guide |
+| [`docs/WALRUS_OPERATIONS.md`](docs/WALRUS_OPERATIONS.md) | Self-hosted Walrus aggregator setup |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Development setup, code style, PR guidelines |
+| [`CHANGELOG.md`](CHANGELOG.md) | Release history |
+
+## Project Structure
+
+```
+Floe/
+├── apps/
+│   ├── api/              @floe/api       Fastify API server
+│   ├── sdk/              @floehq/sdk     TypeScript SDK
+│   └── cli/              @floehq/cli     Command-line client
+├── config/               YAML config examples
+├── docs/                 Architecture and operations docs
+├── scripts/              Benchmarks and utilities
+├── .github/              CI workflows, Dependabot
+├── docker-compose.yml    Local dev infrastructure
+├── Dockerfile            Multi-stage production build
+└── package.json          npm workspaces root
+```
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup, code style rules, and PR guidelines.
+
+**Quick overview:**
+
+```bash
+git clone https://github.com/floehq/floe.git
+cd floe
+npm ci
+docker compose up -d
+cp .env.example .env    # edit with your keys
+npm run dev
+```
+
+Code style: TypeScript strict, semicolons, double quotes, no explicit `any`.
 
 ## License
 
-MIT (`LICENSE`)
+[MIT](LICENSE) -- Copyright 2026 tejas0111
