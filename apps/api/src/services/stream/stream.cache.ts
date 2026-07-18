@@ -69,16 +69,25 @@ let activeCacheFills = 0;
 const pendingFillWaiters: Array<() => void> = [];
 let cacheReservationLock: Promise<void> = Promise.resolve();
 
+/** Running total of all cached bytes — avoids O(n) scans on every fill. */
+let cachedBytesTotal = 0;
+
 function updateCacheIndexInsert(filePath: string, size: number, mtimeMs: number) {
   cacheIndex.set(filePath, { size, mtimeMs });
+  cachedBytesTotal += size;
 }
 
 function updateCacheIndexDelete(filePath: string) {
+  const entry = cacheIndex.get(filePath);
+  if (entry) {
+    cachedBytesTotal = Math.max(0, cachedBytesTotal - entry.size);
+  }
   cacheIndex.delete(filePath);
 }
 
 async function rebuildCacheIndex() {
   cacheIndex.clear();
+  cachedBytesTotal = 0;
   const scanDir = async (dir: string) => {
     const entries = await fsp.readdir(dir, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
@@ -91,6 +100,7 @@ async function rebuildCacheIndex() {
       const stat = await fsp.stat(filePath).catch(() => null);
       if (!stat) continue;
       cacheIndex.set(filePath, { size: stat.size, mtimeMs: stat.mtimeMs });
+      cachedBytesTotal += stat.size;
     }
   };
   await scanDir(STREAM_CACHE_DIR);
@@ -163,17 +173,18 @@ async function pruneStreamCacheByBytes(targetFreeBytes: number) {
 
 async function pruneStreamCacheIfNeeded() {
   if (!Number.isFinite(STREAM_CACHE_MAX_BYTES) || STREAM_CACHE_MAX_BYTES <= 0) return;
-  const files = listCachedFiles();
-  let totalBytes = files.reduce((sum, file) => sum + file.size, 0);
-  if (totalBytes > STREAM_CACHE_MAX_BYTES) {
-    files.sort((a, b) => a.mtimeMs - b.mtimeMs);
-    for (const file of files) {
-      await fsp.rm(file.path, { force: true }).catch(() => {});
-      updateCacheIndexDelete(file.path);
-      recordStreamCacheEviction({ reason: "size", bytes: file.size });
-      totalBytes -= file.size;
-      if (totalBytes <= STREAM_CACHE_MAX_BYTES) break;
-    }
+  // Use the running total to skip the O(n) scan entirely when under the limit.
+  if (cachedBytesTotal <= STREAM_CACHE_MAX_BYTES) {
+    await ensureFreeDiskSpace();
+    return;
+  }
+  // Only scan the index (not disk) when we need to prune.
+  const files = listCachedFiles().sort((a, b) => a.mtimeMs - b.mtimeMs);
+  for (const file of files) {
+    await fsp.rm(file.path, { force: true }).catch(() => {});
+    updateCacheIndexDelete(file.path);
+    recordStreamCacheEviction({ reason: "size", bytes: file.size });
+    if (cachedBytesTotal <= STREAM_CACHE_MAX_BYTES) break;
   }
   await ensureFreeDiskSpace();
 }
@@ -328,7 +339,19 @@ export async function teeCachedStreamRange(params: {
   };
   inFlightTeeRangeFill.set(rangeKey, session);
 
-  await fsp.mkdir(path.dirname(cachePath), { recursive: true });
+  // If setup (mkdir, acquireCacheFillSlot) fails before writeDone is assigned,
+  // clean up the session so late consumers don't hang forever on an orphaned
+  // entry with no writeDone promise.
+  let releaseFillSlot: (() => void) | null = null;
+  const setupCleanup = (err: Error) => {
+    for (const cs of consumerStreams) {
+      if (!cs.destroyed) cs.destroy(err);
+    }
+    broadcastStream.destroy(err);
+    broadcastStream.on("error", noop);
+    inFlightTeeRangeFill.delete(rangeKey);
+    releaseFillSlot?.();
+  };
 
   const firstConsumer = new PassThrough();
   consumerStreams.add(firstConsumer);
@@ -346,7 +369,15 @@ export async function teeCachedStreamRange(params: {
   broadcastStream.on("data", fwdData);
   broadcastStream.on("error", fwdError);
 
-  const releaseFillSlot = await acquireCacheFillSlot();
+  try {
+    await fsp.mkdir(path.dirname(cachePath), { recursive: true });
+    releaseFillSlot = await acquireCacheFillSlot();
+  } catch (err) {
+    const setupErr = err instanceof Error ? err : new Error(String(err));
+    setupCleanup(setupErr);
+    throw setupErr;
+  }
+
   const tempPath = `${cachePath}.tmp-${process.pid}-${Date.now()}`;
 
   const cleanupSession = () => {
@@ -389,6 +420,26 @@ export async function teeCachedStreamRange(params: {
         throw new Error(
           `WALRUS_CACHE_FILL_FAILED status=${res.status}${body ? ` body=${body.slice(0, 120)}` : ""}`,
         );
+      }
+
+      // Validate Content-Range header matches the requested range.
+      // Aggregators out of sync or behind a misconfigured proxy can return
+      // data from the wrong offset, causing silent byte-level corruption
+      // that would be cached and served to all subsequent clients.
+      if (res.status === 206) {
+        const contentRange = res.headers.get("content-range");
+        if (contentRange) {
+          const rangeMatch = contentRange.match(/^bytes\s+(\d+)-(\d+)\/(\d+)$/);
+          if (rangeMatch) {
+            const respStart = Number(rangeMatch[1]);
+            const respEnd = Number(rangeMatch[2]);
+            if (respStart !== params.start || respEnd !== params.end) {
+              throw new Error(
+                `WALRUS_CACHE_CONTENT_RANGE_MISMATCH requested=${params.start}-${params.end} got=${respStart}-${respEnd} content-range=${contentRange}`,
+              );
+            }
+          }
+        }
       }
 
       const body = res.body;
@@ -540,6 +591,19 @@ export async function teeCachedStreamBlob(params: {
   };
   inFlightTeeCacheFill.set(params.blobId, session);
 
+  // If setup fails before writeDone is assigned, clean up the session so
+  // late consumers don't hang forever on an orphaned entry.
+  let releaseFillSlot: (() => void) | null = null;
+  const setupCleanup = (err: Error) => {
+    for (const cs of consumerStreams) {
+      if (!cs.destroyed) cs.destroy(err);
+    }
+    broadcastStream.destroy(err);
+    broadcastStream.on("error", noop);
+    inFlightTeeCacheFill.delete(params.blobId);
+    releaseFillSlot?.();
+  };
+
   const firstConsumer = new PassThrough();
   consumerStreams.add(firstConsumer);
 
@@ -560,7 +624,14 @@ export async function teeCachedStreamBlob(params: {
   broadcastStream.on("data", fwdData);
   broadcastStream.on("error", fwdError);
 
-  const releaseFillSlot = await acquireCacheFillSlot();
+  try {
+    releaseFillSlot = await acquireCacheFillSlot();
+  } catch (err) {
+    const setupErr = err instanceof Error ? err : new Error(String(err));
+    setupCleanup(setupErr);
+    throw setupErr;
+  }
+
   const tempPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
 
   const cleanupSession = () => {
@@ -734,16 +805,14 @@ async function reserveCacheBytes(expectedBytes: number): Promise<null | (() => v
 
   return withCacheReservationLock(async () => {
     await pruneStreamCacheIfNeeded();
-    const files = listCachedFiles();
-    const currentBytes = files.reduce((sum, file) => sum + file.size, 0);
-    if (currentBytes + reservedCacheBytes + expectedBytes > STREAM_CACHE_MAX_BYTES) {
+    if (cachedBytesTotal + reservedCacheBytes + expectedBytes > STREAM_CACHE_MAX_BYTES) {
       return null;
     }
     if (Number.isFinite(STREAM_CACHE_MIN_FREE_DISK_BYTES) && STREAM_CACHE_MIN_FREE_DISK_BYTES > 0) {
       try {
         const stat = await fsp.statfs(STREAM_CACHE_DIR);
         const availableBytes = stat.bsize * stat.bavail;
-        const needed = currentBytes + reservedCacheBytes + expectedBytes;
+        const needed = cachedBytesTotal + reservedCacheBytes + expectedBytes;
         if (availableBytes < STREAM_CACHE_MIN_FREE_DISK_BYTES || availableBytes < needed * 0.1) {
           return null;
         }

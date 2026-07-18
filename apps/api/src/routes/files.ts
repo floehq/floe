@@ -62,10 +62,13 @@ const blobExistenceCache = new LruMap<number>(BLOB_EXISTENCE_CACHE_MAX_ENTRIES);
 const BLOB_NEGATIVE_EXISTENCE_CACHE_TTL = 10_000;
 const blobNegativeExistenceCache = new LruMap<number>(BLOB_EXISTENCE_CACHE_MAX_ENTRIES);
 
-/** Remove all expired entries from blobExistenceCache. */
+/** Remove expired entries from blobExistenceCache, scanning at most MAX_PRUNE per call. */
+const BLOB_CACHE_PRUNE_BATCH = 2000;
 function pruneBlobExistenceCache() {
   const now = Date.now();
+  let scanned = 0;
   for (const [blobId, expiry] of blobExistenceCache) {
+    if (scanned++ >= BLOB_CACHE_PRUNE_BATCH) break;
     if (expiry <= now) {
       blobExistenceCache.delete(blobId);
     }
@@ -454,7 +457,6 @@ async function* cachedSegmentByteStream(params: {
           requestId: params.requestId,
         });
         // Consume the generator into a readable stream
-        const { Readable } = await import("node:stream");
         const passthrough = new Readable({ read() {} });
         (async () => {
           try {
