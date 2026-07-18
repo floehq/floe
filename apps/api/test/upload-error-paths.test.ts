@@ -31,15 +31,11 @@ process.env.FLOE_ENFORCE_UPLOAD_OWNER = "false";
 type RedisModule = typeof import("../src/state/redis.ts");
 type SessionModule = typeof import("../src/services/uploads/session.ts");
 type UploadRoutesModule = typeof import("../src/routes/uploads.ts");
-type KeysModule = typeof import("../src/state/keys.ts");
-type StoreIndexModule = typeof import("../src/store/index.ts");
 
 let redisProcess: ChildProcess | null = null;
 let redisModule: RedisModule;
 let sessionModule: SessionModule;
 let uploadRoutesModule: UploadRoutesModule;
-let keysModule: KeysModule;
-let storeIndexModule: StoreIndexModule;
 
 const log = {
   info() {},
@@ -223,9 +219,6 @@ before(async () => {
   redisModule = await import("../src/state/redis.ts");
   sessionModule = await import("../src/services/uploads/session.ts");
   uploadRoutesModule = await import("../src/routes/uploads.ts");
-  keysModule = await import("../src/state/keys.ts");
-  storeIndexModule = await import("../src/store/index.ts");
-
   await redisModule.initRedis();
 });
 

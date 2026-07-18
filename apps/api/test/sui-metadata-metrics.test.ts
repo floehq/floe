@@ -72,8 +72,11 @@ test("finalizeFileMetadata - handles Sui RPC errors", async () => {
       mimeType: "application/octet-stream",
     });
     assert.fail("Should have thrown");
-  } catch (err: any) {
-    assert.ok(err.message.includes("SUI_FINALIZE_SUBMIT_FAILED"), err.message);
+  } catch (err: unknown) {
+    assert.ok(
+      (err as Error).message.includes("SUI_FINALIZE_SUBMIT_FAILED"),
+      (err as Error).message,
+    );
   }
 });
 
@@ -91,15 +94,15 @@ test("finalizeFileMetadata - throws when no FileMeta created", async () => {
       mimeType: "text/plain",
     });
     assert.fail("Should have thrown");
-  } catch (err: any) {
-    assert.ok(err.message.includes("SUI_FILE_CREATE_FAILED"), err.message);
+  } catch (err: unknown) {
+    assert.ok((err as Error).message.includes("SUI_FILE_CREATE_FAILED"), (err as Error).message);
   }
 });
 
 test("renewFileMetadata - calls update_walrus_info with blobObjectId", async () => {
   suiCircuitMod.suiCircuit.forceState("closed");
   let callTarget = "";
-  suiModule.getSuiClient().signAndExecuteTransaction = async (params: any) => {
+  suiModule.getSuiClient().signAndExecuteTransaction = async (_params: Record<string, unknown>) => {
     callTarget = "called";
     return { digest: "0xrenew" };
   };
@@ -141,8 +144,8 @@ test("renewFileMetadata - wraps Sui errors", async () => {
       walrusEndEpoch: 48,
     });
     assert.fail("Should have thrown");
-  } catch (err: any) {
-    assert.ok(err.message.includes("SUI_RENEW_SUBMIT_FAILED"), err.message);
+  } catch (err: unknown) {
+    assert.ok((err as Error).message.includes("SUI_RENEW_SUBMIT_FAILED"), (err as Error).message);
   }
 });
 

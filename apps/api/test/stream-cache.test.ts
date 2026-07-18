@@ -160,7 +160,6 @@ test("teeCachedStreamRange - consumer error does not crash server", async () => 
       "Content-Range": `bytes 0-${totalSize - 1}/${totalSize}`,
       "Content-Length": totalSize,
     });
-    const chunk = Buffer.alloc(256, 0xab);
     let sent = 0;
     const interval = setInterval(() => {
       if (sent >= totalSize || res.destroyed) {
@@ -213,7 +212,6 @@ test("teeCachedStreamRange - abort signal destroys stream cleanly", async () => 
       "Content-Range": `bytes 0-${totalSize - 1}/${totalSize}`,
       "Content-Length": totalSize,
     });
-    const chunk = Buffer.alloc(128, 0xcd);
     let sent = 0;
     const interval = setInterval(() => {
       if (sent >= totalSize || res.destroyed) {
@@ -245,7 +243,7 @@ test("teeCachedStreamRange - abort signal destroys stream cleanly", async () => 
 
     ac.abort();
 
-    await new Promise<void>((resolve, reject) => {
+    await new Promise<void>((resolve) => {
       result.stream.on("error", () => resolve());
       result.stream.on("close", resolve);
       result.stream.on("end", resolve);

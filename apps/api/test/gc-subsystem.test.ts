@@ -29,7 +29,7 @@ let cachedRedisModule: typeof import("../src/state/redis.js");
 let cachedKeysModule: typeof import("../src/state/keys.js");
 
 function createMockRedis() {
-  const store = new Map<string, any>();
+  const store = new Map<string, unknown>();
   const sets = new Map<string, Set<string>>();
   const hashes = new Map<string, Map<string, string>>();
 
@@ -86,14 +86,14 @@ function createMockRedis() {
       return 0;
     },
     multi() {
-      const ops: Array<() => Promise<any>> = [];
+      const ops: Array<() => Promise<unknown>> = [];
       const self = {
         hset(k: string, f: Record<string, string>) {
           ops.push(() => hashes.has(k) || hashes.set(k, new Map()).length, (() => {
             const h = hashes.get(k)!;
             for (const [fk, fv] of Object.entries(f)) h.set(fk, fv);
             return Object.keys(f).length;
-          }) as any);
+          }) as (...args: never[]) => unknown);
           return self;
         },
         sadd(k: string, ...vals: string[]) {
@@ -140,7 +140,7 @@ function createMockRedis() {
       };
       return self;
     },
-  } as any;
+  } as Record<string, (...args: never[]) => unknown>;
 }
 
 beforeEach(async () => {
@@ -173,7 +173,7 @@ test("gc worker - skips uploads with active lock", async () => {
   };
 
   const mod = await import("../src/state/gc/upload.gc.worker.js");
-  await mod.runUploadGc(log as any);
+  await mod.runUploadGc(log as Record<string, (...args: never[]) => unknown>);
 
   const gcIndex = await redis.smembers(keys.gcIndex());
   assert.ok(gcIndex.includes(uuid));
@@ -193,7 +193,7 @@ test("gc worker - expires stale uploading sessions", async () => {
   });
 
   const mod = await import("../src/state/gc/upload.gc.worker.js");
-  await mod.runUploadGc(log as any);
+  await mod.runUploadGc(log as Record<string, (...args: never[]) => unknown>);
 
   const gcIndex = await redis.smembers(keys.gcIndex());
   assert.ok(!gcIndex.includes(uuid), "Upload should be removed from GC index after expiry");
@@ -216,7 +216,7 @@ test("gc worker - cleans up uploads past grace period", async () => {
   await fs.utimes(binPath, oldTime, oldTime);
 
   const mod = await import("../src/state/gc/upload.gc.worker.js");
-  await mod.runUploadGc(log as any);
+  await mod.runUploadGc(log as Record<string, (...args: never[]) => unknown>);
 
   const exists = await fs.stat(binPath).catch(() => null);
   assert.equal(exists, null, "Bin file should be cleaned up");
@@ -231,8 +231,8 @@ test("gc worker - cleans up uploads past grace period", async () => {
 
 test("gc scheduler - start and stop lifecycle", async () => {
   const mod = await import("../src/state/gc/upload.gc.scheduler.js");
-  mod.startUploadGc(log as any);
-  mod.startUploadGc(log as any);
+  mod.startUploadGc(log as Record<string, (...args: never[]) => unknown>);
+  mod.startUploadGc(log as Record<string, (...args: never[]) => unknown>);
   await mod.stopUploadGc();
   await mod.stopUploadGc();
   assert.ok(true, "Scheduler lifecycle completed");
@@ -271,14 +271,18 @@ test("gc scheduler - skips GC when distributed lock is held by another instance"
   // Simulate another instance holding the lock
   await redis.set(GC_LOCK_KEY, "holder-instance-2", { nx: true, ex: 300 });
 
-  schedulerMod.startUploadGc(log as any);
+  schedulerMod.startUploadGc(log as Record<string, (...args: never[]) => unknown>);
   // Wait for at least one interval tick (100ms) + buffer
   await new Promise((r) => setTimeout(r, 250));
   await schedulerMod.stopUploadGc();
 
   // The lock key should still exist and be unchanged — our instance did not acquire it
   const lockValue = await redis.get(GC_LOCK_KEY);
-  assert.equal(lockValue, "holder-instance-2", "Lock should remain untouched when held by another instance");
+  assert.equal(
+    lockValue,
+    "holder-instance-2",
+    "Lock should remain untouched when held by another instance",
+  );
 
   // Cleanup
   await redis.del(GC_LOCK_KEY);
@@ -292,7 +296,7 @@ test("gc scheduler - acquires and releases distributed lock when available", asy
   const schedulerMod = await import("../src/state/gc/upload.gc.scheduler.js");
   await schedulerMod.stopUploadGc();
 
-  schedulerMod.startUploadGc(log as any);
+  schedulerMod.startUploadGc(log as Record<string, (...args: never[]) => unknown>);
   // Wait for interval tick + GC completion + lock release
   await new Promise((r) => setTimeout(r, 300));
   await schedulerMod.stopUploadGc();
@@ -325,7 +329,9 @@ test("reconcile - uses batch smembers for tracked ID lookup", async () => {
   await fs.writeFile(binPath, "data");
 
   const reconcileMod = await import("../src/state/gc/upload.gc.reconcile.js");
-  const result = await reconcileMod.reconcileOrphanUploads(log as any);
+  const result = await reconcileMod.reconcileOrphanUploads(
+    log as Record<string, (...args: never[]) => unknown>,
+  );
 
   // uuid1 is already tracked -> not recovered
   // uuid2 is on disk but not tracked -> recovered
@@ -351,7 +357,9 @@ test("reconcile - batch smembers with empty GC index", async () => {
   await fs.mkdir(path.join(testTmpDir, uuid1), { recursive: true });
 
   const reconcileMod = await import("../src/state/gc/upload.gc.reconcile.js");
-  const result = await reconcileMod.reconcileOrphanUploads(log as any);
+  const result = await reconcileMod.reconcileOrphanUploads(
+    log as Record<string, (...args: never[]) => unknown>,
+  );
 
   assert.ok(result.scanned >= 1, "Should scan at least 1 entry");
   assert.ok(result.recovered >= 1, "Should recover the orphan");

@@ -2,7 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
 import { Readable } from "node:stream";
-import { walrusReadCircuit, walrusPublishCircuit } from "../src/services/circuit-breaker/instances.js";
+import {
+  walrusReadCircuit,
+  walrusPublishCircuit,
+} from "../src/services/circuit-breaker/instances.js";
 
 // ============================================================
 // Env vars set BEFORE any imports that read config at module level.
@@ -288,9 +291,7 @@ test("fetchWalrusBlob - throws non-retryable error immediately", async () => {
     process.env.WALRUS_AGGREGATOR_URL = "http://127.0.0.1:1";
     process.env.WALRUS_AGGREGATOR_FALLBACK_URLS = "";
     try {
-      const { fetchWalrusBlob } = await import(
-        "../src/services/walrus/read.js?t=" + Date.now()
-      );
+      const { fetchWalrusBlob } = await import("../src/services/walrus/read.js?t=" + Date.now());
       // ENOTFOUND is retryable via isRetryableNetworkError, so this will retry then fail.
       // But the first call should throw eventually after exhausting retries.
       await assert.rejects(() => fetchWalrusBlob({ blobId: "dns-blob" }));
@@ -570,96 +571,104 @@ test("publisher - uploadToWalrusViaPublisher succeeds on testnet without auth he
 // publisher.ts – uploadToWalrusViaPublisher — failover to next URL on 429
 // Publisher retries across URLs (not within same URL), so we need 2 servers.
 // ============================================================
-test("publisher - uploadToWalrusViaPublisher failovers to next URL on 429", {
-  timeout: 15_000,
-}, async () => {
-  const prevNet = process.env.FLOE_NETWORK;
-  process.env.FLOE_NETWORK = "testnet";
-  walrusPublishCircuit.reset();
+test(
+  "publisher - uploadToWalrusViaPublisher failovers to next URL on 429",
+  {
+    timeout: 15_000,
+  },
+  async () => {
+    const prevNet = process.env.FLOE_NETWORK;
+    process.env.FLOE_NETWORK = "testnet";
+    walrusPublishCircuit.reset();
 
-  let firstHit = false;
-  const { server: srv1, port: port1 } = await createMockServer((_req, res) => {
-    firstHit = true;
-    res.writeHead(429);
-    res.end("rate limited");
-  });
-  let secondHit = false;
-  const { server: srv2, port: port2 } = await createMockServer((_req, res) => {
-    secondHit = true;
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        newlyCreated: {
-          blobId: "retry-blob-id",
-          blobObject: { objectId: "0xretryobj" },
-        },
-      }),
-    );
-  });
-  const prevUrls = process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS;
-  process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS = `http://127.0.0.1:${port1},http://127.0.0.1:${port2}`;
-  try {
-    const mod = await import("../src/services/walrus/backends/publisher.js?t=" + Date.now());
-    const result = await mod.uploadToWalrusViaPublisher({
-      streamFactory: () => fakeStream("retry-data"),
-      epochs: 3,
+    let firstHit = false;
+    const { server: srv1, port: port1 } = await createMockServer((_req, res) => {
+      firstHit = true;
+      res.writeHead(429);
+      res.end("rate limited");
     });
-    assert.equal(result.blobId, "retry-blob-id");
-    assert.ok(firstHit, "First publisher should have been hit");
-    assert.ok(secondHit, "Second publisher should have been hit on 429 failover");
-  } finally {
-    if (prevUrls !== undefined) process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS = prevUrls;
-    else delete process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS;
-    if (prevNet !== undefined) process.env.FLOE_NETWORK = prevNet;
-    else delete process.env.FLOE_NETWORK;
-    await closeServer(srv1);
-    await closeServer(srv2);
-  }
-});
+    let secondHit = false;
+    const { server: srv2, port: port2 } = await createMockServer((_req, res) => {
+      secondHit = true;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          newlyCreated: {
+            blobId: "retry-blob-id",
+            blobObject: { objectId: "0xretryobj" },
+          },
+        }),
+      );
+    });
+    const prevUrls = process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS;
+    process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS = `http://127.0.0.1:${port1},http://127.0.0.1:${port2}`;
+    try {
+      const mod = await import("../src/services/walrus/backends/publisher.js?t=" + Date.now());
+      const result = await mod.uploadToWalrusViaPublisher({
+        streamFactory: () => fakeStream("retry-data"),
+        epochs: 3,
+      });
+      assert.equal(result.blobId, "retry-blob-id");
+      assert.ok(firstHit, "First publisher should have been hit");
+      assert.ok(secondHit, "Second publisher should have been hit on 429 failover");
+    } finally {
+      if (prevUrls !== undefined) process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS = prevUrls;
+      else delete process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS;
+      if (prevNet !== undefined) process.env.FLOE_NETWORK = prevNet;
+      else delete process.env.FLOE_NETWORK;
+      await closeServer(srv1);
+      await closeServer(srv2);
+    }
+  },
+);
 
 // ============================================================
 // publisher.ts – uploadToWalrusViaPublisher — failover to next URL on 500
 // ============================================================
-test("publisher - uploadToWalrusViaPublisher failovers to next URL on 500", {
-  timeout: 15_000,
-}, async () => {
-  const prevNet = process.env.FLOE_NETWORK;
-  process.env.FLOE_NETWORK = "testnet";
-  walrusPublishCircuit.reset();
+test(
+  "publisher - uploadToWalrusViaPublisher failovers to next URL on 500",
+  {
+    timeout: 15_000,
+  },
+  async () => {
+    const prevNet = process.env.FLOE_NETWORK;
+    process.env.FLOE_NETWORK = "testnet";
+    walrusPublishCircuit.reset();
 
-  const { server: srv1, port: port1 } = await createMockServer((_req, res) => {
-    res.writeHead(500);
-    res.end("server error");
-  });
-  let secondHit = false;
-  const { server: srv2, port: port2 } = await createMockServer((_req, res) => {
-    secondHit = true;
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        newlyCreated: { blobId: "5xx-blob-id", blobObject: { objectId: "0x5xx" } },
-      }),
-    );
-  });
-  const prevUrls = process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS;
-  process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS = `http://127.0.0.1:${port1},http://127.0.0.1:${port2}`;
-  try {
-    const mod = await import("../src/services/walrus/backends/publisher.js?t=" + Date.now());
-    const result = await mod.uploadToWalrusViaPublisher({
-      streamFactory: () => fakeStream("5xx-data"),
-      epochs: 3,
+    const { server: srv1, port: port1 } = await createMockServer((_req, res) => {
+      res.writeHead(500);
+      res.end("server error");
     });
-    assert.equal(result.blobId, "5xx-blob-id");
-    assert.ok(secondHit, "Second publisher should have been hit on 500 failover");
-  } finally {
-    if (prevUrls !== undefined) process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS = prevUrls;
-    else delete process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS;
-    if (prevNet !== undefined) process.env.FLOE_NETWORK = prevNet;
-    else delete process.env.FLOE_NETWORK;
-    await closeServer(srv1);
-    await closeServer(srv2);
-  }
-});
+    let secondHit = false;
+    const { server: srv2, port: port2 } = await createMockServer((_req, res) => {
+      secondHit = true;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          newlyCreated: { blobId: "5xx-blob-id", blobObject: { objectId: "0x5xx" } },
+        }),
+      );
+    });
+    const prevUrls = process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS;
+    process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS = `http://127.0.0.1:${port1},http://127.0.0.1:${port2}`;
+    try {
+      const mod = await import("../src/services/walrus/backends/publisher.js?t=" + Date.now());
+      const result = await mod.uploadToWalrusViaPublisher({
+        streamFactory: () => fakeStream("5xx-data"),
+        epochs: 3,
+      });
+      assert.equal(result.blobId, "5xx-blob-id");
+      assert.ok(secondHit, "Second publisher should have been hit on 500 failover");
+    } finally {
+      if (prevUrls !== undefined) process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS = prevUrls;
+      else delete process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS;
+      if (prevNet !== undefined) process.env.FLOE_NETWORK = prevNet;
+      else delete process.env.FLOE_NETWORK;
+      await closeServer(srv1);
+      await closeServer(srv2);
+    }
+  },
+);
 
 // ============================================================
 // publisher.ts – uploadToWalrusViaPublisher — non-retryable error throws
@@ -703,46 +712,50 @@ test("publisher - uploadToWalrusViaPublisher throws on 400 without retry", async
 // ============================================================
 // publisher.ts – uploadToWalrusViaPublisher — failover to second URL
 // ============================================================
-test("publisher - uploadToWalrusViaPublisher failovers to second URL on 5xx", {
-  timeout: 15_000,
-}, async () => {
-  const prevNet = process.env.FLOE_NETWORK;
-  process.env.FLOE_NETWORK = "testnet";
-  walrusPublishCircuit.reset();
+test(
+  "publisher - uploadToWalrusViaPublisher failovers to second URL on 5xx",
+  {
+    timeout: 15_000,
+  },
+  async () => {
+    const prevNet = process.env.FLOE_NETWORK;
+    process.env.FLOE_NETWORK = "testnet";
+    walrusPublishCircuit.reset();
 
-  const { server: srv1, port: port1 } = await createMockServer((_req, res) => {
-    res.writeHead(503);
-    res.end("unavailable");
-  });
-  let secondCalled = false;
-  const { server: srv2, port: port2 } = await createMockServer((_req, res) => {
-    secondCalled = true;
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        newlyCreated: { blobId: "fallback-blob", blobObject: { objectId: "0xfallback" } },
-      }),
-    );
-  });
-  const prevUrls = process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS;
-  process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS = `http://127.0.0.1:${port1},http://127.0.0.1:${port2}`;
-  try {
-    const mod = await import("../src/services/walrus/backends/publisher.js?t=" + Date.now());
-    const result = await mod.uploadToWalrusViaPublisher({
-      streamFactory: () => fakeStream("fallback-data"),
-      epochs: 3,
+    const { server: srv1, port: port1 } = await createMockServer((_req, res) => {
+      res.writeHead(503);
+      res.end("unavailable");
     });
-    assert.equal(result.blobId, "fallback-blob");
-    assert.ok(secondCalled, "Second publisher should have been called");
-  } finally {
-    if (prevUrls !== undefined) process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS = prevUrls;
-    else delete process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS;
-    if (prevNet !== undefined) process.env.FLOE_NETWORK = prevNet;
-    else delete process.env.FLOE_NETWORK;
-    await closeServer(srv1);
-    await closeServer(srv2);
-  }
-});
+    let secondCalled = false;
+    const { server: srv2, port: port2 } = await createMockServer((_req, res) => {
+      secondCalled = true;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          newlyCreated: { blobId: "fallback-blob", blobObject: { objectId: "0xfallback" } },
+        }),
+      );
+    });
+    const prevUrls = process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS;
+    process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS = `http://127.0.0.1:${port1},http://127.0.0.1:${port2}`;
+    try {
+      const mod = await import("../src/services/walrus/backends/publisher.js?t=" + Date.now());
+      const result = await mod.uploadToWalrusViaPublisher({
+        streamFactory: () => fakeStream("fallback-data"),
+        epochs: 3,
+      });
+      assert.equal(result.blobId, "fallback-blob");
+      assert.ok(secondCalled, "Second publisher should have been called");
+    } finally {
+      if (prevUrls !== undefined) process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS = prevUrls;
+      else delete process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS;
+      if (prevNet !== undefined) process.env.FLOE_NETWORK = prevNet;
+      else delete process.env.FLOE_NETWORK;
+      await closeServer(srv1);
+      await closeServer(srv2);
+    }
+  },
+);
 
 // ============================================================
 // publisher.ts – uploadToWalrusViaPublisher — already_certified response
@@ -794,7 +807,6 @@ test("publisher - uploadToWalrusViaPublisher handles already_certified response"
 // publisher.ts – uploadToWalrusViaPublisher — circuit breaker fast-rejects
 // ============================================================
 test("publisher - uploadToWalrusViaPublisher throws CircuitBreakerError when OPEN", async () => {
-  const prevNet = process.env.FLOE_NETWORK;
   process.env.FLOE_NETWORK = "testnet";
   walrusPublishCircuit.reset();
   walrusPublishCircuit.forceState("open");
@@ -951,7 +963,7 @@ test("cli - describeWalrusCliBackend reflects optional env vars", async () => {
 // cli.ts – uploadToWalrusViaCli — successful parse (already_certified)
 // ============================================================
 test("cli - uploadToWalrusViaCli parses already_certified output", async () => {
-  const { server, port } = await createMockServer((_req, res) => {
+  const { server } = await createMockServer((_req, res) => {
     res.writeHead(200);
     res.end("ok");
   });
@@ -967,8 +979,7 @@ test("cli - uploadToWalrusViaCli parses already_certified output", async () => {
     // reading the regex patterns used in the source.
     //
     // Instead, let's verify the source patterns match known output formats.
-    const alreadyCertifiedPattern =
-      /already available and certified within Walrus/i;
+    const alreadyCertifiedPattern = /already available and certified within Walrus/i;
     const output1 = `
   Blob ID: abc123def456
   Sui object ID: 0xabcdef1234567890
@@ -1070,8 +1081,7 @@ test("cli - output without Blob ID triggers WALRUS_CLI_PARSE_FAILED", async () =
 // cli.ts – uploadToWalrusViaCli — source unknown when no source markers
 // ============================================================
 test("cli - source is 'unknown' when no source markers in output", async () => {
-  const alreadyCertifiedPattern =
-    /already available and certified within Walrus/i;
+  const alreadyCertifiedPattern = /already available and certified within Walrus/i;
   const newlyCreatedPattern = /\(\s*1\s+newly certified\s*\)/i;
   const output = "Blob ID: abc123\nSome other output\n";
   assert.equal(alreadyCertifiedPattern.test(output), false);
@@ -1083,8 +1093,7 @@ test("cli - source is 'unknown' when no source markers in output", async () => {
 // cli.ts – uploadToWalrusViaCli — source 'newly_created' when marker present
 // ============================================================
 test("cli - source is 'newly_created' when (1 newly certified) present", async () => {
-  const alreadyCertifiedPattern =
-    /already available and certified within Walrus/i;
+  const alreadyCertifiedPattern = /already available and certified within Walrus/i;
   const newlyCreatedPattern = /\(\s*1\s+newly certified\s*\)/i;
   const output = "Blob ID: abc123\n(1 newly certified)\n";
   assert.equal(alreadyCertifiedPattern.test(output), false);
@@ -1095,8 +1104,7 @@ test("cli - source is 'newly_created' when (1 newly certified) present", async (
 // cli.ts – uploadToWalrusViaCli — source 'already_certified' when marker present
 // ============================================================
 test("cli - source is 'already_certified' when already available text present", async () => {
-  const alreadyCertifiedPattern =
-    /already available and certified within Walrus/i;
+  const alreadyCertifiedPattern = /already available and certified within Walrus/i;
   const output = "Blob ID: abc123\nBlob is already available and certified within Walrus.\n";
   assert.equal(alreadyCertifiedPattern.test(output), true);
 });
@@ -1114,9 +1122,7 @@ test("publisher - parseOptionalSuiAddressEnv rejects invalid address", async () 
     const SUI_ADDRESS_RE = /^(0x)?[0-9a-fA-F]{64}$/;
     assert.equal(SUI_ADDRESS_RE.test("not-a-valid-address"), false);
     assert.equal(
-      SUI_ADDRESS_RE.test(
-        "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-      ),
+      SUI_ADDRESS_RE.test("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"),
       true,
     );
   } finally {
@@ -1128,46 +1134,49 @@ test("publisher - parseOptionalSuiAddressEnv rejects invalid address", async () 
 // ============================================================
 // publisher.ts – uploadToWalrusViaPublisher — connection refused retryable
 // ============================================================
-test("publisher - uploadToWalrusViaPublisher retries on ECONNRESET", {
-  timeout: 20_000,
-}, async () => {
-  const prevNet = process.env.FLOE_NETWORK;
-  process.env.FLOE_NETWORK = "testnet";
-  walrusPublishCircuit.reset();
+test(
+  "publisher - uploadToWalrusViaPublisher retries on ECONNRESET",
+  {
+    timeout: 20_000,
+  },
+  async () => {
+    const prevNet = process.env.FLOE_NETWORK;
+    process.env.FLOE_NETWORK = "testnet";
+    walrusPublishCircuit.reset();
 
-  let callCount = 0;
-  const { server: srv1, port: port1 } = await createMockServer((_req, res) => {
-    res.socket?.destroy();
-  });
-  let secondCalled = false;
-  const { server: srv2, port: port2 } = await createMockServer((_req, res) => {
-    secondCalled = true;
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        newlyCreated: { blobId: "conn-blob", blobObject: { objectId: "0xconn" } },
-      }),
-    );
-  });
-  const prevUrls = process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS;
-  process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS = `http://127.0.0.1:${port1},http://127.0.0.1:${port2}`;
-  try {
-    const mod = await import("../src/services/walrus/backends/publisher.js?t=" + Date.now());
-    const result = await mod.uploadToWalrusViaPublisher({
-      streamFactory: () => fakeStream("conn-data"),
-      epochs: 3,
+    const { server: srv1, port: port1 } = await createMockServer((_req, res) => {
+      res.socket?.destroy();
     });
-    assert.equal(result.blobId, "conn-blob");
-    assert.ok(secondCalled, "Second publisher should have been called after connection failure");
-  } finally {
-    if (prevUrls !== undefined) process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS = prevUrls;
-    else delete process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS;
-    if (prevNet !== undefined) process.env.FLOE_NETWORK = prevNet;
-    else delete process.env.FLOE_NETWORK;
-    await closeServer(srv1);
-    await closeServer(srv2);
-  }
-});
+    let secondCalled = false;
+    const { server: srv2, port: port2 } = await createMockServer((_req, res) => {
+      secondCalled = true;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          newlyCreated: { blobId: "conn-blob", blobObject: { objectId: "0xconn" } },
+        }),
+      );
+    });
+    const prevUrls = process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS;
+    process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS = `http://127.0.0.1:${port1},http://127.0.0.1:${port2}`;
+    try {
+      const mod = await import("../src/services/walrus/backends/publisher.js?t=" + Date.now());
+      const result = await mod.uploadToWalrusViaPublisher({
+        streamFactory: () => fakeStream("conn-data"),
+        epochs: 3,
+      });
+      assert.equal(result.blobId, "conn-blob");
+      assert.ok(secondCalled, "Second publisher should have been called after connection failure");
+    } finally {
+      if (prevUrls !== undefined) process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS = prevUrls;
+      else delete process.env.FLOE_WALRUS_PUBLISHER_BASE_URLS;
+      if (prevNet !== undefined) process.env.FLOE_NETWORK = prevNet;
+      else delete process.env.FLOE_NETWORK;
+      await closeServer(srv1);
+      await closeServer(srv2);
+    }
+  },
+);
 
 // ============================================================
 // publisher.ts – uploadToWalrusViaPublisher — URL normalization (trailing slash)

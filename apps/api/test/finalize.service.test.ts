@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
+import { Readable } from "node:stream";
 
 // ============================================================
 // Env vars MUST be set before any Floe module is loaded
@@ -29,9 +30,9 @@ process.env.FLOE_MAX_TOTAL_CHUNKS = "200000";
 // ============================================================
 // Floe module placeholders (loaded dynamically in before())
 // ============================================================
-let finalizeUpload: any;
-let setRedisForTests: any;
-let uploadKeys: any;
+let finalizeUpload: (...args: unknown[]) => Promise<unknown>;
+let setRedisForTests: (redis: unknown) => void;
+let uploadKeys: { meta: (id: string) => string; chunks: (id: string) => string };
 
 // ============================================================
 // Dynamic imports AFTER env vars are set
@@ -60,7 +61,7 @@ const log = {
   child() {
     return this;
   },
-} as any;
+} as Record<string, (...args: never[]) => unknown>;
 
 function createMockRedis() {
   const hashes = new Map<string, Map<string, string>>();
@@ -127,7 +128,7 @@ function createMockRedis() {
       return count;
     },
     multi() {
-      const ops: Array<() => Promise<any>> = [];
+      const ops: Array<() => Promise<unknown>> = [];
       const self = {
         hset(k: string, f: Record<string, string>) {
           ops.push(async () => {
@@ -151,8 +152,7 @@ function createMockRedis() {
             const s = sets.get(k);
             if (!s) return 0;
             let r = 0;
-            for (const v of vals)
-              if (s.delete(v)) r++;
+            for (const v of vals) if (s.delete(v)) r++;
             return r;
           });
           return self;
@@ -185,10 +185,10 @@ function createMockRedis() {
     },
   };
 
-  return redis as any;
+  return redis as Record<string, (...args: never[]) => unknown>;
 }
 
-function makeSession(overrides?: Record<string, any>) {
+function makeSession(overrides?: Record<string, unknown>) {
   return {
     uploadId: `test-${crypto.randomUUID()}`,
     filename: "test.bin",
@@ -213,15 +213,21 @@ async function writeChunks(uploadId: string, totalChunks: number, data?: Buffer[
   }
 }
 
-async function registerChunks(redis: any, uploadId: string, totalChunks: number) {
+async function registerChunks(
+  redis: Record<string, (...args: never[]) => unknown>,
+  uploadId: string,
+  totalChunks: number,
+) {
   for (let i = 0; i < totalChunks; i++) {
     await redis.sadd(uploadKeys.chunks(uploadId), String(i));
   }
 }
 
 /** Helper: drain a Readable stream to completion (used by mock streamFactory callers) */
-async function drainStream(stream: any) {
-  for await (const _ of stream) {}
+async function drainStream(stream: Readable) {
+  for await (const _ of stream) {
+    /* drain */
+  }
 }
 
 // ============================================================
@@ -300,9 +306,9 @@ test("missing chunks — throws MISSING_CHUNKS with stage annotation", async () 
   try {
     await finalizeUpload(session, { log });
     assert.fail("should have thrown");
-  } catch (err: any) {
-    assert.equal(err.message, "MISSING_CHUNKS");
-    assert.equal(err.finalizeStage, "verify_chunks");
+  } catch (err: unknown) {
+    assert.equal((err as Error).message, "MISSING_CHUNKS");
+    assert.equal((err as Record<string, unknown>).finalizeStage, "verify_chunks");
   }
 });
 
@@ -316,8 +322,8 @@ test("stage annotation — errors always carry finalizeStage", async () => {
   try {
     await finalizeUpload(session, { log });
     assert.fail("should have thrown");
-  } catch (err: any) {
-    assert.equal(err.finalizeStage, "verify_chunks");
+  } catch (err: unknown) {
+    assert.equal((err as Record<string, unknown>).finalizeStage, "verify_chunks");
   }
 });
 
@@ -330,7 +336,7 @@ test("walrus upload failure — throws WALRUS_UPLOAD_FAILED when blobId is null"
   await writeChunks(session.uploadId, session.totalChunks);
 
   const deps = {
-    uploadToWalrusWithMetrics: async (params: any) => {
+    uploadToWalrusWithMetrics: async (params: { streamFactory: () => Readable }) => {
       await drainStream(params.streamFactory());
       return { blobId: null, source: "unknown" as const };
     },
@@ -340,8 +346,8 @@ test("walrus upload failure — throws WALRUS_UPLOAD_FAILED when blobId is null"
   try {
     await finalizeUpload(session, { log }, deps);
     assert.fail("should have thrown");
-  } catch (err: any) {
-    assert.ok(err.message.includes("WALRUS_UPLOAD_FAILED"));
+  } catch (err: unknown) {
+    assert.ok((err as Error).message.includes("WALRUS_UPLOAD_FAILED"));
   }
 });
 
@@ -357,7 +363,7 @@ test("checksum mismatch — throws when computed != provided", async () => {
   await writeChunks(session.uploadId, session.totalChunks, [chunk0, chunk1]);
 
   const deps = {
-    uploadToWalrusWithMetrics: async (params: any) => {
+    uploadToWalrusWithMetrics: async (params: { streamFactory: () => Readable }) => {
       await drainStream(params.streamFactory());
       return { blobId: "blob-cm", source: "newly_created" as const, endEpoch: 10 };
     },
@@ -367,9 +373,9 @@ test("checksum mismatch — throws when computed != provided", async () => {
   try {
     await finalizeUpload(session, { log }, deps);
     assert.fail("should have thrown");
-  } catch (err: any) {
-    assert.equal(err.message, "CHECKSUM_MISMATCH");
-    assert.equal(err.finalizeStage, "walrus_publish");
+  } catch (err: unknown) {
+    assert.equal((err as Error).message, "CHECKSUM_MISMATCH");
+    assert.equal((err as Record<string, unknown>).finalizeStage, "walrus_publish");
   }
 });
 
@@ -382,7 +388,7 @@ test("sui finalize failure — throws with sui_finalize stage", async () => {
   await writeChunks(session.uploadId, session.totalChunks);
 
   const deps = {
-    uploadToWalrusWithMetrics: async (params: any) => {
+    uploadToWalrusWithMetrics: async (params: { streamFactory: () => Readable }) => {
       await drainStream(params.streamFactory());
       return { blobId: "blob-sf", source: "newly_created" as const, endEpoch: 10 };
     },
@@ -395,9 +401,9 @@ test("sui finalize failure — throws with sui_finalize stage", async () => {
   try {
     await finalizeUpload(session, { log }, deps);
     assert.fail("should have thrown");
-  } catch (err: any) {
-    assert.ok(err.message.includes("SUI_RPC_TIMEOUT"));
-    assert.equal(err.finalizeStage, "sui_finalize");
+  } catch (err: unknown) {
+    assert.ok((err as Error).message.includes("SUI_RPC_TIMEOUT"));
+    assert.equal((err as Record<string, unknown>).finalizeStage, "sui_finalize");
   }
 });
 
@@ -410,7 +416,7 @@ test("redis transaction failure — throws REDIS_FINALIZE_TRANSACTION_FAILED", a
   await writeChunks(session.uploadId, session.totalChunks);
 
   const deps = {
-    uploadToWalrusWithMetrics: async (params: any) => {
+    uploadToWalrusWithMetrics: async (params: { streamFactory: () => Readable }) => {
       await drainStream(params.streamFactory());
       return { blobId: "blob-rtx", source: "newly_created" as const, endEpoch: 10 };
     },
@@ -430,8 +436,8 @@ test("redis transaction failure — throws REDIS_FINALIZE_TRANSACTION_FAILED", a
   try {
     await finalizeUpload(session, { log }, deps);
     assert.fail("should have thrown");
-  } catch (err: any) {
-    assert.equal(err.message, "REDIS_FINALIZE_TRANSACTION_FAILED");
+  } catch (err: unknown) {
+    assert.equal((err as Error).message, "REDIS_FINALIZE_TRANSACTION_FAILED");
   }
 });
 
@@ -444,7 +450,7 @@ test("WALRUS_RETENTION_TOO_LOW — already_certified with unknown epoch", async 
   await writeChunks(session.uploadId, session.totalChunks);
 
   const deps = {
-    uploadToWalrusWithMetrics: async (params: any) => {
+    uploadToWalrusWithMetrics: async (params: { streamFactory: () => Readable }) => {
       await drainStream(params.streamFactory());
       return { blobId: "blob-rl", source: "already_certified" as const };
     },
@@ -454,8 +460,8 @@ test("WALRUS_RETENTION_TOO_LOW — already_certified with unknown epoch", async 
   try {
     await finalizeUpload(session, { log }, deps);
     assert.fail("should have thrown");
-  } catch (err: any) {
-    assert.ok(err.message.includes("WALRUS_RETENTION_TOO_LOW"));
+  } catch (err: unknown) {
+    assert.ok((err as Error).message.includes("WALRUS_RETENTION_TOO_LOW"));
   }
 });
 
@@ -468,7 +474,7 @@ test("happy path — full finalization succeeds through all stages", async () =>
   await writeChunks(session.uploadId, session.totalChunks);
 
   const deps = {
-    uploadToWalrusWithMetrics: async (params: any) => {
+    uploadToWalrusWithMetrics: async (params: { streamFactory: () => Readable }) => {
       await drainStream(params.streamFactory());
       return { blobId: "blob-hp", source: "newly_created" as const, endEpoch: 10 };
     },
@@ -520,7 +526,9 @@ test("failure persistence — retryable error keeps status as finalizing", async
   try {
     await finalizeUpload(session, { log }, deps);
     assert.fail("should have thrown");
-  } catch {}
+  } catch {
+    /* expected - tested error path */
+  }
 
   const meta = await redis.hgetall(uploadKeys.meta(session.uploadId));
   assert.ok(meta);
@@ -540,7 +548,9 @@ test("failure persistence — non-retryable error sets status to failed", async 
   try {
     await finalizeUpload(session, { log });
     assert.fail("should have thrown");
-  } catch {}
+  } catch {
+    /* expected - tested error path */
+  }
 
   const meta = await redis.hgetall(uploadKeys.meta(session.uploadId));
   assert.ok(meta);
@@ -559,7 +569,7 @@ test("post-commit PG error is swallowed — finalize still succeeds", async () =
   await writeChunks(session.uploadId, session.totalChunks);
 
   const deps = {
-    uploadToWalrusWithMetrics: async (params: any) => {
+    uploadToWalrusWithMetrics: async (params: { streamFactory: () => Readable }) => {
       await drainStream(params.streamFactory());
       return { blobId: "blob-pg", source: "newly_created" as const, endEpoch: 10 };
     },
@@ -651,7 +661,7 @@ test("reuse with checksum mismatch — falls through to upload path", async () =
     }),
     getCurrentWalrusEpoch: async () => 15,
     getWalrusBlobState: async () => ({ endEpoch: 20 }),
-    uploadToWalrusWithMetrics: async (params: any) => {
+    uploadToWalrusWithMetrics: async (params: { streamFactory: () => Readable }) => {
       await drainStream(params.streamFactory());
       return { blobId: "blob-new-upload", source: "newly_created" as const, endEpoch: 10 };
     },
@@ -665,9 +675,9 @@ test("reuse with checksum mismatch — falls through to upload path", async () =
   try {
     await finalizeUpload(session, { log }, deps);
     assert.fail("should have thrown");
-  } catch (err: any) {
-    assert.equal(err.message, "CHECKSUM_MISMATCH");
-    assert.equal(err.finalizeStage, "walrus_publish");
+  } catch (err: unknown) {
+    assert.equal((err as Error).message, "CHECKSUM_MISMATCH");
+    assert.equal((err as Record<string, unknown>).finalizeStage, "walrus_publish");
   }
 });
 
@@ -680,7 +690,7 @@ test("lock released in finally after success", async () => {
   await writeChunks(session.uploadId, session.totalChunks);
 
   const deps = {
-    uploadToWalrusWithMetrics: async (params: any) => {
+    uploadToWalrusWithMetrics: async (params: { streamFactory: () => Readable }) => {
       await drainStream(params.streamFactory());
       return { blobId: "blob-lr", source: "newly_created" as const, endEpoch: 10 };
     },
@@ -721,7 +731,9 @@ test("lock released in finally after failure", async () => {
   try {
     await finalizeUpload(session, { log }, deps);
     assert.fail("should have thrown");
-  } catch {}
+  } catch {
+    /* expected - tested error path */
+  }
 
   const lockKey = `${uploadKeys.meta(session.uploadId)}:lock`;
   const lockVal = await redis.eval(
@@ -783,7 +795,7 @@ test("cleanup — chunks and temp bin file removed on success", async () => {
   await fs.writeFile(binPath, "temp data");
 
   const deps = {
-    uploadToWalrusWithMetrics: async (params: any) => {
+    uploadToWalrusWithMetrics: async (params: { streamFactory: () => Readable }) => {
       await drainStream(params.streamFactory());
       return { blobId: "blob-cl", source: "newly_created" as const, endEpoch: 10 };
     },
@@ -797,11 +809,15 @@ test("cleanup — chunks and temp bin file removed on success", async () => {
 
   await finalizeUpload(session, { log }, deps);
 
-  const dirExists = await fs
-    .stat(path.join(testTmpDir, session.uploadId))
-    .then(() => true, () => false);
+  const dirExists = await fs.stat(path.join(testTmpDir, session.uploadId)).then(
+    () => true,
+    () => false,
+  );
   assert.equal(dirExists, false, "chunk directory cleaned up");
 
-  const binExists = await fs.stat(binPath).then(() => true, () => false);
+  const binExists = await fs.stat(binPath).then(
+    () => true,
+    () => false,
+  );
   assert.equal(binExists, false, ".bin file cleaned up");
 });

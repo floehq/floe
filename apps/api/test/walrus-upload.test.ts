@@ -60,8 +60,11 @@ test("resolveWalrusStoreMode - rejects invalid mode", async () => {
     try {
       await importFresh("../src/services/walrus/upload.js");
       assert.fail("Should have thrown");
-    } catch (err: any) {
-      assert.ok(err.message.includes("INVALID_FLOE_WALRUS_STORE_MODE"), err.message);
+    } catch (err: unknown) {
+      assert.ok(
+        (err as Error).message.includes("INVALID_FLOE_WALRUS_STORE_MODE"),
+        (err as Error).message,
+      );
     }
   } finally {
     if (origMode !== undefined) process.env.FLOE_WALRUS_STORE_MODE = origMode;
@@ -83,8 +86,8 @@ test("uploadToWalrusOnce - rejects epoch=0", async () => {
     try {
       await mod.uploadToWalrusOnce(() => Readable.from("test"), 0);
       assert.fail("Should have thrown");
-    } catch (err: any) {
-      assert.equal(err.message, "INVALID_EPOCHS");
+    } catch (err: unknown) {
+      assert.equal((err as Error).message, "INVALID_EPOCHS");
     }
   } finally {
     if (prevMode !== undefined) process.env.FLOE_WALRUS_STORE_MODE = prevMode;
@@ -104,8 +107,8 @@ test("uploadToWalrusOnce - rejects negative epochs", async () => {
     try {
       await mod.uploadToWalrusOnce(() => Readable.from("test"), -5);
       assert.fail("Should have thrown");
-    } catch (err: any) {
-      assert.equal(err.message, "INVALID_EPOCHS");
+    } catch (err: unknown) {
+      assert.equal((err as Error).message, "INVALID_EPOCHS");
     }
   } finally {
     if (prevMode !== undefined) process.env.FLOE_WALRUS_STORE_MODE = prevMode;
@@ -125,8 +128,8 @@ test("uploadToWalrusOnce - rejects non-integer epochs", async () => {
     try {
       await mod.uploadToWalrusOnce(() => Readable.from("test"), 1.5);
       assert.fail("Should have thrown");
-    } catch (err: any) {
-      assert.equal(err.message, "INVALID_EPOCHS");
+    } catch (err: unknown) {
+      assert.equal((err as Error).message, "INVALID_EPOCHS");
     }
   } finally {
     if (prevMode !== undefined) process.env.FLOE_WALRUS_STORE_MODE = prevMode;

@@ -1,6 +1,5 @@
 import test, { afterEach, before } from "node:test";
 import assert from "node:assert/strict";
-import http from "node:http";
 import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 
@@ -310,9 +309,7 @@ test("stream route - client abort does not crash server", async () => {
   // Override global fetch to simulate a slow Walrus aggregator.
   // Each call streams 64 bytes every 50 ms, so 4096 bytes takes ~3.2 s.
   const originalFetch = globalThis.fetch;
-  let fetchCallCount = 0;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    fetchCallCount += 1;
     const url =
       typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
 

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
-import { Readable, PassThrough } from "node:stream";
+import { Readable } from "node:stream";
 
 process.env.FLOE_NETWORK = "testnet";
 process.env.SUI_PRIVATE_KEY = `[${new Array(32).fill(0).join(",")}]`;
@@ -142,10 +142,18 @@ test("concurrency slots - released after stream completes", async () => {
     await cleanCacheDir();
     await mod.initStreamCache();
 
-    const r1 = await mod.teeCachedStreamRange({ blobId: "slot-release-1", start: 0, end: totalSize - 1 });
+    const r1 = await mod.teeCachedStreamRange({
+      blobId: "slot-release-1",
+      start: 0,
+      end: totalSize - 1,
+    });
     await readStreamFully(r1.stream);
 
-    const r2 = await mod.teeCachedStreamRange({ blobId: "slot-release-2", start: 0, end: totalSize - 1 });
+    const r2 = await mod.teeCachedStreamRange({
+      blobId: "slot-release-2",
+      start: 0,
+      end: totalSize - 1,
+    });
     await readStreamFully(r2.stream);
 
     assert.equal(maxActiveFetches, 1, "should never exceed 1 concurrent fetch with concurrency=1");
@@ -181,7 +189,11 @@ test("concurrency slots - released when stream errors", async () => {
     await mod.initStreamCache();
 
     // First fill will error (500 response)
-    const r1 = await mod.teeCachedStreamRange({ blobId: "slot-error-1", start: 0, end: totalSize - 1 });
+    const r1 = await mod.teeCachedStreamRange({
+      blobId: "slot-error-1",
+      start: 0,
+      end: totalSize - 1,
+    });
     try {
       await readStreamFully(r1.stream);
     } catch {
@@ -346,15 +358,24 @@ test("LRU eviction - least-recently-used entry is evicted when cache is full", a
 
     // Check that lru-oldest was evicted
     const { getCachedStreamRangePath } = mod;
-    const oldPath = await getCachedStreamRangePath({ blobId: "lru-oldest", start: 0, end: totalSize - 1 });
-    const newPath = await getCachedStreamRangePath({ blobId: "lru-newest", start: 0, end: totalSize - 1 });
-    const extraPath = await getCachedStreamRangePath({ blobId: "lru-extra", start: 0, end: totalSize - 1 });
+    const oldPath = await getCachedStreamRangePath({
+      blobId: "lru-oldest",
+      start: 0,
+      end: totalSize - 1,
+    });
+    const newPath = await getCachedStreamRangePath({
+      blobId: "lru-newest",
+      start: 0,
+      end: totalSize - 1,
+    });
+    const extraPath = await getCachedStreamRangePath({
+      blobId: "lru-extra",
+      start: 0,
+      end: totalSize - 1,
+    });
 
     // The oldest entry should have been evicted (or at least one older entry)
-    assert.equal(
-      oldPath, null,
-      "oldest entry should be evicted when cache exceeds limit",
-    );
+    assert.equal(oldPath, null, "oldest entry should be evicted when cache exceeds limit");
     assert.ok(newPath !== null, "newest entry should still be cached");
     assert.ok(extraPath !== null, "extra entry should still be cached");
   } finally {
@@ -393,10 +414,7 @@ test("LRU eviction - active entries survive when total is within limit", async (
       mod.teeCachedStreamRange({ blobId: "active-c", start: 0, end: totalSize - 1 }),
     ]);
 
-    const [d2, d3] = await Promise.all([
-      readStreamFully(r2.stream),
-      readStreamFully(r3.stream),
-    ]);
+    const [d2, d3] = await Promise.all([readStreamFully(r2.stream), readStreamFully(r3.stream)]);
 
     assert.equal(d2.length, totalSize);
     assert.equal(d3.length, totalSize);
@@ -750,10 +768,7 @@ test("full-object cache - concurrent blob requests are deduped", async () => {
     ]);
 
     assert.ok(r1 !== null && r2 !== null);
-    const [d1, d2] = await Promise.all([
-      readStreamFully(r1!.stream),
-      readStreamFully(r2!.stream),
-    ]);
+    const [d1, d2] = await Promise.all([readStreamFully(r1!.stream), readStreamFully(r2!.stream)]);
 
     assert.equal(d1.length, totalSize);
     assert.equal(d2.length, totalSize);
