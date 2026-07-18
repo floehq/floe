@@ -891,7 +891,9 @@ export async function filesRoutes(app: FastifyInstance) {
           checksum: normalized.checksum,
           walrusEndEpoch: walrusResult.endEpoch,
           createdAtMs: normalized.createdAt,
-        }).catch((err) => req.childLogger.warn({ err }, "Postgres index upsert failed after renewal"));
+        }).catch((err) =>
+          req.childLogger.warn({ err }, "Postgres index upsert failed after renewal"),
+        );
 
         // Emit audit event on successful renewal
         const auditAfter = {
