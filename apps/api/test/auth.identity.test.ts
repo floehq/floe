@@ -35,6 +35,7 @@ const { AuthApiKeyConfig, AuthExternalConfig, AuthProviderConfig, AuthTokenConfi
 );
 const { signDelegatedAuthTokenForTests } = await import("../src/services/auth/auth.token.ts");
 const { externalAuthTestHooks } = await import("../src/services/auth/auth.external.ts");
+const { externalAuthCircuit } = await import("../src/services/circuit-breaker/instances.ts");
 
 const originalFetch = globalThis.fetch;
 
@@ -74,6 +75,7 @@ afterEach(() => {
   );
   globalThis.fetch = originalFetch;
   externalAuthTestHooks.resetCache();
+  externalAuthCircuit.reset();
 });
 
 // ---------------------------------------------------------------------------
