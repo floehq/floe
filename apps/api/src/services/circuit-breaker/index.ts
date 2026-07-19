@@ -45,6 +45,8 @@ export class CircuitBreaker {
   private failureCount = 0;
   private successCount = 0;
   private openedAt = 0;
+  /** Serializes probes so only one call runs fn() during half_open. */
+  private probeLock: Promise<void> = Promise.resolve();
 
   constructor(opts: CircuitBreakerOptions) {
     this.opts = {
@@ -96,6 +98,27 @@ export class CircuitBreaker {
       }
     }
 
+    if (this.state === "half_open") {
+      await this.probeLock;
+      if (this.state === "open") {
+        const elapsed = Date.now() - durationMs;
+        this.opts.onOutcome({
+          name: this.opts.name,
+          state: "open",
+          success: false,
+          durationMs: elapsed,
+        });
+        throw new CircuitBreakerError(this.opts.name, "open");
+      }
+    }
+
+    let resolveProbe: (() => void) | undefined;
+    if (this.state === "half_open") {
+      this.probeLock = new Promise<void>((resolve) => {
+        resolveProbe = resolve;
+      });
+    }
+
     let success = false;
     try {
       const result = await fn();
@@ -104,6 +127,7 @@ export class CircuitBreaker {
     } finally {
       const elapsed = Date.now() - durationMs;
       this.recordOutcome(success, elapsed);
+      resolveProbe?.();
     }
   }
 
