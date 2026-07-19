@@ -60,11 +60,32 @@ initErrorReporter({
   info: (msg: string) => console.error("[error-reporter]", msg),
 });
 
+// Unhandled rejection grace period: transient errors get a chance to recover,
+// but sustained degradation triggers a restart.
+const REJECTION_THRESHOLD = 5;
+const REJECTION_WINDOW_MS = 60_000;
+let rejectionCount = 0;
+let windowStart = Date.now();
+
 process.on("unhandledRejection", (reason) => {
   captureException(reason instanceof Error ? reason : new Error(String(reason)), {
     event: "unhandledRejection",
   });
   console.error("Unhandled promise rejection:", reason);
+
+  const now = Date.now();
+  if (now - windowStart > REJECTION_WINDOW_MS) {
+    rejectionCount = 0;
+    windowStart = now;
+  }
+  rejectionCount += 1;
+
+  if (rejectionCount > REJECTION_THRESHOLD) {
+    console.fatal(
+      `[fatal] ${rejectionCount} unhandled rejections in the last ${REJECTION_WINDOW_MS / 1_000}s — crashing to force restart`,
+    );
+    process.exit(1);
+  }
 });
 
 process.on("uncaughtException", (err) => {
