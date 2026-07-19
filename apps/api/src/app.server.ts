@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { randomUUID } from "crypto";
 import multipart from "@fastify/multipart";
 import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
@@ -112,6 +113,12 @@ function createFastifyApp() {
       base: {
         role: TopologyConfig.role,
       },
+    },
+    requestIdHeader: "x-request-id",
+    genReqId: (req) => {
+      const incoming = req.headers["x-request-id"];
+      if (typeof incoming === "string" && incoming.length > 0) return incoming;
+      return randomUUID();
     },
     bodyLimit: ChunkConfig.maxBytes + 1024 * 1024,
     trustProxy: parseTrustProxy(),
