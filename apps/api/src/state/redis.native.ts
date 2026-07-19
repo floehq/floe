@@ -177,6 +177,18 @@ class NativeRedisMulti {
   }
 }
 
+type ConnectionState = {
+  connected: boolean;
+  reconnecting: boolean;
+  attempt: number;
+  lastError: string | null;
+};
+
+const BASE_DELAY_MS = 1000;
+const MAX_DELAY_MS = 30_000;
+const DEFAULT_MAX_ATTEMPTS = 10;
+const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
+
 export class NativeRedisClient implements RedisClient {
   private socket: SocketLike | null = null;
   private buffer = Buffer.alloc(0);
@@ -184,7 +196,29 @@ export class NativeRedisClient implements RedisClient {
   private connected = false;
   private operationChain: Promise<void> = Promise.resolve();
 
-  constructor(private readonly options: NativeRedisOptions) {}
+  private reconnecting = false;
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastError: string | null = null;
+  private readonly maxAttempts: number;
+  private readonly connectTimeoutMs: number;
+  private manualClose = false;
+  private pendingConnectSocket: SocketLike | null = null;
+
+  constructor(private readonly options: NativeRedisOptions) {
+    this.maxAttempts = Number(process.env.FLOE_REDIS_RECONNECT_MAX_ATTEMPTS) || DEFAULT_MAX_ATTEMPTS;
+    this.connectTimeoutMs =
+      Number(process.env.FLOE_REDIS_CONNECT_TIMEOUT_MS) || DEFAULT_CONNECT_TIMEOUT_MS;
+  }
+
+  getRedisConnectionState(): ConnectionState {
+    return {
+      connected: this.connected,
+      reconnecting: this.reconnecting,
+      attempt: this.reconnectAttempt,
+      lastError: this.lastError,
+    };
+  }
 
   private rejectPending(err: Error) {
     while (this.pending.length > 0) {
@@ -192,23 +226,11 @@ export class NativeRedisClient implements RedisClient {
     }
   }
 
-  async connect() {
-    if (this.connected) return;
-    const parsed = parseRedisUrl(this.options.url);
-    const socket = parsed.tls
-      ? tls.connect({ host: parsed.host, port: parsed.port })
-      : net.createConnection({ host: parsed.host, port: parsed.port });
-    this.socket = socket;
+  private parseUrl() {
+    return parseRedisUrl(this.options.url);
+  }
 
-    await new Promise<void>((resolve, reject) => {
-      const onError = (err: Error) => reject(err);
-      socket.once("error", onError);
-      socket.once("connect", () => {
-        socket.off("error", onError);
-        resolve();
-      });
-    });
-
+  private registerSocketHandlers(socket: SocketLike) {
     socket.on("data", (chunk) => {
       this.buffer = Buffer.concat([this.buffer, chunk]);
       this.drainResponses();
@@ -220,9 +242,117 @@ export class NativeRedisClient implements RedisClient {
       this.rejectPending(new Error("Redis socket closed"));
       this.connected = false;
       this.socket = null;
+      if (!this.manualClose) {
+        this.scheduleReconnect();
+      }
+    });
+  }
+
+  private scheduleReconnect() {
+    if (this.manualClose) return;
+    if (this.reconnectTimer !== null) return;
+    if (this.reconnectAttempt >= this.maxAttempts) {
+      console.error(
+        `[Redis] Reconnection failed after ${this.maxAttempts} attempts: ${this.lastError ?? "unknown"}`,
+      );
+      this.reconnecting = false;
+      return;
+    }
+
+    this.reconnecting = true;
+    const delay = Math.min(BASE_DELAY_MS * 2 ** this.reconnectAttempt, MAX_DELAY_MS);
+    this.reconnectAttempt++;
+
+    console.warn(
+      `[Redis] Reconnection attempt ${this.reconnectAttempt}/${this.maxAttempts} after ${delay}ms`,
+    );
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.tryReconnect();
+    }, delay);
+  }
+
+  private async tryReconnect() {
+    try {
+      await this.connectInternal();
+      this.reconnecting = false;
+      this.reconnectAttempt = 0;
+      this.lastError = null;
+      console.info("[Redis] Reconnected successfully");
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err);
+      this.scheduleReconnect();
+    }
+  }
+
+  async connect() {
+    if (this.connected) return;
+    this.manualClose = false;
+    try {
+      await this.connectInternal();
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err);
+      this.connected = false;
+      this.scheduleReconnect();
+      throw err;
+    }
+  }
+
+  private async connectInternal() {
+    const parsed = this.parseUrl();
+    const socket = parsed.tls
+      ? tls.connect({ host: parsed.host, port: parsed.port })
+      : net.createConnection({ host: parsed.host, port: parsed.port });
+
+    this.pendingConnectSocket = socket;
+
+    let timedOut = false;
+    const connectReady = new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const onError = (err: Error) => {
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
+      };
+      socket.once("error", onError);
+      socket.once("connect", () => {
+        if (!settled) {
+          settled = true;
+          socket.off("error", onError);
+          resolve();
+        }
+      });
+      socket.once("close", () => {
+        if (!settled) {
+          settled = true;
+          reject(new Error("Redis connect timed out"));
+        }
+      });
     });
 
+    const timer = setTimeout(() => {
+      timedOut = true;
+      socket.destroy();
+    }, this.connectTimeoutMs);
+
+    try {
+      await connectReady;
+    } catch (err) {
+      if (timedOut) throw new Error("Redis connect timed out");
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      this.pendingConnectSocket = null;
+    }
+
+    this.socket = socket;
+    this.registerSocketHandlers(socket);
+
     this.connected = true;
+    this.buffer = Buffer.alloc(0);
+
     if (parsed.password || parsed.username) {
       if (parsed.username) {
         await this.send(["AUTH", parsed.username, parsed.password ?? ""]);
@@ -388,6 +518,16 @@ export class NativeRedisClient implements RedisClient {
   }
 
   async close() {
+    this.manualClose = true;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnecting = false;
+    if (this.pendingConnectSocket) {
+      this.pendingConnectSocket.destroy();
+      this.pendingConnectSocket = null;
+    }
     if (!this.socket) return;
     this.rejectPending(new Error("Redis client closed"));
     this.socket.end();
