@@ -1,4 +1,4 @@
-import type { Readable } from "stream";
+import { Readable, Transform } from "stream";
 import { walrusQueue } from "./limiter.js";
 import { uploadToWalrusOnce, resolveWalrusStoreMode } from "./upload.js";
 import { WalrusUploadLimits } from "../../config/walrus.config.js";
@@ -32,11 +32,33 @@ export async function uploadToWalrusWithMetrics(params: {
   const start = Date.now();
   let lastError: any;
 
+  // Cache stream chunks on the first attempt so retries replay from memory
+  // instead of re-reading all chunks from S3.
+  const cachedChunks: Buffer[] = [];
+  let isFirstAttempt = true;
+
+  const cachedStreamFactory = (): Readable => {
+    if (!isFirstAttempt && cachedChunks.length > 0) {
+      return Readable.from(cachedChunks);
+    }
+
+    const original = params.streamFactory();
+    const tee = new Transform({
+      transform(chunk: Buffer, _encoding: string, callback) {
+        cachedChunks.push(chunk);
+        this.push(chunk);
+        callback();
+      },
+    });
+    original.pipe(tee);
+    return tee;
+  };
+
   try {
     const result = (await walrusQueue.add(async () => {
       for (let attempt = 1; attempt <= WalrusUploadLimits.maxRetries; attempt++) {
         try {
-          const res = await uploadToWalrusOnce(params.streamFactory, params.epochs);
+          const res = await uploadToWalrusOnce(cachedStreamFactory, params.epochs);
 
           recordWalrusUploadMetric({
             uploadId: params.uploadId,
@@ -60,6 +82,7 @@ export async function uploadToWalrusWithMetrics(params: {
           return res;
         } catch (err) {
           lastError = err;
+          isFirstAttempt = false;
           if (attempt === WalrusUploadLimits.maxRetries) break;
           await sleep(WalrusUploadLimits.baseRetryDelayMs * attempt);
         }
