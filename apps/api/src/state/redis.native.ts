@@ -281,6 +281,7 @@ export class NativeRedisClient implements RedisClient {
       this.lastError = null;
       console.info("[Redis] Reconnected successfully");
     } catch (err) {
+      this.connected = false;
       this.lastError = err instanceof Error ? err.message : String(err);
       this.scheduleReconnect();
     }
@@ -350,18 +351,26 @@ export class NativeRedisClient implements RedisClient {
     this.socket = socket;
     this.registerSocketHandlers(socket);
 
-    this.connected = true;
     this.buffer = Buffer.alloc(0);
+    this.connected = true;
 
-    if (parsed.password || parsed.username) {
-      if (parsed.username) {
-        await this.send(["AUTH", parsed.username, parsed.password ?? ""]);
-      } else if (parsed.password) {
-        await this.send(["AUTH", parsed.password]);
+    try {
+      if (parsed.password || parsed.username) {
+        if (parsed.username) {
+          await this.send(["AUTH", parsed.username, parsed.password ?? ""]);
+        } else if (parsed.password) {
+          await this.send(["AUTH", parsed.password]);
+        }
       }
-    }
-    if (Number.isInteger(parsed.db)) {
-      await this.send(["SELECT", parsed.db as number]);
+      if (Number.isInteger(parsed.db)) {
+        await this.send(["SELECT", parsed.db as number]);
+      }
+    } catch (authErr) {
+      this.connected = false;
+      this.socket = null;
+      this.rejectPending(authErr instanceof Error ? authErr : new Error(String(authErr)));
+      socket.destroy();
+      throw authErr;
     }
   }
 

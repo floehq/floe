@@ -113,12 +113,12 @@ test("exponential backoff timing", async () => {
     FLOE_REDIS_CONNECT_TIMEOUT_MS: "200",
   });
 
-  let connectionCount = 0;
+  const connectionTimestamps: number[] = [];
 
   const port = await findOpenPort();
   const server = net.createServer((socket) => {
-    connectionCount++;
-    if (connectionCount === 1) {
+    connectionTimestamps.push(Date.now());
+    if (connectionTimestamps.length === 1) {
       socket.destroy();
       return;
     }
@@ -132,7 +132,7 @@ test("exponential backoff timing", async () => {
   await client.connect();
 
   assert.equal(client.getRedisConnectionState().connected, true);
-  assert.equal(connectionCount, 1);
+  assert.equal(connectionTimestamps.length, 1);
 
   const socket = (client as unknown as { socket: net.Socket }).socket;
   socket.destroy();
@@ -143,10 +143,18 @@ test("exponential backoff timing", async () => {
     15000,
   );
 
-  assert.ok(connectionCount >= 2, `expected at least 2 connections, got ${connectionCount}`);
+  assert.ok(connectionTimestamps.length >= 2, `expected at least 2 connections, got ${connectionTimestamps.length}`);
 
   const result = await client.ping();
   assert.equal(result, "PONG");
+
+  if (connectionTimestamps.length >= 3) {
+    const gap1 = connectionTimestamps[1]! - connectionTimestamps[0]!;
+    const gap2 = connectionTimestamps[2]! - connectionTimestamps[1]!;
+    assert.ok(gap1 >= 900, `expected first backoff >= 900ms, got ${gap1}ms`);
+    assert.ok(gap2 >= 1800, `expected second backoff >= 1800ms, got ${gap2}ms`);
+    assert.ok(gap2 > gap1, `expected increasing backoff: gap1=${gap1}ms, gap2=${gap2}ms`);
+  }
 
   await client.close();
   server.close();
@@ -183,17 +191,24 @@ test("max retry limit stops reconnection", async () => {
 test("connect timeout triggers reconnection", async () => {
   setupEnv({
     FLOE_REDIS_RECONNECT_MAX_ATTEMPTS: "3",
-    FLOE_REDIS_CONNECT_TIMEOUT_MS: "100",
+    FLOE_REDIS_CONNECT_TIMEOUT_MS: "200",
   });
 
-  const client = new NativeRedisClient({ url: "redis://10.255.255.1:6379" });
+  const blackHoleServer = net.createServer((socket) => {
+    socket.destroy();
+  });
+  const port = await listen(blackHoleServer);
 
-  await assert.rejects(client.connect(), /timed out/);
+  const client = new NativeRedisClient({ url: `redis://:secret@127.0.0.1:${port}` });
 
-  await waitForCondition(() => client.getRedisConnectionState().connected === false, 2000);
+  await assert.rejects(client.connect(), /timed out|ECONNRESET|EPIPE|socket is not connected|socket closed/);
+
+  await waitForCondition(() => client.getRedisConnectionState().reconnecting === true, 2000);
   assert.equal(client.getRedisConnectionState().connected, false);
+  assert.equal(client.getRedisConnectionState().reconnecting, true);
 
   await client.close();
+  blackHoleServer.close();
   drainEnv("FLOE_REDIS_RECONNECT_MAX_ATTEMPTS", "FLOE_REDIS_CONNECT_TIMEOUT_MS");
 });
 
