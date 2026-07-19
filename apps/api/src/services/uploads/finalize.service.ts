@@ -374,27 +374,30 @@ export async function finalizeUpload(
   }
 
   const refreshFinalizeLock = async () => {
-    const refreshed = await refreshFinalizeLockAtomic({
-      lockKey,
-      lockToken,
-      ttlSeconds: FINALIZE_LOCK_TTL_SECONDS,
-    });
-    if (!refreshed) {
-      throw new Error("UPLOAD_FINALIZATION_LOCK_LOST");
+    try {
+      const refreshed = await refreshFinalizeLockAtomic({
+        lockKey,
+        lockToken,
+        ttlSeconds: FINALIZE_LOCK_TTL_SECONDS,
+      });
+      if (!refreshed) {
+        context.log?.warn(
+          { uploadId },
+          "Finalize lock extension failed — lock token no longer held",
+        );
+      }
+    } catch (err) {
+      context.log?.warn(
+        { uploadId, err },
+        "Finalize lock extension errored — continuing current worker",
+      );
     }
   };
 
-  let lockError: Error | null = null;
   const lockRefreshTimer = setInterval(() => {
-    void refreshFinalizeLock().catch((err) => {
-      lockError = err instanceof Error ? err : new Error("UPLOAD_FINALIZATION_LOCK_LOST");
-    });
+    void refreshFinalizeLock();
   }, FINALIZE_LOCK_REFRESH_INTERVAL_MS);
   lockRefreshTimer.unref();
-
-  const assertFinalizeLockHealthy = () => {
-    if (lockError) throw lockError;
-  };
 
   try {
     // Re-check inside the lock (race-safe).
@@ -438,7 +441,6 @@ export async function finalizeUpload(
         : undefined;
 
     if (!blobId) {
-      assertFinalizeLockHealthy();
       await refreshFinalizeLock();
 
       // Track the most recently used HashStream so we can read the
@@ -551,7 +553,6 @@ export async function finalizeUpload(
     }
 
     if (!fileId) {
-      assertFinalizeLockHealthy();
       await refreshFinalizeLock();
       const minted = await runStage("sui_finalize", async () => {
         const suiStartedAt = Date.now();
@@ -587,7 +588,6 @@ export async function finalizeUpload(
       });
     }
 
-    assertFinalizeLockHealthy();
     await refreshFinalizeLock();
     const tx = await runStage("redis_commit", async () =>
       redis
