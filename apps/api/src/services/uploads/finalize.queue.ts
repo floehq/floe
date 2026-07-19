@@ -140,9 +140,9 @@ async function markUploadFailed(params: {
         ? { finalizeQueueWaitMs: String(params.queueWaitMs) }
         : {}),
     })
-    .catch(() => {});
+    .catch((err) => console.warn(`[Finalize] Redis write failed: ${err.message}`));
   if (!params.retryable) {
-    await redis.srem(uploadKeys.activeIndex(), params.uploadId).catch(() => {});
+    await redis.srem(uploadKeys.activeIndex(), params.uploadId).catch((err) => console.warn(`[Finalize] Redis write failed: ${err.message}`));
   }
 }
 
@@ -397,7 +397,7 @@ async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
       uploadId,
       nowMs: Date.now(),
       writeMeta: async (fields) => {
-        await redis.hset(uploadKeys.meta(uploadId), fields).catch(() => {});
+        await redis.hset(uploadKeys.meta(uploadId), fields).catch((err) => log.warn({ err }, "[Finalize] Redis write failed"));
       },
       scheduleRetry: async (nextUploadId, nextDelayMs) => {
         await scheduleRetryImpl(nextUploadId, log, nextDelayMs);

@@ -372,7 +372,7 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
     // Pre-warm TCP + TLS connections to Walrus aggregators so the first
     // client request skips DNS + TCP + TLS handshake (~300-600 ms).
     // Fire-and-forget: never blocks startup.
-    warmWalrusConnections().catch(() => {});
+    warmWalrusConnections().catch((err) => app.log.warn({ err }, "[Startup] Walrus pre-warm failed"));
 
     app.log.info({ config: dumpConfig() }, "Resolved FLOE_* configuration");
 

@@ -97,7 +97,7 @@ export function getPostgres(): PgPool | null {
 
 export async function closePostgres(): Promise<void> {
   if (!pool) return;
-  await pool.end().catch(() => {});
+  await pool.end().catch((err) => console.warn(`[Postgres] Pool shutdown failed: ${err.message}`));
   pool = null;
   enabled = false;
 }

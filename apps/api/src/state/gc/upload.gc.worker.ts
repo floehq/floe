@@ -119,11 +119,11 @@ export async function runUploadGc(log: FastifyBaseLogger) {
     log.warn({ uploadId, status }, "GC deleting failed/expired upload artifacts");
 
     await Promise.all([
-      chunkStore.cleanup(uploadId).catch(() => {}),
+      chunkStore.cleanup(uploadId).catch((err) => console.warn(`[GC] Cleanup failed for ${uploadId}: ${err.message}`)),
       ...(isDiskBackend
         ? [
-            fs.rm(dirPath, { recursive: true, force: true }).catch(() => {}),
-            fs.rm(binPath, { force: true }).catch(() => {}),
+            fs.rm(dirPath, { recursive: true, force: true }).catch((err) => console.warn(`[GC] Cleanup failed for ${uploadId}: ${err.message}`)),
+            fs.rm(binPath, { force: true }).catch((err) => console.warn(`[GC] Cleanup failed for ${uploadId}: ${err.message}`)),
           ]
         : []),
       redis
