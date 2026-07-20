@@ -41,9 +41,27 @@ async function createUpstashClient(): Promise<RedisClient> {
 }
 
 async function createNativeClient(): Promise<RedisClient> {
+  const sentinelsRaw = (process.env.FLOE_REDIS_SENTINELS ?? "").trim();
+
+  if (sentinelsRaw) {
+    const sentinels = sentinelsRaw.split(",").map((entry) => {
+      const [host, portStr] = entry.trim().split(":");
+      return { host: host!, port: Number(portStr) };
+    });
+    const name = (process.env.FLOE_REDIS_SENTINEL_NAME ?? "mymaster").trim();
+    const sentinelPassword = (process.env.FLOE_REDIS_SENTINEL_PASSWORD ?? "").trim() || undefined;
+    const password = (process.env.REDIS_PASSWORD ?? "").trim() || undefined;
+    const client = new NativeRedisClient({
+      sentinel: { sentinels, name, password, sentinelPassword },
+    });
+    await client.connect();
+    await client.ping();
+    return client;
+  }
+
   const url = (process.env.REDIS_URL ?? "").trim();
   if (!url) {
-    throw new Error("REDIS_URL is required when FLOE_REDIS_PROVIDER=native");
+    throw new Error("REDIS_URL or FLOE_REDIS_SENTINELS is required when FLOE_REDIS_PROVIDER=native");
   }
   const client = new NativeRedisClient({ url });
   await client.connect();

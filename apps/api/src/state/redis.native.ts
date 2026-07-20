@@ -13,7 +13,15 @@ type PendingRequest = {
 type MultiCommand = Array<string | number>;
 
 type NativeRedisOptions = {
-  url: string;
+  url?: string;
+  sentinel?: {
+    sentinels: Array<{ host: string; port: number }>;
+    name: string;
+    password?: string;
+    sentinelPassword?: string;
+  };
+  connectTimeoutMs?: number;
+  maxReconnectAttempts?: number;
 };
 
 function parseRedisUrl(raw: string) {
@@ -204,11 +212,18 @@ export class NativeRedisClient implements RedisClient {
   private readonly connectTimeoutMs: number;
   private manualClose = false;
   private pendingConnectSocket: SocketLike | null = null;
+  private sentinelIndex = 0;
+  private lastPrimaryAddress: { host: string; port: number } | null = null;
 
   constructor(private readonly options: NativeRedisOptions) {
-    this.maxAttempts = Number(process.env.FLOE_REDIS_RECONNECT_MAX_ATTEMPTS) || DEFAULT_MAX_ATTEMPTS;
+    this.maxAttempts =
+      options.maxReconnectAttempts ??
+      (Number(process.env.FLOE_REDIS_RECONNECT_MAX_ATTEMPTS) ||
+        DEFAULT_MAX_ATTEMPTS);
     this.connectTimeoutMs =
-      Number(process.env.FLOE_REDIS_CONNECT_TIMEOUT_MS) || DEFAULT_CONNECT_TIMEOUT_MS;
+      options.connectTimeoutMs ??
+      (Number(process.env.FLOE_REDIS_CONNECT_TIMEOUT_MS) ||
+        DEFAULT_CONNECT_TIMEOUT_MS);
   }
 
   getRedisConnectionState(): ConnectionState {
@@ -227,7 +242,137 @@ export class NativeRedisClient implements RedisClient {
   }
 
   private parseUrl() {
-    return parseRedisUrl(this.options.url);
+    if (this.options.url) {
+      return parseRedisUrl(this.options.url);
+    }
+    return null;
+  }
+
+  private async querySentinel(): Promise<{ host: string; port: number }> {
+    if (!this.options.sentinel) {
+      throw new Error("No Sentinel configuration");
+    }
+    const { sentinels, name, sentinelPassword } = this.options.sentinel;
+    const startIdx = this.sentinelIndex;
+    let lastErr: Error | null = null;
+
+    for (let i = 0; i < sentinels.length; i++) {
+      const idx = (startIdx + i) % sentinels.length;
+      const sentinel = sentinels[idx]!;
+      this.sentinelIndex = (idx + 1) % sentinels.length;
+
+      try {
+        const result = await this.querySingleSentinel(sentinel, name, sentinelPassword);
+        console.info(`[Redis] Resolved primary from Sentinel ${sentinel.host}:${sentinel.port}: ${result.host}:${result.port}`);
+        return result;
+      } catch (err) {
+        lastErr = err instanceof Error ? err : new Error(String(err));
+        console.warn(`[Redis] Sentinel ${sentinel.host}:${sentinel.port} failed: ${lastErr.message}`);
+      }
+    }
+    throw new Error(`All Sentinels failed. Last error: ${lastErr?.message ?? "unknown"}`);
+  }
+
+  private querySingleSentinel(
+    sentinel: { host: string; port: number },
+    masterName: string,
+    password?: string,
+  ): Promise<{ host: string; port: number }> {
+    return new Promise((resolve, reject) => {
+      const socket = net.createConnection({ host: sentinel.host, port: sentinel.port });
+      let settled = false;
+      const timeoutMs = 3000;
+
+      const cleanup = () => {
+        socket.removeAllListeners();
+        socket.destroy();
+      };
+
+      const onError = (err: Error) => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          reject(err);
+        }
+      };
+
+      socket.once("error", onError);
+      socket.once("close", () => {
+        if (!settled) {
+          settled = true;
+          reject(new Error(`Sentinel ${sentinel.host}:${sentinel.port} closed unexpectedly`));
+        }
+      });
+
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          reject(new Error(`Sentinel ${sentinel.host}:${sentinel.port} timed out`));
+        }
+      }, timeoutMs);
+
+      socket.once("connect", async () => {
+        try {
+          if (password) {
+            const authCmd = encodeCommand(["AUTH", password]);
+            socket.write(authCmd);
+            await new Promise<void>((res, rej) => {
+              const onData = (chunk: Buffer) => {
+                socket.off("error", onError);
+                const reader = new RespReader(chunk);
+                const parsed = reader.parse();
+                if (parsed?.value instanceof Error) {
+                  rej(parsed.value);
+                } else {
+                  res();
+                }
+                socket.off("data", onData);
+              };
+              socket.once("data", onData);
+            });
+          }
+
+          const cmd = encodeCommand(["SENTINEL", "get-master-addr-by-name", masterName]);
+          socket.write(cmd);
+
+          let responseBuffer = Buffer.alloc(0);
+          const onData = (chunk: Buffer) => {
+            responseBuffer = Buffer.concat([responseBuffer, chunk]);
+            const reader = new RespReader(responseBuffer);
+            const parsed = reader.parse();
+            if (!parsed) return;
+
+            socket.off("data", onData);
+            socket.off("error", onError);
+            clearTimeout(timer);
+            cleanup();
+
+            if (parsed.value instanceof Error) {
+              reject(parsed.value);
+              return;
+            }
+            if (!Array.isArray(parsed.value) || parsed.value.length < 2) {
+              reject(new Error(`Unexpected Sentinel response: ${JSON.stringify(parsed.value)}`));
+              return;
+            }
+            resolve({
+              host: String(parsed.value[0]),
+              port: Number(parsed.value[1]),
+            });
+          };
+
+          socket.on("data", onData);
+        } catch (err) {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            cleanup();
+            reject(err instanceof Error ? err : new Error(String(err)));
+          }
+        }
+      });
+    });
   }
 
   private registerSocketHandlers(socket: SocketLike) {
@@ -275,12 +420,22 @@ export class NativeRedisClient implements RedisClient {
 
   private async tryReconnect() {
     try {
+      if (this.options.sentinel) {
+        this.lastPrimaryAddress = null;
+      }
       await this.connectInternal();
+      if (this.manualClose) {
+        this.socket?.destroy();
+        this.socket = null;
+        this.connected = false;
+        return;
+      }
       this.reconnecting = false;
       this.reconnectAttempt = 0;
       this.lastError = null;
       console.info("[Redis] Reconnected successfully");
     } catch (err) {
+      if (this.manualClose) return;
       this.connected = false;
       this.lastError = err instanceof Error ? err.message : String(err);
       this.scheduleReconnect();
@@ -301,10 +456,37 @@ export class NativeRedisClient implements RedisClient {
   }
 
   private async connectInternal() {
-    const parsed = this.parseUrl();
-    const socket = parsed.tls
-      ? tls.connect({ host: parsed.host, port: parsed.port })
-      : net.createConnection({ host: parsed.host, port: parsed.port });
+    let host: string;
+    let port: number;
+    let tls = false;
+    let password: string | undefined;
+    let username: string | undefined;
+    let db: number | undefined;
+
+    if (this.options.sentinel) {
+      const primary = this.lastPrimaryAddress
+        ? this.lastPrimaryAddress
+        : await this.querySentinel();
+      host = primary.host;
+      port = primary.port;
+      password = this.options.sentinel.password;
+      this.lastPrimaryAddress = { host, port };
+    } else {
+      const parsed = this.parseUrl();
+      if (!parsed) {
+        throw new Error("No REDIS_URL or Sentinel configuration provided");
+      }
+      host = parsed.host;
+      port = parsed.port;
+      tls = parsed.tls;
+      password = parsed.password;
+      username = parsed.username;
+      db = parsed.db;
+    }
+
+    const socket = tls
+      ? tls.connect({ host, port })
+      : net.createConnection({ host, port });
 
     this.pendingConnectSocket = socket;
 
@@ -355,15 +537,15 @@ export class NativeRedisClient implements RedisClient {
     this.connected = true;
 
     try {
-      if (parsed.password || parsed.username) {
-        if (parsed.username) {
-          await this.send(["AUTH", parsed.username, parsed.password ?? ""]);
-        } else if (parsed.password) {
-          await this.send(["AUTH", parsed.password]);
+      if (password || username) {
+        if (username) {
+          await this.send(["AUTH", username, password ?? ""]);
+        } else if (password) {
+          await this.send(["AUTH", password]);
         }
       }
-      if (Number.isInteger(parsed.db)) {
-        await this.send(["SELECT", parsed.db as number]);
+      if (Number.isInteger(db)) {
+        await this.send(["SELECT", db as number]);
       }
     } catch (authErr) {
       this.connected = false;
