@@ -49,9 +49,36 @@ type ResponseRequestOptions = JsonRequestOptions & {
   acceptedStatuses?: number[];
 };
 
+/**
+ * The current SDK version string.
+ */
 export const SDK_VERSION = "0.2.5";
 
+/**
+ * The primary entry point for interacting with the Floe API.
+ *
+ * @remarks
+ * `FloeClient` manages authentication, retries, timeouts, upload chunking,
+ * resumable uploads, and streaming downloads. Create one instance and reuse
+ * it for the lifetime of your application.
+ *
+ * @example
+ * ```ts
+ * const client = new FloeClient({
+ *   baseUrl: "https://api.floe.tech/v1",
+ *   auth: { apiKey: "sk_..." },
+ * });
+ *
+ * // Upload a file
+ * const result = await client.uploadBlob(blob, { filename: "clip.mp4" });
+ * console.log(result.fileId);
+ *
+ * // Download it back
+ * const bytes = await client.downloadFile(result.fileId);
+ * ```
+ */
 export class FloeClient {
+  /** The SDK version string. */
   static readonly VERSION = SDK_VERSION;
   private static readonly DEFAULT_FINALIZE_MAX_WAIT_MS = 60 * 60_000;
   private static readonly DEFAULT_FINALIZE_POLL_INTERVAL_MS = 5_000;
@@ -68,6 +95,13 @@ export class FloeClient {
   private compatibilityWarningAttempted = false;
   private compatibilityWarningInFlight = false;
 
+  /**
+   * Creates a new Floe client.
+   *
+   * @param config - Client configuration. All fields are optional; sensible
+   *   defaults are applied for a local development server.
+   * @throws {FloeError} If no `fetch` implementation is available.
+   */
   constructor(config: FloeClientConfig = {}) {
     this.baseUrl = normalizeBaseUrl(config.baseUrl);
 
@@ -86,6 +120,28 @@ export class FloeClient {
     this.compatibilityCheckMode = config.compatibilityCheck ?? "off";
   }
 
+  /**
+   * Initiates a new upload session with the Floe server.
+   *
+   * @remarks
+   * Call this before uploading chunks via {@link FloeClient.uploadChunk}.
+   * The server determines the final chunk size and total number of chunks.
+   *
+   * @param input   - Upload parameters (filename, content type, size, etc.).
+   * @param options - Optional request options (signal, idempotency key, etc.).
+   * @returns The upload session details including `uploadId` and `chunkSize`.
+   * @throws {FloeApiError} On server-side validation or authentication errors.
+   *
+   * @example
+   * ```ts
+   * const upload = await client.createUpload({
+   *   filename: "clip.mp4",
+   *   contentType: "video/mp4",
+   *   sizeBytes: blob.size,
+   * });
+   * console.log(upload.uploadId, upload.totalChunks);
+   * ```
+   */
   async createUpload(
     input: CreateUploadInput,
     options: RequestOptions = {},
@@ -103,6 +159,24 @@ export class FloeClient {
     });
   }
 
+  /**
+   * Uploads a single chunk of a multipart upload.
+   *
+   * @param uploadId - The upload session identifier.
+   * @param index    - Zero-based chunk index.
+   * @param chunk    - The chunk data as a `Blob`.
+   * @param sha256   - SHA-256 hex digest of the chunk contents.
+   * @param options  - Optional request options.
+   * @returns Confirmation including whether the chunk was newly stored or reused.
+   * @throws {FloeApiError} On invalid chunk index or checksum mismatch.
+   *
+   * @example
+   * ```ts
+   * const piece = blob.slice(0, chunkSize);
+   * const sha = await sha256Hex(await piece.arrayBuffer());
+   * await client.uploadChunk(uploadId, 0, piece, sha);
+   * ```
+   */
   async uploadChunk(
     uploadId: string,
     index: number,
@@ -123,6 +197,14 @@ export class FloeClient {
     });
   }
 
+  /**
+   * Retrieves the current status of an upload session.
+   *
+   * @param uploadId - The upload session identifier.
+   * @param options  - Optional request options and query flags.
+   * @returns The full upload status including received chunks and diagnostics.
+   * @throws {FloeApiError} If the upload is not found (404).
+   */
   async getUploadStatus(
     uploadId: string,
     options: RequestOptions & { includeBlobId?: boolean; includeWalrusDebug?: boolean } = {},
@@ -137,6 +219,19 @@ export class FloeClient {
     });
   }
 
+  /**
+   * Requests finalization of an upload session.
+   *
+   * @remarks
+   * The server may return immediately with `"ready"` if the blob is already
+   * stored, or `"finalizing"` if processing is still in progress. Use
+   * {@link FloeClient.waitForUploadReady} to poll until the blob is ready.
+   *
+   * @param uploadId - The upload session identifier.
+   * @param opts     - Optional request options and query flags.
+   * @returns A ready or finalizing response.
+   * @throws {FloeApiError} On terminal errors during finalization.
+   */
   async completeUpload(
     uploadId: string,
     opts: RequestOptions & { includeBlobId?: boolean; includeWalrusDebug?: boolean } = {},
@@ -159,6 +254,14 @@ export class FloeClient {
     return response as CompleteUploadResponse;
   }
 
+  /**
+   * Cancels an in-progress upload session.
+   *
+   * @param uploadId - The upload session identifier.
+   * @param options  - Optional request options.
+   * @returns Confirmation of cancellation with the final status.
+   * @throws {FloeApiError} If the upload cannot be canceled.
+   */
   async cancelUpload(
     uploadId: string,
     options: RequestOptions = {},
@@ -166,6 +269,17 @@ export class FloeClient {
     return this.requestJson("DELETE", `/uploads/${encodeURIComponent(uploadId)}`, options);
   }
 
+  /**
+   * Retrieves the health status of the Floe server.
+   *
+   * @remarks
+   * Unlike other methods, this endpoint returns a `503` status when the
+   * server is unhealthy. The method treats both `200` and `503` as successful
+   * responses (no error is thrown for `503`).
+   *
+   * @param options - Optional request options.
+   * @returns The full health response including dependency checks.
+   */
   async getHealth(options: RequestOptions = {}): Promise<FloeHealthResponse> {
     const response = await this.requestResponse("GET", this.rootPath("/health"), {
       ...options,
@@ -178,10 +292,29 @@ export class FloeClient {
     };
   }
 
+  /**
+   * Retrieves server version and compatibility information.
+   *
+   * @param options - Optional request options.
+   * @returns The version response including supported SDK/CLI ranges.
+   */
   async getVersion(options: RequestOptions = {}): Promise<FloeVersionResponse> {
     return this.requestJson<FloeVersionResponse>("GET", this.rootPath("/version"), options);
   }
 
+  /**
+   * Checks whether the current SDK version is compatible with the server.
+   *
+   * @remarks
+   * Fetches the server's version info (or uses a pre-fetched copy) and
+   * evaluates whether the client version satisfies the server's semver range.
+   *
+   * @param options - Optional request options and version overrides.
+   * @param options.client       - Which product to check (`"sdk"` or `"cli"`).
+   * @param options.currentVersion - The version string to check (defaults to `SDK_VERSION`).
+   * @param options.versionInfo  - Pre-fetched version response to avoid an extra request.
+   * @returns The compatibility check result with `compatible` boolean.
+   */
   async checkCompatibility(
     options: RequestOptions & {
       client?: FloeCompatibilityTarget;
@@ -217,6 +350,14 @@ export class FloeClient {
     };
   }
 
+  /**
+   * Retrieves metadata for a stored file.
+   *
+   * @param fileId - The file identifier.
+   * @param opts   - Optional request options.
+   * @returns File metadata including size, MIME type, owner, and expiry info.
+   * @throws {FloeApiError} If the file is not found.
+   */
   async getFileMetadata(
     fileId: string,
     opts: RequestOptions & { includeBlobId?: boolean } = {},
@@ -230,10 +371,26 @@ export class FloeClient {
     });
   }
 
+  /**
+   * Retrieves the manifest (layout) for a stored file.
+   *
+   * @param fileId - The file identifier.
+   * @param opts   - Optional request options.
+   * @returns The manifest describing the file's segment layout.
+   * @throws {FloeApiError} If the file is not found.
+   */
   async getFileManifest(fileId: string, opts: RequestOptions = {}): Promise<FileManifestResponse> {
     return this.requestJson("GET", `/files/${encodeURIComponent(fileId)}/manifest`, opts);
   }
 
+  /**
+   * Renews (extends) the Walrus storage duration for a file.
+   *
+   * @param fileId  - The file identifier.
+   * @param options - Renewal options including the number of additional epochs.
+   * @returns Confirmation with the new expiry epoch.
+   * @throws {FloeApiError} If the file is not found or renewal fails.
+   */
   async renewFile(fileId: string, options: RenewFileOptions): Promise<FileRenewResponse> {
     return this.requestJson("POST", `/files/${encodeURIComponent(fileId)}/renew`, {
       ...options,
@@ -244,10 +401,33 @@ export class FloeClient {
     });
   }
 
+  /**
+   * Returns the direct stream URL for a file.
+   *
+   * @remarks
+   * This is a synchronous helper — no network request is made. The URL can
+   * be used with any HTTP client, `<video>` tag, or `fetch`.
+   *
+   * @param fileId - The file identifier.
+   * @returns The absolute URL for streaming the file.
+   */
   getFileStreamUrl(fileId: string): string {
     return joinUrl(this.baseUrl, `/files/${encodeURIComponent(fileId)}/stream`);
   }
 
+  /**
+   * Streams file data as an HTTP `Response`.
+   *
+   * @remarks
+   * Supports range requests for partial downloads. The returned `Response`
+   * body is a `ReadableStream` — use `.arrayBuffer()`, `.blob()`, or pipe
+   * to a WritableStream for consumption.
+   *
+   * @param fileId  - The file identifier.
+   * @param options - Stream options including optional byte range.
+   * @returns A `Response` with the file data.
+   * @throws {FloeApiError} If the file is not found.
+   */
   async streamFile(fileId: string, options: FileStreamOptions = {}): Promise<Response> {
     const rangeHeader = this.buildRangeHeader(options.rangeStart, options.rangeEnd);
     return this.requestResponse("GET", `/files/${encodeURIComponent(fileId)}/stream`, {
@@ -259,6 +439,18 @@ export class FloeClient {
     });
   }
 
+  /**
+   * Performs a HEAD request to get file stream metadata without downloading.
+   *
+   * @remarks
+   * Useful for checking file size, content type, and range support before
+   * starting a download.
+   *
+   * @param fileId  - The file identifier.
+   * @param options - Stream options including optional byte range.
+   * @returns Response metadata and the raw `Response` object.
+   * @throws {FloeApiError} If the file is not found.
+   */
   async headFileStream(
     fileId: string,
     options: FileStreamOptions = {},
@@ -282,17 +474,48 @@ export class FloeClient {
     };
   }
 
+  /**
+   * Downloads a file entirely into memory as a `Uint8Array`.
+   *
+   * @param fileId  - The file identifier.
+   * @param options - Stream options including optional byte range.
+   * @returns The file contents as a byte array.
+   * @throws {FloeApiError} If the file is not found.
+   */
   async downloadFile(fileId: string, options: FileStreamOptions = {}): Promise<Uint8Array> {
     const res = await this.streamFile(fileId, options);
     const ab = await res.arrayBuffer();
     return new Uint8Array(ab);
   }
 
+  /**
+   * Downloads a file entirely into memory as a `Blob`.
+   *
+   * @param fileId  - The file identifier.
+   * @param options - Stream options including optional byte range.
+   * @returns The file contents as a `Blob`.
+   * @throws {FloeApiError} If the file is not found.
+   */
   async downloadFileAsBlob(fileId: string, options: FileStreamOptions = {}): Promise<Blob> {
     const res = await this.streamFile(fileId, options);
     return await res.blob();
   }
 
+  /**
+   * Downloads a file to a local file path (Node.js only).
+   *
+   * @remarks
+   * Uses `node:fs`, `node:path`, and `node:stream/promises` internally.
+   * Directories are created recursively by default. Only available in
+   * Node.js environments.
+   *
+   * @param fileId   - The file identifier.
+   * @param filePath - Absolute or relative path to write the file to.
+   * @param options  - Download options including directory creation and overwrite.
+   * @returns Download result with path, bytes written, and response metadata.
+   * @throws {FloeError} If the file already exists and `overwrite` is `false`.
+   * @throws {FloeApiError} If the file is not found on the server.
+   */
   async downloadFileToPath(
     fileId: string,
     filePath: string,
@@ -363,6 +586,37 @@ export class FloeClient {
     };
   }
 
+  /**
+   * Uploads a `Blob` with automatic chunking, parallel workers, and resume support.
+   *
+   * @remarks
+   * This is the primary upload method. It handles the full lifecycle:
+   * 1. Resumes from a stored upload ID (if available).
+   * 2. Creates a new upload session if needed.
+   * 3. Splits the blob into chunks and uploads them in parallel.
+   * 4. Requests finalization and polls until the blob is stored.
+   * 5. Cleans up the resume store entry.
+   *
+   * @param blob    - The `Blob` or `File` to upload.
+   * @param options - Upload configuration including filename, parallelism, and callbacks.
+   * @returns Upload result with `fileId`, `sizeBytes`, and chunk information.
+   * @throws {FloeError} If `blob` is not a valid Blob or `filename` is missing.
+   * @throws {FloeApiError} On server-side errors during any upload phase.
+   *
+   * @example
+   * ```ts
+   * const result = await client.uploadBlob(blob, {
+   *   filename: "clip.mp4",
+   *   contentType: "video/mp4",
+   *   parallel: 4,
+   *   onProgress: (p) => {
+   *     const pct = ((p.uploadedChunks / p.totalChunks) * 100).toFixed(1);
+   *     console.log(`${pct}% uploaded`);
+   *   },
+   * });
+   * console.log("File ID:", result.fileId);
+   * ```
+   */
   async uploadBlob(blob: Blob, options: UploadBlobOptions): Promise<UploadBlobResult> {
     if (!isBlobLike(blob)) {
       throw new FloeError("uploadBlob requires a Blob/File input");
@@ -568,6 +822,15 @@ export class FloeClient {
     };
   }
 
+  /**
+   * Uploads raw bytes by wrapping them in a `Blob` and delegating to
+   * {@link FloeClient.uploadBlob}.
+   *
+   * @param bytes   - The byte data to upload.
+   * @param options - Upload configuration (same as `uploadBlob`).
+   * @returns Upload result with `fileId` and chunk information.
+   * @throws {FloeError} If the input is empty or `filename` is missing.
+   */
   async uploadBytes(
     bytes: Uint8Array | ArrayBuffer,
     options: UploadBlobOptions,
@@ -581,6 +844,29 @@ export class FloeClient {
     return this.uploadBlob(blob, options);
   }
 
+  /**
+   * Uploads a file from the local filesystem (Node.js only).
+   *
+   * @remarks
+   * Reads the file using `node:fs/promises`, infers the MIME type from
+   * the file extension, and delegates to {@link FloeClient.uploadBlob}.
+   * Only available in Node.js environments.
+   *
+   * @param filePath - Absolute or relative path to the file.
+   * @param options  - Upload configuration. `filename` defaults to the
+   *   basename of `filePath`.
+   * @returns Upload result with `fileId` and chunk information.
+   * @throws {FloeError} If the path does not point to a regular file.
+   * @throws {FloeApiError} On server-side errors during upload.
+   *
+   * @example
+   * ```ts
+   * const result = await client.uploadFile("./video.mp4", {
+   *   contentType: "video/mp4",
+   *   epochs: 5,
+   * });
+   * ```
+   */
   async uploadFile(filePath: string, options: UploadFileOptions = {}): Promise<UploadBlobResult> {
     const dynamicImport = new Function("s", "return import(s)") as <T>(
       specifier: string,
@@ -623,6 +909,20 @@ export class FloeClient {
     });
   }
 
+  /**
+   * Polls an upload session until it reaches `"ready"` status.
+   *
+   * @remarks
+   * Use this after {@link FloeClient.completeUpload} returns
+   * `"finalizing"` to wait for the server to finish storing the blob.
+   * The method respects `AbortSignal` and supports configurable timeouts.
+   *
+   * @param uploadId - The upload session identifier.
+   * @param options  - Polling options including max wait time and interval.
+   * @returns The ready response with `fileId` and `sizeBytes`.
+   * @throws {FloeError} If finalization times out or the upload fails.
+   * @throws {DOMException} If the abort signal is triggered.
+   */
   async waitForUploadReady(
     uploadId: string,
     options: WaitForUploadReadyOptions = {},

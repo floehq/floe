@@ -10,6 +10,16 @@ function normalizeAddress(name: string, value?: string): string | undefined {
   return `0x${value.replace(/^0x/i, "").toLowerCase()}`;
 }
 
+/**
+ * Resolves a {@link HeaderProvider} to a plain header record.
+ *
+ * @remarks
+ * If the provider is a function, it is awaited and its result returned.
+ * When `provider` is `undefined`, the function returns `undefined`.
+ *
+ * @param provider - A static header record, an async header provider, or `undefined`.
+ * @returns The resolved header record, or `undefined` when no provider is given.
+ */
 export async function resolveHeaderProvider(
   provider?: HeaderProvider,
 ): Promise<Record<string, string | number | boolean | null | undefined> | undefined> {
@@ -20,6 +30,23 @@ export async function resolveHeaderProvider(
   return provider;
 }
 
+/**
+ * Converts an {@link AuthConfig} into a set of HTTP headers.
+ *
+ * @remarks
+ * Each present field in `auth` maps to a specific header:
+ * - `apiKey`          → `x-api-key`
+ * - `bearerToken`     → `Authorization: Bearer <token>`
+ * - `authUser`        → `x-auth-user`
+ * - `walletAddress`   → `x-wallet-address` (normalised, lowercased, `0x`-prefixed)
+ * - `ownerAddress`    → `x-owner-address` (normalised, lowercased, `0x`-prefixed)
+ *
+ * Wallet and owner addresses are validated as 32-byte Sui hex addresses.
+ *
+ * @param auth - Authentication configuration.
+ * @returns A record of HTTP headers.
+ * @throws {Error} If `walletAddress` or `ownerAddress` is not a valid Sui address.
+ */
 export function headersFromAuth(auth?: AuthConfig): Record<string, string> {
   if (!auth) return {};
 

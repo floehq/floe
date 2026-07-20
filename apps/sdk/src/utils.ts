@@ -1,8 +1,14 @@
 import type { JsonRequestOptions, RetryConfig } from "./types.js";
 import { FloeApiError, FloeError, type FloeApiErrorBody } from "./errors.js";
 
+/**
+ * Default base URL for the Floe API.
+ */
 export const DEFAULT_BASE_URL = "http://127.0.0.1:3001/v1";
 
+/**
+ * Default retry configuration applied when no overrides are provided.
+ */
 export const DEFAULT_RETRY: Required<RetryConfig> = {
   maxAttempts: 4,
   baseDelayMs: 300,
@@ -10,6 +16,12 @@ export const DEFAULT_RETRY: Required<RetryConfig> = {
   retryOnStatuses: [408, 425, 429, 500, 502, 503, 504],
 };
 
+/**
+ * Merges a partial {@link RetryConfig} with SDK defaults.
+ *
+ * @param retry - Caller-provided retry overrides.
+ * @returns A complete retry configuration with all fields populated.
+ */
 export function withDefaultRetry(retry?: RetryConfig): Required<RetryConfig> {
   return {
     maxAttempts: retry?.maxAttempts ?? DEFAULT_RETRY.maxAttempts,
@@ -19,12 +31,26 @@ export function withDefaultRetry(retry?: RetryConfig): Required<RetryConfig> {
   };
 }
 
+/**
+ * Joins a base URL and a path, normalising duplicate/trailing slashes.
+ *
+ * @param baseUrl - The base URL (e.g. `http://localhost:3001/v1`).
+ * @param path    - The path to append (e.g. `/uploads/123`).
+ * @returns The fully qualified URL string.
+ */
 export function joinUrl(baseUrl: string, path: string): string {
   const base = baseUrl.replace(/\/+$/, "");
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   return `${base}${normalizedPath}`;
 }
 
+/**
+ * Serialises a query parameter record into a `?key=value` string.
+ *
+ * @param query - Key-value pairs to encode. `undefined` values are skipped.
+ * @returns A query string including the leading `?`, or an empty string when
+ *          `query` is empty / `undefined`.
+ */
 export function buildQuery(query?: Record<string, string | number | boolean | undefined>): string {
   if (!query) return "";
 
@@ -38,6 +64,12 @@ export function buildQuery(query?: Record<string, string | number | boolean | un
   return qs ? `?${qs}` : "";
 }
 
+/**
+ * Applies a header record to a `Headers` instance, skipping null/undefined values.
+ *
+ * @param target  - The `Headers` object to mutate.
+ * @param headers - Header name/value pairs to apply.
+ */
 export function applyHeaders(
   target: Headers,
   headers?: Record<string, string | number | boolean | null | undefined>,
@@ -49,6 +81,15 @@ export function applyHeaders(
   }
 }
 
+/**
+ * Parses the `Retry-After` header from a `Response`.
+ *
+ * @remarks
+ * Supports both the integer-seconds format and the HTTP-date format.
+ *
+ * @param headers - Response headers.
+ * @returns Delay in milliseconds, or `undefined` if the header is absent or invalid.
+ */
 export function parseRetryAfterMs(headers: Headers): number | undefined {
   const raw = headers.get("retry-after");
   if (!raw) return undefined;
@@ -67,6 +108,14 @@ export function parseRetryAfterMs(headers: Headers): number | undefined {
   return undefined;
 }
 
+/**
+ * Sleeps for the given duration, respecting an optional abort signal.
+ *
+ * @param ms     - Duration in milliseconds.
+ * @param signal - When aborted, the sleep rejects with an `AbortError`.
+ * @returns A promise that resolves after the delay or rejects on abort.
+ * @throws {DOMException} With name `"AbortError"` if `signal` is aborted.
+ */
 export async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return;
 
@@ -95,12 +144,27 @@ export async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * Computes an exponential back-off delay with jitter.
+ *
+ * @param attempt    - The current attempt number (1-based).
+ * @param baseDelayMs - Base delay in milliseconds.
+ * @param maxDelayMs  - Maximum delay cap in milliseconds.
+ * @returns Delay in milliseconds before the next retry.
+ */
 export function computeBackoffMs(attempt: number, baseDelayMs: number, maxDelayMs: number): number {
   const exp = Math.min(maxDelayMs, baseDelayMs * 2 ** Math.max(0, attempt - 1));
   const jitter = Math.floor(Math.random() * Math.max(1, Math.floor(exp * 0.2)));
   return Math.min(maxDelayMs, exp + jitter);
 }
 
+/**
+ * Normalises and validates a base URL.
+ *
+ * @param baseUrl - The raw base URL string.
+ * @returns The trimmed URL with trailing slashes removed.
+ * @throws {FloeError} If the URL does not start with `http://` or `https://`.
+ */
 export function normalizeBaseUrl(baseUrl?: string): string {
   const url = (baseUrl ?? DEFAULT_BASE_URL).trim();
   if (!/^https?:\/\//.test(url)) {
@@ -109,6 +173,15 @@ export function normalizeBaseUrl(baseUrl?: string): string {
   return url.replace(/\/+$/, "");
 }
 
+/**
+ * Safely parses the response body as a {@link FloeApiErrorBody}.
+ *
+ * @remarks
+ * Never throws — returns `undefined` when the body is empty or not valid JSON.
+ *
+ * @param response - The HTTP response to read.
+ * @returns The parsed error body, or `undefined`.
+ */
 export async function parseErrorBodySafe(
   response: Response,
 ): Promise<FloeApiErrorBody | undefined> {
@@ -121,6 +194,13 @@ export async function parseErrorBodySafe(
   }
 }
 
+/**
+ * Constructs a {@link FloeApiError} from a failed HTTP response.
+ *
+ * @param response - The HTTP response.
+ * @param body     - Optionally pre-parsed error body.
+ * @returns A fully populated {@link FloeApiError}.
+ */
 export function toApiError(response: Response, body?: FloeApiErrorBody): FloeApiError {
   const err = body?.error;
   return new FloeApiError({
@@ -134,6 +214,19 @@ export function toApiError(response: Response, body?: FloeApiErrorBody): FloeApi
   });
 }
 
+/**
+ * Computes the byte length of a single chunk within a chunked upload.
+ *
+ * @remarks
+ * All chunks except the last are exactly `chunkSize` bytes. The final chunk
+ * holds the remaining bytes.
+ *
+ * @param index       - Zero-based chunk index.
+ * @param totalChunks - Total number of chunks.
+ * @param chunkSize   - Nominal chunk size in bytes.
+ * @param totalSize   - Total file size in bytes.
+ * @returns Byte length of the chunk, or `0` for out-of-range indices.
+ */
 export function chunkByteLength(
   index: number,
   totalChunks: number,
@@ -146,6 +239,16 @@ export function chunkByteLength(
   return Math.max(0, totalSize - used);
 }
 
+/**
+ * Computes the SHA-256 hash of a byte buffer and returns it as a hex string.
+ *
+ * @remarks
+ * Uses `crypto.subtle` when available and falls back to a pure-JS
+ * implementation for environments without the Web Crypto API.
+ *
+ * @param input - The bytes to hash.
+ * @returns A lowercase hex-encoded SHA-256 digest.
+ */
 export async function sha256Hex(input: Uint8Array | ArrayBuffer): Promise<string> {
   const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   const copy = new Uint8Array(bytes.byteLength);
@@ -257,6 +360,12 @@ function rotr(x: number, n: number): number {
   return (x >>> n) | (x << (32 - n));
 }
 
+/**
+ * Checks whether a value looks like a `Blob` (duck-typing check).
+ *
+ * @param value - The value to test.
+ * @returns `true` when `value` has `arrayBuffer`, `slice`, and `size` properties.
+ */
 export function isBlobLike(value: unknown): value is Blob {
   return (
     typeof value === "object" &&
@@ -267,6 +376,9 @@ export function isBlobLike(value: unknown): value is Blob {
   );
 }
 
+/**
+ * Internal request options that include a raw `body` alongside `json`.
+ */
 export type JsonRequestInternalOptions = JsonRequestOptions & {
   body?: BodyInit;
 };

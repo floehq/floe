@@ -1,5 +1,24 @@
 import type { ResumeStore } from "./types.js";
 
+/**
+ * Creates a {@link ResumeStore} backed by the browser's `localStorage`.
+ *
+ * @remarks
+ * Each entry is stored under a configurable key prefix (default:
+ * `"floe:sdk:resume:"`) to avoid collisions with other applications.
+ * Returns `null` silently when `localStorage` is unavailable (e.g., in
+ * private-browsing modes or server-side environments).
+ *
+ * @param prefix - Key prefix for stored entries.
+ * @returns A synchronous resume store.
+ *
+ * @example
+ * ```ts
+ * const store = createBrowserLocalStorageResumeStore();
+ * await store.set("my-upload-key", "upload-123");
+ * const id = await store.get("my-upload-key");
+ * ```
+ */
 export function createBrowserLocalStorageResumeStore(prefix = "floe:sdk:resume:"): ResumeStore {
   return {
     get(key) {
@@ -20,6 +39,25 @@ export function createBrowserLocalStorageResumeStore(prefix = "floe:sdk:resume:"
   };
 }
 
+/**
+ * Creates a {@link ResumeStore} that persists data to a local JSON file on disk.
+ *
+ * @remarks
+ * Only available in Node.js environments. Dynamically imports `node:fs/promises`,
+ * `node:os`, and `node:path` so the module can be loaded in any runtime without
+ * errors. The default file path is `~/.floe-sdk/resume-store.json`.
+ *
+ * @param options - Configuration options.
+ * @param options.filePath - Custom path for the resume store JSON file.
+ * @returns A promise that resolves to an async resume store.
+ *
+ * @example
+ * ```ts
+ * const store = await createNodeFileResumeStore();
+ * await store.set("video-upload", "upload-abc");
+ * const id = await store.get("video-upload");
+ * ```
+ */
 export async function createNodeFileResumeStore(options?: {
   filePath?: string;
 }): Promise<ResumeStore> {
