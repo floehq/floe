@@ -205,7 +205,7 @@ npm install -g @floehq/cli
 floe upload ./video.mp4 --epochs 3
 
 # Upload with parallel chunks
-foe upload ./video.mp4 --parallel 4
+floe upload ./video.mp4 --parallel 4
 
 # Resume a failed upload
 floe upload ./video.mp4 --resume <uploadId>

@@ -60,7 +60,7 @@ representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement at
-[INSERT CONTACT METHOD].
+the project maintainer via GitHub Issues.
 
 All complaints will be reviewed and investigated promptly and fairly.
 
