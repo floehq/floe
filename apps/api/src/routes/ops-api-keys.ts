@@ -18,7 +18,38 @@ export default async function opsApiKeysRoutes(app: FastifyInstance) {
 
   const store = getApiKeyStore();
 
-  app.get("/ops/api-keys", async (req, reply) => {
+  app.get(
+    "/ops/api-keys",
+    {
+      schema: {
+        tags: ["Ops"],
+        summary: "List API keys",
+        description:
+          "Returns all active API keys with their ID, owner, scopes, and tier. Requires operator admin authorization.",
+        security: [{ bearerToken: [] }],
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              keys: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    id: { type: "string" },
+                    owner: { type: ["string", "null"] },
+                    scopes: { type: "array", items: { type: "string" } },
+                    tier: { type: "string", enum: ["public", "authenticated"] },
+                  },
+                },
+              },
+              count: { type: "integer" },
+            },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
     const authz = await req.server.authProvider.authorizeOpsAccess({
       req,
       action: "upload_admin",
@@ -44,7 +75,32 @@ export default async function opsApiKeysRoutes(app: FastifyInstance) {
     });
   });
 
-  app.post("/ops/api-keys", async (req, reply) => {
+  app.post(
+    "/ops/api-keys",
+    {
+      schema: {
+        tags: ["Ops"],
+        summary: "Create API key",
+        description:
+          "Generate a new API key. Returns the secret only once. Requires operator admin authorization. FLOE_API_KEY_STORE must be set to 'postgres'.",
+        security: [{ bearerToken: [] }],
+        response: {
+          201: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              secret: { type: "string" },
+              owner: { type: ["string", "null"] },
+              scopes: { type: "array", items: { type: "string" } },
+              tier: { type: "string" },
+              createdAt: { type: "string", format: "date-time" },
+              message: { type: "string" },
+            },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
     if (!store.supportsLifecycle) {
       return sendApiError(
         reply,
@@ -113,7 +169,34 @@ export default async function opsApiKeysRoutes(app: FastifyInstance) {
     });
   });
 
-  app.delete("/ops/api-keys/:keyId", async (req, reply) => {
+  app.delete(
+    "/ops/api-keys/:keyId",
+    {
+      schema: {
+        tags: ["Ops"],
+        summary: "Revoke API key",
+        description:
+          "Permanently revoke an active API key by ID. Requires operator admin authorization. FLOE_API_KEY_STORE must be set to 'postgres'.",
+        security: [{ bearerToken: [] }],
+        params: {
+          type: "object",
+          required: ["keyId"],
+          properties: {
+            keyId: { type: "string", description: "API key ID to revoke" },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              revoked: { type: "boolean" },
+            },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
     if (!store.supportsLifecycle) {
       return sendApiError(
         reply,
@@ -159,7 +242,36 @@ export default async function opsApiKeysRoutes(app: FastifyInstance) {
     return reply.code(200).send({ id: keyId, revoked: true });
   });
 
-  app.post("/ops/api-keys/:keyId/rotate", async (req, reply) => {
+  app.post(
+    "/ops/api-keys/:keyId/rotate",
+    {
+      schema: {
+        tags: ["Ops"],
+        summary: "Rotate API key",
+        description:
+          "Generate a new secret for an existing API key. The old secret is immediately invalidated. Requires operator admin authorization. FLOE_API_KEY_STORE must be set to 'postgres'.",
+        security: [{ bearerToken: [] }],
+        params: {
+          type: "object",
+          required: ["keyId"],
+          properties: {
+            keyId: { type: "string", description: "API key ID to rotate" },
+          },
+        },
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              secret: { type: "string" },
+              rotatedAt: { type: "string", format: "date-time" },
+              message: { type: "string" },
+            },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
     if (!store.supportsLifecycle) {
       return sendApiError(
         reply,
