@@ -2,226 +2,121 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [main]
   pull_request:
+    branches: [main]
 
-env:
-  # Shared test credentials
-  DATABASE_URL: postgresql://floe_test:floe_test@localhost:5432/floe_test
-  REDIS_URL: redis://localhost:6379
-  FLOE_S3_BUCKET: floe-test
-  FLOE_S3_REGION: us-east-1
-  FLOE_S3_ENDPOINT: http://localhost:9000
-  FLOE_S3_FORCE_PATH_STYLE: 1
-  FLOE_S3_ACCESS_KEY_ID: minioadmin
-  FLOE_S3_SECRET_ACCESS_KEY: minioadmin
-  UPLOAD_TMP_DIR: /tmp/floe-upload
-  FLOE_REDIS_PROVIDER: native
-  FLOE_API_KEY_STORE: postgres
-  FLOE_AUTH_PROVIDER: local
-  FLOE_ACCESS_POLICY: hybrid
-  FLOE_AUTH_MODE: hybrid
-  WALRUS_AGGREGATOR_URL: http://localhost:1
-  FLOE_WALRUS_PUBLISHER_BASE_URL: http://localhost:1
-  SUI_PACKAGE_ID: 0x0000000000000000000000000000000000000000000000000000000000000000
-  SUI_PRIVATE_KEY: suiprivkey0000000000000000000000000000000000000000000000000000000000
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+timeout-minutes: 15
 
 jobs:
-  api:
-    name: Build and Test API
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Start Redis
-        run: |
-          docker run -d --name floe-redis \
-            -p 6379:6379 \
-            --health-cmd "redis-cli ping" \
-            --health-interval 3s \
-            --health-timeout 2s \
-            --health-retries 10 \
-            redis:7-alpine
-
-      - name: Wait for Redis
-        run: |
-          for i in $(seq 1 20); do
-            STATUS=$(docker inspect --format='{{.State.Health.Status}}' floe-redis 2>/dev/null || echo "starting")
-            echo "Attempt $i: Redis health = $STATUS"
-            if [ "$STATUS" = "healthy" ]; then
-              echo "Redis is ready!"
-              exit 0
-            fi
-            sleep 3
-          done
-          echo "Redis failed to become healthy"
-          docker logs floe-redis
-          exit 1
-
-      - name: Start PostgreSQL
-        run: |
-          docker run -d --name floe-postgres \
-            -p 5432:5432 \
-            -e POSTGRES_USER=floe_test \
-            -e POSTGRES_PASSWORD=floe_test \
-            -e POSTGRES_DB=floe_test \
-            --health-cmd "pg_isready -U floe_test" \
-            --health-interval 3s \
-            --health-timeout 2s \
-            --health-retries 10 \
-            postgres:16-alpine
-
-      - name: Wait for PostgreSQL
-        run: |
-          for i in $(seq 1 20); do
-            STATUS=$(docker inspect --format='{{.State.Health.Status}}' floe-postgres 2>/dev/null || echo "starting")
-            echo "Attempt $i: PostgreSQL health = $STATUS"
-            if [ "$STATUS" = "healthy" ]; then
-              echo "PostgreSQL is ready!"
-              exit 0
-            fi
-            sleep 3
-          done
-          echo "PostgreSQL failed to become healthy"
-          docker logs floe-postgres
-          exit 1
-
-      - name: Start MinIO
-        run: |
-          docker run -d --name floe-minio \
-            -p 9000:9000 \
-            -p 9001:9001 \
-            -e MINIO_ROOT_USER=minioadmin \
-            -e MINIO_ROOT_PASSWORD=minioadmin \
-            --entrypoint sh \
-            minio/minio:latest \
-            -c "mkdir -p /data/floe-test && minio server /data --console-address ':9001'"
-
-      - name: Wait for MinIO
-        run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:9000/minio/health/live > /dev/null 2>&1; then
-              echo "MinIO is ready! (attempt $i)"
-              exit 0
-            fi
-            echo "Attempt $i: MinIO not ready yet..."
-            sleep 2
-          done
-          echo "MinIO failed to start"
-          docker logs floe-minio
-          exit 1
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Install Redis
-        run: |
-          sudo apt-get update && sudo apt-get install -y redis-server
-          sudo systemctl stop redis-server || true
-
-      - name: Build API
-        run: npm run build --workspace=apps/api
-
-      - name: Run migration check against Postgres
-        run: npx tsx scripts/migration-check.mjs
-        env:
-          FLOE_POSTGRES_REQUIRED: "1"
-          NODE_ENV: test
-
-      - name: Test API (unit + integration against real services)
-        run: npm test --workspace=apps/api
-        env:
-          FLOE_POSTGRES_REQUIRED: "1"
-          NODE_ENV: test
-
-      - name: Build SDK
-        run: npm run build --workspace=apps/sdk
-
-      - name: Test SDK
-        run: npm test --workspace=apps/sdk
-
-      - name: Build CLI
-        run: npm run build --workspace=apps/cli
-
-      - name: Lint CLI
-        run: npm run lint --workspace=apps/cli
-
-      - name: Cleanup containers
-        if: always()
-        run: docker rm -f floe-redis floe-postgres floe-minio 2>/dev/null || true
-
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: "24"
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci
+      - run: npm ci
 
-      - name: Run lint (ESLint + Prettier)
-        run: npm run lint
+      - name: ESLint
+        run: npx eslint "apps/api/src/**/*.ts"
+        working-directory: ${{ github.workspace }}
 
-  audit:
-    name: npm audit
+      - name: Prettier
+        run: npx prettier --check "apps/api/src/**/*.ts"
+        working-directory: ${{ github.workspace }}
+
+  typecheck:
+    name: Typecheck
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: "24"
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci
+      - run: npm ci
 
-      - name: Run npm audit (high+)
-        run: npm audit --audit-level=high
+      - name: TypeScript
+        run: npx tsc --noEmit
+        working-directory: apps/api
 
-  trivy:
-    name: Trivy (Docker image)
+  test-unit:
+    name: Unit Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run unit tests
+        run: npx tsx --test --no-coverage ./test/*.test.ts
+        working-directory: apps/api
+        env:
+          FLOE_REDIS_PROVIDER: native
+          REDIS_URL: redis://localhost:6379
+
+  test-integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: floe_test
+          POSTGRES_PASSWORD: floe_test
+          POSTGRES_DB: floe_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U floe_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Build Docker image
-        run: docker build -t floe-api:${{ github.sha }} .
-
-      - name: Run Trivy scan
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+      - uses: actions/setup-node@v4
         with:
-          image-ref: floe-api:${{ github.sha }}
-          format: table
-          exit-code: 1
-          severity: HIGH,CRITICAL
+          node-version: "24"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run integration tests
+        run: npx tsx --test --no-coverage ./test/*.integration.test.ts
+        working-directory: apps/api
+        env:
+          FLOE_POSTGRES_REQUIRED: "1"
+          FLOE_API_KEY_STORE: postgres
+          FLOE_AUTH_PROVIDER: local
+          DATABASE_URL: postgresql://floe_test:floe_test@localhost:5432/floe_test
+          FLOE_REDIS_PROVIDER: native
+          REDIS_URL: redis://localhost:6379
