@@ -223,6 +223,7 @@ before(async () => {
 });
 
 after(async () => {
+  await redisModule.closeRedis().catch(() => {});
   if (redisProcess) {
     redisProcess.kill();
     redisProcess = null;
