@@ -1,7 +1,7 @@
 import { Transaction } from "@mysten/sui/transactions";
+import type { SuiObjectChange } from "@mysten/sui/client";
 import { getSuiSigner } from "../state/sui.js";
 import { suiCircuit } from "../services/circuit-breaker/instances.js";
-import { CircuitBreakerError } from "../services/circuit-breaker/index.js";
 
 const SUI_CLOCK_OBJECT_ID = "0x6";
 
@@ -72,7 +72,7 @@ export async function finalizeFileMetadata(input: FinalizeFileInput): Promise<Fi
     }
 
     const created = result.objectChanges?.find(
-      (c: any) => c.type === "created" && c.objectType?.includes("::file::FileMeta"),
+      (c: SuiObjectChange) => c.type === "created" && c.objectType?.includes("::file::FileMeta"),
     );
 
     if (!created || !("objectId" in created)) {

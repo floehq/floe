@@ -67,24 +67,24 @@ function createSignerFromEnv(key: string): Ed25519Keypair {
     try {
       const arr = JSON.parse(key);
       return Ed25519Keypair.fromSecretKey(Uint8Array.from(arr).slice(0, 32));
-    } catch (err: any) {
-      throw new Error(`Invalid JSON array SUI_PRIVATE_KEY: ${err?.message ?? "parse error"}`);
+    } catch (err: unknown) {
+      throw new Error(`Invalid JSON array SUI_PRIVATE_KEY: ${err instanceof Error ? err.message : "parse error"}`);
     }
   }
 
   if (/^[A-Za-z0-9+/]+=*$/.test(key)) {
     try {
       return Ed25519Keypair.fromSecretKey(fromB64(key));
-    } catch (err: any) {
-      throw new Error(`Invalid base64 SUI_PRIVATE_KEY: ${err?.message ?? "decode error"}`);
+    } catch (err: unknown) {
+      throw new Error(`Invalid base64 SUI_PRIVATE_KEY: ${err instanceof Error ? err.message : "decode error"}`);
     }
   }
 
   if (/^(0x)?[0-9a-fA-F]+$/.test(key)) {
     try {
       return Ed25519Keypair.fromSecretKey(fromHEX(key.replace(/^0x/, "")).slice(0, 32));
-    } catch (err: any) {
-      throw new Error(`Invalid hex SUI_PRIVATE_KEY: ${err?.message ?? "decode error"}`);
+    } catch (err: unknown) {
+      throw new Error(`Invalid hex SUI_PRIVATE_KEY: ${err instanceof Error ? err.message : "decode error"}`);
     }
   }
 

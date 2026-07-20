@@ -81,7 +81,7 @@ process.on("unhandledRejection", (reason) => {
   rejectionCount += 1;
 
   if (rejectionCount > REJECTION_THRESHOLD) {
-    console.fatal(
+    console.error(
       `[fatal] ${rejectionCount} unhandled rejections in the last ${REJECTION_WINDOW_MS / 1_000}s — crashing to force restart`,
     );
     process.exit(1);
@@ -311,7 +311,7 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
           "Resumable chunk uploads with S3 storage, Walrus blob publish, and Sui metadata finalization.",
         version: "1.0.0",
       },
-      servers: [{ url: "http://localhost:3000", description: "Development" }],
+      servers: [{ url: "http://localhost:3001", description: "Development" }],
       components: {
         securitySchemes: {
           apiKey: {
@@ -331,6 +331,7 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
         { name: "Uploads", description: "Chunk upload lifecycle" },
         { name: "Files", description: "File metadata and streaming" },
         { name: "Health", description: "Service health and metrics" },
+        { name: "Ops", description: "Operator management and administration" },
       ],
     },
   });
@@ -522,10 +523,8 @@ export async function start() {
     app.log.info({ signal }, "Shutting down server");
 
     try {
-      await stopUploadGc();
-      await stopUploadFinalizeWorker();
-      await closePostgres();
-      await closeRedis();
+      // app.close() triggers the onClose hook which handles all resource cleanup
+      // (GC, finalize worker, Postgres, Redis, Sentry) in the correct order.
       await app.close();
       process.exit(0);
     } catch (err) {

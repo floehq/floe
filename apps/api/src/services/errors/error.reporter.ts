@@ -12,7 +12,16 @@ import { createRequire } from "module";
 const _require = createRequire(import.meta.url);
 
 let sentryInitialized = false;
-let sentryModule: any = null;
+interface SentryScope {
+  setExtras(context: Record<string, unknown>): void;
+}
+interface SentryModule {
+  init(options: Record<string, unknown>): void;
+  withScope(fn: (scope: SentryScope) => void): void;
+  captureException(error: unknown): string;
+  close(timeoutMs: number): Promise<void>;
+}
+let sentryModule: SentryModule | null = null;
 let activeDsn: string | undefined;
 
 /** DSN string, read once at init time. */
@@ -38,9 +47,10 @@ export function initErrorReporter(log: { info: (msg: string) => void }): void {
   }
 
   try {
-    sentryModule = _require("@sentry/node");
+    const mod: SentryModule = _require("@sentry/node");
+    sentryModule = mod;
 
-    sentryModule.init({
+    mod.init({
       dsn,
       // At minimum capture errors — tracing is opt-in via env vars below.
       tracesSampleRate: parseTracesSampleRate(),
@@ -83,12 +93,13 @@ export function captureException(error: unknown, context?: Record<string, unknow
     return;
   }
 
+  const mod = sentryModule;
   try {
-    sentryModule.withScope((scope: any) => {
+    mod.withScope((scope: SentryScope) => {
       if (context) {
         scope.setExtras(context);
       }
-      sentryModule.captureException(error);
+      mod.captureException(error);
     });
   } catch {
     // Best-effort — if Sentry fails to report, we still have the

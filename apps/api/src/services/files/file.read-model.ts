@@ -1,3 +1,5 @@
+import type { FastifyReply } from "fastify";
+
 import { getSuiClient } from "../../state/sui.js";
 import { getIndexedFile, upsertIndexedFile } from "../../db/files.repository.js";
 import { isPostgresConfigured, isPostgresEnabled } from "../../state/postgres.js";
@@ -42,7 +44,7 @@ export type FileFieldsSource = "memory" | "postgres" | "sui";
 export type PostgresReadState = "disabled" | "healthy" | "degraded";
 
 export type CachedFileFieldsResult = {
-  fields: any | null;
+  fields: Record<string, unknown> | null;
   source: FileFieldsSource | null;
   postgresState: PostgresReadState;
 };
@@ -118,7 +120,7 @@ function parseOptionalString(raw: unknown): string | null {
   return null;
 }
 
-export function normalizeFileFields(fields: any): NormalizedFileFields | null {
+export function normalizeFileFields(fields: Record<string, unknown>): NormalizedFileFields | null {
   if (!fields || typeof fields !== "object") return null;
 
   const blobId = typeof fields.blob_id === "string" ? fields.blob_id.trim() : "";
@@ -170,7 +172,7 @@ export function getPublicStreamUrl(fileId: string): string | null {
   return `${base}/v1/files/${encodeURIComponent(fileId)}/stream`;
 }
 
-export function applyFileReadCacheHeaders(reply: any) {
+export function applyFileReadCacheHeaders(reply: FastifyReply) {
   if (canExposePublicFileRead()) {
     reply.header("Cache-Control", "public, max-age=31536000, immutable");
     return;
@@ -249,11 +251,11 @@ export class LruMap<V> {
   }
 }
 
-const fileFieldsMemoryCache = new LruMap<{ value: any; expiresAt: number; touchedAt: number }>(
+const fileFieldsMemoryCache = new LruMap<{ value: Record<string, unknown>; expiresAt: number; touchedAt: number }>(
   Math.floor(FILE_FIELDS_MEMORY_CACHE_MAX) || 5000,
 );
 
-function getMemoryFileFields(fileId: string): any | null {
+function getMemoryFileFields(fileId: string): Record<string, unknown> | null {
   if (!Number.isFinite(FILE_FIELDS_MEMORY_CACHE_TTL_MS) || FILE_FIELDS_MEMORY_CACHE_TTL_MS <= 0) {
     return null;
   }
@@ -268,7 +270,7 @@ function getMemoryFileFields(fileId: string): any | null {
   return hit.value;
 }
 
-function setMemoryFileFields(fileId: string, fields: any) {
+function setMemoryFileFields(fileId: string, fields: Record<string, unknown>) {
   if (!Number.isFinite(FILE_FIELDS_MEMORY_CACHE_TTL_MS) || FILE_FIELDS_MEMORY_CACHE_TTL_MS <= 0) {
     return;
   }
@@ -290,7 +292,7 @@ export function resetFileFieldsMemoryCacheForTests(): void {
 }
 
 export function applyFileLookupHeaders(
-  reply: any,
+  reply: FastifyReply,
   params: { source: FileFieldsSource | null; postgresState: PostgresReadState },
 ) {
   reply.header("x-floe-metadata-source", params.source ?? "unknown");

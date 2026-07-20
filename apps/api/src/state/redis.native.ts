@@ -458,7 +458,7 @@ export class NativeRedisClient implements RedisClient {
   private async connectInternal() {
     let host: string;
     let port: number;
-    let tls = false;
+    let useTls = false;
     let password: string | undefined;
     let username: string | undefined;
     let db: number | undefined;
@@ -478,13 +478,13 @@ export class NativeRedisClient implements RedisClient {
       }
       host = parsed.host;
       port = parsed.port;
-      tls = parsed.tls;
+      useTls = parsed.tls;
       password = parsed.password;
       username = parsed.username;
       db = parsed.db;
     }
 
-    const socket = tls
+    const socket = useTls
       ? tls.connect({ host, port })
       : net.createConnection({ host, port });
 

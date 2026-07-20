@@ -5,7 +5,6 @@ import { extractPresentedCredential } from "./auth.credentials.js";
 import type { AuthContext, AuthSubjectType } from "./auth.context.js";
 import type { ExternalVerifyResponse } from "../../types/auth-external.contract.js";
 import { externalAuthCircuit } from "../circuit-breaker/instances.js";
-import { CircuitBreakerError } from "../circuit-breaker/index.js";
 
 const EXTERNAL_AUTH_CACHE_MAX = 10_000;
 const externalAuthCache = new Map<string, { expiresAt: number; context: AuthContext }>();
@@ -170,7 +169,7 @@ async function verifyExternalCredential(req: FastifyRequest): Promise<AuthContex
         clearTimeout(timeout);
       }
     });
-  } catch (err) {
+  } catch {
     // CircuitBreakerError or any other throw from the circuit breaker
     return null;
   }

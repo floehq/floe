@@ -404,8 +404,6 @@ export async function teeCachedStreamRange(params: {
       throw capErr;
     }
 
-    let innerError: Error | null = null;
-
     try {
       await ensureStreamCacheDir();
 
@@ -504,7 +502,7 @@ export async function teeCachedStreamRange(params: {
         if (!cs.destroyed) cs.end();
       }
     } catch (err) {
-      innerError = err instanceof Error ? err : new Error(String(err));
+      const innerError = err instanceof Error ? err : new Error(String(err));
       // Destroy all consumer streams on any write failure (fetch error,
       // disk error, truncation, etc.) so clients don't hang indefinitely.
       for (const cs of consumerStreams) {
@@ -654,8 +652,6 @@ export async function teeCachedStreamBlob(params: {
       return;
     }
 
-    let innerError: Error | null = null;
-
     try {
       await ensureStreamCacheDir();
 
@@ -680,7 +676,7 @@ export async function teeCachedStreamBlob(params: {
       let bytesWritten = 0;
       const writeDone = new Promise<void>((resolveWrite, rejectWrite) => {
         const ws = fs.createWriteStream(tempPath, { flags: "wx" });
-        const rs = Readable.fromWeb(writeLeg as any);
+        const rs = Readable.fromWeb(writeLeg as unknown as ReadableStream<Uint8Array>);
         rs.on("data", (chunk: Uint8Array) => {
           bytesWritten += chunk.byteLength;
         });
@@ -690,7 +686,7 @@ export async function teeCachedStreamBlob(params: {
         rs.pipe(ws);
       });
 
-      const broadcastNode = Readable.fromWeb(broadcastLeg as any);
+      const broadcastNode = Readable.fromWeb(broadcastLeg as unknown as ReadableStream<Uint8Array>);
       broadcastNode.pipe(broadcastStream);
 
       await writeDone;
@@ -731,7 +727,7 @@ export async function teeCachedStreamBlob(params: {
         if (!cs.destroyed) cs.end();
       }
     } catch (err) {
-      innerError = err instanceof Error ? err : new Error(String(err));
+      const innerError = err instanceof Error ? err : new Error(String(err));
       // Destroy all consumer streams on any write failure (fetch error,
       // disk error, truncation, etc.) so clients don't hang indefinitely.
       for (const cs of consumerStreams) {

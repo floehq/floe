@@ -98,8 +98,8 @@ export class DiskChunkStore implements ChunkStore {
       try {
         ws = createWriteStream(tempPath, { flags: "wx" });
         break;
-      } catch (err: any) {
-        if (err.code !== "EEXIST") throw err;
+      } catch (err: unknown) {
+        if (err instanceof Error && (err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
 
         // Another writer may be in progress, or a previous attempt crashed.
         const finalExists2 = await fs.stat(finalPath).then(

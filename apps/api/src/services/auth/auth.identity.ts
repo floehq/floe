@@ -2,7 +2,6 @@ import type { FastifyRequest } from "fastify";
 
 import { AuthApiKeyStoreConfig, AuthProviderConfig } from "../../config/auth.config.js";
 import { buildLocalAuthContext, setApiKeyStore } from "./auth.api-key.js";
-import { type ApiKeyStore } from "./auth.api-key-store.js";
 import { buildPublicAuthContext, type RequestIdentity } from "./auth.context.js";
 import { buildExternalAuthContext } from "./auth.external.js";
 import { buildTokenAuthContext } from "./auth.token.js";

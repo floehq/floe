@@ -1,13 +1,14 @@
 import { parseBoolEnv } from "../utils/parseEnv.js";
 import { createRequire } from "module";
 import type { FastifyBaseLogger } from "fastify";
+import type { S3Client, HeadBucketCommand, CreateBucketCommand } from "@aws-sdk/client-s3";
 
 const require = createRequire(import.meta.url);
 
 type AwsS3Module = {
-  S3Client: new (...args: any[]) => any;
-  HeadBucketCommand: new (...args: any[]) => any;
-  CreateBucketCommand: new (...args: any[]) => any;
+  S3Client: typeof S3Client;
+  HeadBucketCommand: typeof HeadBucketCommand;
+  CreateBucketCommand: typeof CreateBucketCommand;
 };
 
 function loadAwsS3(): AwsS3Module {

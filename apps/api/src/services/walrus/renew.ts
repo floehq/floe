@@ -73,8 +73,9 @@ export async function renewWalrusBlob(params: WalrusRenewParams): Promise<Walrus
       expiresAt: Date.now() + WALRUS_RENEW_CACHE_TTL_MS,
     });
     return result;
-  } catch (err: any) {
-    const detail = err?.stderr || err?.stdout || err?.message || "unknown";
+  } catch (err: unknown) {
+    const e = err as Record<string, unknown> | undefined;
+    const detail = e?.stderr || e?.stdout || (err instanceof Error ? err.message : null) || "unknown";
     throw new Error(`WALRUS_RENEW_FAILED:${String(detail).slice(0, 1000)}`);
   }
 }

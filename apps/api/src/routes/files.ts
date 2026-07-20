@@ -1,4 +1,4 @@
-import { FastifyInstance } from "fastify";
+import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import fs from "node:fs/promises";
 import { Readable } from "node:stream";
 
@@ -144,10 +144,10 @@ function classifyStreamErrorReason(message: string): string {
   return "other";
 }
 
-function shouldExposeBlobId(req: any): boolean {
+function shouldExposeBlobId(req: FastifyRequest): boolean {
   // Default: never expose blobId unless explicitly requested.
   if (process.env.FLOE_EXPOSE_BLOB_ID === "1") return true;
-  const q = req?.query ?? {};
+  const q = (req?.query ?? {}) as Record<string, unknown>;
   const raw = q.includeBlobId ?? q.include_blob_id ?? q.includeStorage;
   return raw === "1" || raw === "true" || raw === true;
 }
@@ -162,7 +162,7 @@ function authzErrorCode(code?: string): "AUTH_REQUIRED" | "OWNER_MISMATCH" | "IN
   return "OWNER_MISMATCH";
 }
 
-function sendFileAccessDenied(reply: any, authz: { code?: string; message?: string }) {
+function sendFileAccessDenied(reply: FastifyReply, authz: { code?: string; message?: string }) {
   if (authz.code === "OWNER_MISMATCH") {
     return sendApiError(reply, 404, "FILE_NOT_FOUND", "File not found");
   }
@@ -181,13 +181,14 @@ async function resolveFileFields(id: string): Promise<CachedFileFieldsResult> {
   if (fileId) {
     try {
       out = await getFileFieldsCached(fileId);
-    } catch (err: any) {
-      const msg = String(err?.message ?? err ?? "");
+    } catch (err: unknown) {
+      const error = err as { message?: string; status?: number; statusCode?: number } | undefined;
+      const msg = String(error?.message ?? err ?? "");
       const isNotFound =
         /not.?found/i.test(msg) ||
         /NOT_FOUND/i.test(msg) ||
-        err?.status === 404 ||
-        err?.statusCode === 404;
+        error?.status === 404 ||
+        error?.statusCode === 404;
       if (!isNotFound) throw err;
     }
   }
@@ -636,7 +637,7 @@ export async function filesRoutes(app: FastifyInstance) {
       }
 
       const t0 = Date.now();
-      let fields: any | null;
+      let fields: Record<string, unknown> | null;
       let fieldsSource: FileFieldsSource | null;
       let postgresState: PostgresReadState;
       try {
@@ -679,7 +680,7 @@ export async function filesRoutes(app: FastifyInstance) {
       const publicStreamUrl = getPublicStreamUrl(fileId);
 
       // Estimate expiry status
-      let expiryStatus: any = null;
+      let expiryStatus: Record<string, unknown> | null = null;
       if (normalized.walrusEndEpoch !== null) {
         try {
           const currentEpoch = await getCurrentWalrusEpoch();
@@ -989,7 +990,7 @@ export async function filesRoutes(app: FastifyInstance) {
       }
 
       const t0 = Date.now();
-      let fields: any | null;
+      let fields: Record<string, unknown> | null;
       let fieldsSource: FileFieldsSource | null;
       let postgresState: PostgresReadState;
       try {

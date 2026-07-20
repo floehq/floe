@@ -727,7 +727,7 @@ export async function finalizeUpload(
       actor: {
         authenticated: true,
         method: "external",
-        subject: `system:finalize_worker`,
+        subject: "system:finalize_worker",
         apiKeyId: null,
         owner: session.owner ?? null,
         tier: "authenticated",
@@ -838,7 +838,7 @@ export async function finalizeUpload(
       actor: {
         authenticated: true,
         method: "external",
-        subject: `system:finalize_worker`,
+        subject: "system:finalize_worker",
         apiKeyId: null,
         owner: session.owner ?? null,
         tier: "authenticated",

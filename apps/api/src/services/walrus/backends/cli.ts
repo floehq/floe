@@ -87,8 +87,9 @@ export async function uploadToWalrusViaCli(
       cost: costRaw ? Number(costRaw) : undefined,
       source,
     };
-  } catch (err: any) {
-    const msg = err?.stderr || err?.stdout || err?.message || "WALRUS_CLI_FAILED";
+  } catch (err: unknown) {
+    const e = err as Record<string, unknown> | undefined;
+    const msg = e?.stderr || e?.stdout || (err instanceof Error ? err.message : null) || "WALRUS_CLI_FAILED";
     throw new Error(`WALRUS_CLI_FAILED:${String(msg).slice(0, 1000)}`);
   } finally {
     await fs.rm(tmpFile, { force: true }).catch(() => {});

@@ -1,3 +1,4 @@
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- used in module augmentation below
 import type { FastifyBaseLogger, FastifyInstance } from "fastify";
 import type { AuthContext } from "../services/auth/auth.context.js";
 import type { AuthProvider } from "../services/auth/auth.provider.js";

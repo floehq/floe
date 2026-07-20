@@ -5,12 +5,12 @@ import type { FastifyBaseLogger } from "fastify";
 const _require = createRequire(import.meta.url);
 
 export type PgPoolClient = {
-  query: (sql: string, values?: unknown[]) => Promise<{ rows: any[]; rowCount?: number }>;
+  query: (sql: string, values?: unknown[]) => Promise<{ rows: Record<string, unknown>[]; rowCount?: number }>;
   release: (err?: Error | boolean) => void;
 };
 
 type PgPool = {
-  query: (sql: string, values?: unknown[]) => Promise<{ rows: any[]; rowCount?: number }>;
+  query: (sql: string, values?: unknown[]) => Promise<{ rows: Record<string, unknown>[]; rowCount?: number }>;
   connect: () => Promise<PgPoolClient>;
   end: () => Promise<void>;
 };
@@ -35,14 +35,16 @@ export function isPostgresRequired(): boolean {
 }
 
 async function loadPgPool(connectionString: string): Promise<PgPool> {
-  let pg: any;
+  let pg: Record<string, unknown>;
   try {
-    pg = _require("pg");
+    pg = _require("pg") as Record<string, unknown>;
   } catch {
     throw new Error("Postgres driver not found. Run: npm install pg --workspace=apps/api");
   }
 
-  const PoolCtor = pg.Pool ?? pg.default?.Pool;
+  const PoolCtor = (pg.Pool ?? (pg.default as Record<string, unknown> | undefined)?.Pool) as
+    | (new (config: Record<string, unknown>) => PgPool)
+    | undefined;
   if (!PoolCtor) {
     throw new Error("Invalid pg module: Pool constructor not found");
   }

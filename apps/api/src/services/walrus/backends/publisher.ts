@@ -5,7 +5,6 @@ import type { SuiSigner } from "../../../sui/sui.signer.js";
 import { WalrusUploadLimits } from "../../../config/walrus.config.js";
 import type { WalrusUploadParams, WalrusUploadResult } from "./types.js";
 import { walrusPublishCircuit } from "../../circuit-breaker/instances.js";
-import { CircuitBreakerError } from "../../circuit-breaker/index.js";
 
 const FETCH_TIMEOUT_MS = WalrusUploadLimits.timeoutMs;
 const MIN_BALANCE_MIST = 1_000_000_000n;

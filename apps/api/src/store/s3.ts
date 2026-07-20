@@ -6,20 +6,47 @@ import path from "node:path";
 import { Readable, Transform } from "stream";
 import { pipeline } from "stream/promises";
 
+import type {
+  DeleteObjectCommandInput,
+  DeleteObjectsCommandInput,
+  GetObjectCommandInput,
+  HeadObjectCommandInput,
+  ListObjectsV2CommandInput,
+  PutObjectCommandInput,
+} from "@aws-sdk/client-s3";
+
 import { parseBoolEnv } from "../utils/parseEnv.js";
 import { UploadConfig, ChunkConfig } from "../config/uploads.config.js";
 import type { ChunkStore } from "./chunk.js";
 
 const require = createRequire(import.meta.url);
 
+type CommandCtr<TInput> = new (input: TInput) => Record<string, unknown>;
+
+type S3Response = {
+  ContentLength?: number;
+  contentLength?: number;
+  Metadata?: Record<string, string>;
+  metadata?: Record<string, string>;
+  Body?: unknown;
+  Contents?: Array<{ Key?: string }>;
+  IsTruncated?: boolean;
+  NextContinuationToken?: string;
+  [key: string]: unknown;
+};
+
+type S3LikeClient = {
+  send(command: Record<string, unknown>): Promise<S3Response>;
+};
+
 type AwsS3Module = {
-  S3Client: new (...args: any[]) => any;
-  DeleteObjectCommand: new (...args: any[]) => any;
-  DeleteObjectsCommand: new (...args: any[]) => any;
-  GetObjectCommand: new (...args: any[]) => any;
-  HeadObjectCommand: new (...args: any[]) => any;
-  ListObjectsV2Command: new (...args: any[]) => any;
-  PutObjectCommand: new (...args: any[]) => any;
+  S3Client: new (config: Record<string, unknown>) => S3LikeClient;
+  DeleteObjectCommand: CommandCtr<DeleteObjectCommandInput>;
+  DeleteObjectsCommand: CommandCtr<DeleteObjectsCommandInput>;
+  GetObjectCommand: CommandCtr<GetObjectCommandInput>;
+  HeadObjectCommand: CommandCtr<HeadObjectCommandInput>;
+  ListObjectsV2Command: CommandCtr<ListObjectsV2CommandInput>;
+  PutObjectCommand: CommandCtr<PutObjectCommandInput>;
 };
 
 function loadAwsS3(): AwsS3Module {
@@ -36,7 +63,7 @@ type S3RuntimeConfig = {
   bucket: string;
   prefix: string;
   maxChunkBytes: number;
-  client: any;
+  client: S3LikeClient;
   cmd: Omit<AwsS3Module, "S3Client">;
 };
 
@@ -216,13 +243,15 @@ export class S3ChunkStore implements ChunkStore {
             throw new Error("HASH_MISMATCH");
           }
           headOk = true;
-        } catch (headErr: any) {
-          if (
-            headErr?.message === "HASH_MISMATCH" ||
-            headErr?.message === "CHUNK_SIZE_MISMATCH" ||
-            headErr?.message === "INVALID_LAST_CHUNK_SIZE"
-          ) {
-            throw headErr;
+        } catch (headErr: unknown) {
+          if (headErr instanceof Error) {
+            if (
+              headErr.message === "HASH_MISMATCH" ||
+              headErr.message === "CHUNK_SIZE_MISMATCH" ||
+              headErr.message === "INVALID_LAST_CHUNK_SIZE"
+            ) {
+              throw headErr;
+            }
           }
           // HeadObject failed (e.g. chunk missing from S3 despite Redis
           // record) — fall through to normal spool+PutObject path.
@@ -273,9 +302,10 @@ export class S3ChunkStore implements ChunkStore {
           }),
         );
         return { alreadyExisted: false };
-      } catch (putErr: any) {
-        const status = Number(putErr?.$metadata?.httpStatusCode ?? 0);
-        const code = String(putErr?.name ?? "");
+      } catch (putErr: unknown) {
+        const err = putErr as { $metadata?: { httpStatusCode?: number }; name?: string } | undefined;
+        const status = Number(err?.$metadata?.httpStatusCode ?? 0);
+        const code = String(err?.name ?? "");
         if (status !== 412 && code !== "PreconditionFailed") {
           throw putErr;
         }
@@ -305,13 +335,15 @@ export class S3ChunkStore implements ChunkStore {
           if (storedHash && storedHash !== expectedHash.toLowerCase()) {
             throw new Error("HASH_MISMATCH");
           }
-        } catch (headErr: any) {
-          if (
-            headErr?.message === "HASH_MISMATCH" ||
-            headErr?.message === "CHUNK_SIZE_MISMATCH" ||
-            headErr?.message === "INVALID_LAST_CHUNK_SIZE"
-          ) {
-            throw headErr;
+        } catch (headErr: unknown) {
+          if (headErr instanceof Error) {
+            if (
+              headErr.message === "HASH_MISMATCH" ||
+              headErr.message === "CHUNK_SIZE_MISMATCH" ||
+              headErr.message === "INVALID_LAST_CHUNK_SIZE"
+            ) {
+              throw headErr;
+            }
           }
         }
         return { alreadyExisted: true };
@@ -419,7 +451,7 @@ export class S3ChunkStore implements ChunkStore {
         }),
       );
       const keys = (listed.Contents ?? [])
-        .map((x: any) => x.Key)
+        .map((x) => x.Key)
         .filter((k: unknown): k is string => Boolean(k));
 
       if (keys.length > 0) {

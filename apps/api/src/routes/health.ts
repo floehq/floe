@@ -1,6 +1,6 @@
 import { parseBoolEnv } from "../utils/parseEnv.js";
 import { isUuid } from "../utils/validation.js";
-import { FastifyInstance } from "fastify";
+import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import crypto from "node:crypto";
 import { getSession } from "../services/uploads/session.js";
 import { getRedis } from "../state/redis.js";
@@ -82,7 +82,7 @@ function authzErrorCode(code?: string): "AUTH_REQUIRED" | "INSUFFICIENT_SCOPE" {
   return "INSUFFICIENT_SCOPE";
 }
 
-function requireMetricsToken(req: any, reply: any): boolean {
+function requireMetricsToken(req: FastifyRequest, reply: FastifyReply): boolean {
   if (!METRICS_ENABLED) {
     sendApiError(reply, 404, "FILE_NOT_FOUND", "Not Found");
     return false;
@@ -115,7 +115,7 @@ function parseBoolQuery(raw: unknown): boolean {
   return raw === true || raw === "1" || raw === "true";
 }
 
-async function buildHealthSnapshot(req: any): Promise<HealthSnapshot> {
+async function buildHealthSnapshot(req: FastifyRequest): Promise<HealthSnapshot> {
   const timestamp = new Date().toISOString();
   const version = buildVersionInfo();
   let finalizeQueue: {
@@ -201,7 +201,7 @@ async function buildHealthSnapshot(req: any): Promise<HealthSnapshot> {
   };
 }
 
-async function getCachedHealthSnapshot(req: any): Promise<HealthSnapshot> {
+async function getCachedHealthSnapshot(req: FastifyRequest): Promise<HealthSnapshot> {
   if (cachedHealthSnapshot && cachedHealthSnapshot.expiresAt > Date.now()) {
     return cachedHealthSnapshot;
   }
@@ -228,20 +228,104 @@ export const healthRouteTestHooks = {
 };
 
 export default async function healthRoute(app: FastifyInstance) {
-  app.get("/livez", async (_req, reply) => {
-    return reply.code(200).send({
-      ...buildVersionInfo(),
-      status: "UP",
-      role: TopologyConfig.role,
-      timestamp: new Date().toISOString(),
-    });
-  });
+  app.get(
+    "/livez",
+    {
+      schema: {
+        tags: ["Health"],
+        summary: "Liveness check",
+        description:
+          "Simple liveness probe that always returns 200 if the process is running. Returns version info, status, role, and timestamp.",
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              service: { type: "string" },
+              apiVersion: { type: "string" },
+              serverVersion: { type: "string" },
+              status: { type: "string" },
+              role: { type: "string" },
+              timestamp: { type: "string", format: "date-time" },
+            },
+          },
+        },
+      },
+    },
+    async (_req, reply) => {
+      return reply.code(200).send({
+        ...buildVersionInfo(),
+        status: "UP",
+        role: TopologyConfig.role,
+        timestamp: new Date().toISOString(),
+      });
+    },
+  );
 
-  app.get("/version", async (_req, reply) => {
-    return reply.code(200).send(buildVersionInfo());
-  });
+  app.get(
+    "/version",
+    {
+      schema: {
+        tags: ["Health"],
+        summary: "Version info",
+        description: "Returns the current service, API, and server version strings.",
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              service: { type: "string" },
+              apiVersion: { type: "string" },
+              serverVersion: { type: "string" },
+            },
+          },
+        },
+      },
+    },
+    async (_req, reply) => {
+      return reply.code(200).send(buildVersionInfo());
+    },
+  );
 
-  app.get("/metrics", async (req, reply) => {
+  app.get(
+    "/metrics",
+    {
+      schema: {
+        tags: ["Health"],
+        summary: "Prometheus metrics",
+        description:
+          "Returns Prometheus-format metrics. Requires a valid metrics token via x-metrics-token header or Bearer authorization.",
+        security: [{ bearerToken: [] }],
+        response: {
+          200: {
+            type: "string",
+            description: "Prometheus metrics text",
+          },
+          401: {
+            type: "object",
+            properties: {
+              code: { type: "string" },
+              message: { type: "string" },
+            },
+          },
+          429: {
+            type: "object",
+            properties: {
+              code: { type: "string" },
+              message: { type: "string" },
+              retryable: { type: "boolean" },
+            },
+          },
+          503: {
+            type: "object",
+            properties: {
+              code: { type: "string" },
+              message: { type: "string" },
+              retryable: { type: "boolean" },
+            },
+          },
+        },
+      },
+    },
+    async (req, reply) => {
     // Enforce the metrics token (constant-time comparison against FLOE_METRICS_TOKEN).
     if (!requireMetricsToken(req, reply)) {
       emitAuditEvent(req.childLogger, {
@@ -298,7 +382,62 @@ export default async function healthRoute(app: FastifyInstance) {
   });
 
   if (TopologyConfig.routes.ops) {
-    app.get("/ops/uploads/:uploadId", async (req, reply) => {
+    app.get(
+      "/ops/uploads/:uploadId",
+      {
+        schema: {
+          tags: ["Ops"],
+          summary: "Operator upload detail",
+          description:
+            "Retrieve detailed upload session state for operator inspection, including chunk progress, finalization status, Redis/Postgres health, and dependency checks. Requires operator authorization.",
+          security: [{ bearerToken: [] }],
+          params: {
+            type: "object",
+            required: ["uploadId"],
+            properties: {
+              uploadId: { type: "string", format: "uuid", description: "Upload session ID" },
+            },
+          },
+          querystring: {
+            type: "object",
+            properties: {
+              includeReceivedIndexes: {
+                type: "string",
+                description: "Set to '1' to include the list of received chunk indexes",
+              },
+            },
+          },
+          response: {
+            200: {
+              type: "object",
+              properties: {
+                uploadId: { type: "string", format: "uuid" },
+                summary: { type: "object" },
+                dependencies: { type: "object" },
+                session: { type: ["object", "null"] },
+                meta: { type: ["object", "null"] },
+                chunks: { type: "object" },
+                finalize: { type: "object" },
+              },
+            },
+            400: {
+              type: "object",
+              properties: {
+                code: { type: "string" },
+                message: { type: "string" },
+              },
+            },
+            404: {
+              type: "object",
+              properties: {
+                code: { type: "string" },
+                message: { type: "string" },
+              },
+            },
+          },
+        },
+      },
+      async (req, reply) => {
       // Rate limit ops reads to prevent brute-force of upload IDs and
       // excessive backend queries.
       const opsLimit = await req.server.authProvider.checkRateLimit({
@@ -427,7 +566,43 @@ export default async function healthRoute(app: FastifyInstance) {
     });
   }
 
-  app.get("/health", async (req, reply) => {
+  app.get(
+    "/health",
+    {
+      schema: {
+        tags: ["Health"],
+        summary: "Health check",
+        description:
+          "Returns service readiness, degradation status, and dependency health (Redis, Postgres, S3, Walrus). Returns 200 when ready, 503 when degraded or down. Response detail is controlled by FLOE_PUBLIC_HEALTH_DETAILS.",
+        response: {
+          200: {
+            type: "object",
+            properties: {
+              service: { type: "string" },
+              apiVersion: { type: "string" },
+              serverVersion: { type: "string" },
+              status: { type: "string" },
+              ready: { type: "boolean" },
+              degraded: { type: "boolean" },
+              timestamp: { type: "string" },
+            },
+          },
+          503: {
+            type: "object",
+            properties: {
+              service: { type: "string" },
+              apiVersion: { type: "string" },
+              serverVersion: { type: "string" },
+              status: { type: "string" },
+              ready: { type: "boolean" },
+              degraded: { type: "boolean" },
+              timestamp: { type: "string" },
+            },
+          },
+        },
+      },
+    },
+    async (req: FastifyRequest, reply: FastifyReply) => {
     const snapshot = await getCachedHealthSnapshot(req);
     if (!PUBLIC_HEALTH_DETAILS) {
       const p = snapshot.payload as Record<string, unknown>;

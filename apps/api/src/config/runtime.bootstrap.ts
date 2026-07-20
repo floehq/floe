@@ -84,17 +84,17 @@ export function normalizeRuntimeConfig(raw: unknown): RuntimeFileConfig {
 
   const value = raw as Record<string, unknown>;
 
-  const role = parseBootstrapNodeRole((value.node as any)?.role);
-  const portRaw = (value.http as any)?.port;
+  const role = parseBootstrapNodeRole((value.node as Record<string, unknown>)?.role as string | undefined);
+  const portRaw = (value.http as Record<string, unknown>)?.port;
   if (portRaw !== undefined && (!Number.isInteger(portRaw) || Number(portRaw) <= 0)) {
     throw new Error("http.port must be a positive integer");
   }
-  const trustProxyRaw = (value.http as any)?.trustProxy;
+  const trustProxyRaw = (value.http as Record<string, unknown>)?.trustProxy;
   if (trustProxyRaw !== undefined && typeof trustProxyRaw !== "boolean") {
     throw new Error("http.trustProxy must be a boolean");
   }
 
-  const metricsEnabled = (value.metrics as any)?.enabled;
+  const metricsEnabled = (value.metrics as Record<string, unknown>)?.enabled;
   if (metricsEnabled !== undefined && typeof metricsEnabled !== "boolean") {
     throw new Error("metrics.enabled must be a boolean");
   }
@@ -103,12 +103,12 @@ export function normalizeRuntimeConfig(raw: unknown): RuntimeFileConfig {
     node: role ? { role } : undefined,
     http: {
       port: portRaw as number | undefined,
-      corsOrigins: normalizeStringList((value.http as any)?.corsOrigins, "http.corsOrigins"),
+      corsOrigins: normalizeStringList((value.http as Record<string, unknown>)?.corsOrigins, "http.corsOrigins"),
       trustProxy: trustProxyRaw as boolean | undefined,
     },
     walrus: {
-      readers: normalizeStringList((value.walrus as any)?.readers, "walrus.readers"),
-      writers: normalizeStringList((value.walrus as any)?.writers, "walrus.writers"),
+      readers: normalizeStringList((value.walrus as Record<string, unknown>)?.readers, "walrus.readers"),
+      writers: normalizeStringList((value.walrus as Record<string, unknown>)?.writers, "walrus.writers"),
     },
     metrics: metricsEnabled === undefined ? undefined : { enabled: metricsEnabled },
   };

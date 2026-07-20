@@ -295,10 +295,10 @@ async function scheduleRetry(uploadId: string, log: FastifyBaseLogger, delayMs: 
         }
         await enqueueUploadIdForce(uploadId);
         await drainOnce(log);
-      } catch (err: any) {
+      } catch (err: unknown) {
         await markUploadFailed({
           uploadId,
-          errorMessage: String(err?.message ?? "FINALIZE_REQUEUE_FAILED"),
+          errorMessage: String(err instanceof Error ? err.message : "FINALIZE_REQUEUE_FAILED"),
           reason: "finalize_requeue_failed",
           retryable: true,
         });
@@ -378,8 +378,8 @@ async function runFinalizeJob(uploadId: string, log: FastifyBaseLogger) {
       durationMs: Date.now() - startedAt,
       retryable: false,
     });
-  } catch (err: any) {
-    const msg = String(err?.message ?? "UPLOAD_FINALIZE_FAILED");
+  } catch (err: unknown) {
+    const msg = String(err instanceof Error ? err.message : "UPLOAD_FINALIZE_FAILED");
     const failure = classifyFinalizeJobFailure(err);
     const failureAction = decideFinalizeWorkerFailureAction({
       message: msg,

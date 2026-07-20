@@ -1,4 +1,4 @@
-import { FastifyInstance } from "fastify";
+import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
@@ -211,7 +211,7 @@ async function reconcileReceivedChunks(uploadId: string): Promise<number[]> {
   return merged;
 }
 
-async function requireRedis(reply: any): Promise<RedisClient | null> {
+async function requireRedis(reply: FastifyReply): Promise<RedisClient | null> {
   try {
     return getRedis();
   } catch (err) {
@@ -234,7 +234,7 @@ function isRedisDependencyError(err: unknown): boolean {
   );
 }
 
-function sendRedisUnavailable(reply: any) {
+function sendRedisUnavailable(reply: FastifyReply) {
   reply.header("Retry-After", String(RETRYABLE_RETRY_AFTER_SECONDS));
   return sendApiError(reply, 503, "DEPENDENCY_UNAVAILABLE", "Redis is unavailable, retry shortly", {
     retryable: true,
@@ -245,7 +245,7 @@ function sendRedisUnavailable(reply: any) {
 }
 
 async function guardRedisDependency<T>(
-  reply: any,
+  reply: FastifyReply,
   op: () => Promise<T>,
 ): Promise<T | typeof REDIS_DEPENDENCY_UNAVAILABLE> {
   try {
@@ -259,7 +259,7 @@ async function guardRedisDependency<T>(
   }
 }
 
-function getCreateIdempotencyKey(req: any): string | null {
+function getCreateIdempotencyKey(req: FastifyRequest): string | null {
   const raw = req.headers["idempotency-key"];
   if (typeof raw !== "string") return null;
   const value = raw.trim();
@@ -268,7 +268,7 @@ function getCreateIdempotencyKey(req: any): string | null {
   return value;
 }
 
-function getRequestIdempotencyKey(req: any): string | null {
+function getRequestIdempotencyKey(req: FastifyRequest): string | null {
   const raw = req.headers["idempotency-key"];
   if (typeof raw !== "string") return null;
   const value = raw.trim();
@@ -322,7 +322,7 @@ async function readCreateIdempotencyRecord(
 }
 
 async function sendCreateIdempotencyReplay(params: {
-  reply: any;
+  reply: FastifyReply;
   redis: RedisClient;
   key: string;
   fingerprint: string;
@@ -390,7 +390,7 @@ async function readUploadActionIdempotencyRecord(
 }
 
 async function sendUploadActionIdempotencyReplay(params: {
-  reply: any;
+  reply: FastifyReply;
   redis: RedisClient;
   key: string;
   fingerprint: string;
@@ -536,19 +536,19 @@ export default async function uploadRoutes(app: FastifyInstance) {
       let filename: string;
       try {
         filename = validateFilename(rawFilename);
-      } catch (err: any) {
-        return sendApiError(reply, 400, "INVALID_FILENAME", err.message ?? "Invalid filename");
+      } catch (err: unknown) {
+        return sendApiError(reply, 400, "INVALID_FILENAME", (err as Error).message ?? "Invalid filename");
       }
 
       let contentType: string;
       try {
         contentType = validateContentType(rawContentType);
-      } catch (err: any) {
+      } catch (err: unknown) {
         return sendApiError(
           reply,
           400,
           "INVALID_CONTENT_TYPE",
-          err.message ?? "Invalid content type",
+          (err as Error).message ?? "Invalid content type",
         );
       }
 
@@ -985,10 +985,11 @@ export default async function uploadRoutes(app: FastifyInstance) {
           chunkIndex: idx,
           ...(writeResult.alreadyExisted ? { reused: true } : {}),
         };
-      } catch (err: any) {
-        const message = err?.message ?? "Chunk upload failed";
+      } catch (err: unknown) {
+        const error = err as { message?: string } | undefined;
+        const message = error?.message ?? "Chunk upload failed";
 
-        if (err?.message === "CHUNK_IN_PROGRESS") {
+        if (error?.message === "CHUNK_IN_PROGRESS") {
           log.info({ uploadId, idx }, "Chunk upload already in progress");
           return sendApiError(
             reply,
@@ -1000,10 +1001,10 @@ export default async function uploadRoutes(app: FastifyInstance) {
         }
 
         if (
-          err?.message === "HASH_MISMATCH" ||
-          err?.message === "CHUNK_TOO_LARGE" ||
-          err?.message === "CHUNK_SIZE_MISMATCH" ||
-          err?.message === "INVALID_LAST_CHUNK_SIZE"
+          error?.message === "HASH_MISMATCH" ||
+          error?.message === "CHUNK_TOO_LARGE" ||
+          error?.message === "CHUNK_SIZE_MISMATCH" ||
+          error?.message === "INVALID_LAST_CHUNK_SIZE"
         ) {
           return sendApiError(reply, 400, "INVALID_CHUNK", message, {
             retryable: false,

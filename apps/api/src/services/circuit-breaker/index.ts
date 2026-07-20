@@ -32,7 +32,7 @@ export type CircuitBreakerOptions = {
   }) => void;
 };
 
-type CircuitBreakerState = {
+type _CircuitBreakerState = {
   state: CircuitState;
   failureCount: number;
   successCount: number;
@@ -82,8 +82,9 @@ export class CircuitBreaker {
    */
   async call<T>(fn: () => Promise<T>): Promise<T> {
     const durationMs = Date.now();
+    const preAwaitState = this.state;
 
-    if (this.state === "open") {
+    if (preAwaitState === "open") {
       if (Date.now() - this.openedAt >= this.opts.openDurationMs) {
         this.transitionTo("half_open");
       } else {
@@ -100,7 +101,8 @@ export class CircuitBreaker {
 
     if (this.state === "half_open") {
       await this.probeLock;
-      if (this.state === "open") {
+      // Re-read state after await — another caller's probe may have re-opened it.
+      if (this.currentState === "open") {
         const elapsed = Date.now() - durationMs;
         this.opts.onOutcome({
           name: this.opts.name,

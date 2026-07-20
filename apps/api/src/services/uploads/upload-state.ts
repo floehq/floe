@@ -13,8 +13,8 @@ function ensureFsFolder(uploadId: string) {
   const dir = path.join(UploadConfig.tmpDir, uploadId);
   try {
     fs.mkdirSync(dir, { recursive: true });
-  } catch (err: any) {
-    if (err.code !== "EEXIST") {
+  } catch (err: unknown) {
+    if (!(err instanceof Error && "code" in err && err.code === "EEXIST")) {
       throw err;
     }
   }

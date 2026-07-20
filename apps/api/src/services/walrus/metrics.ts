@@ -30,7 +30,7 @@ export async function uploadToWalrusWithMetrics(params: {
   source: "newly_created" | "already_certified" | "unknown";
 }> {
   const start = Date.now();
-  let lastError: any;
+  let lastError: unknown;
 
   // Cache stream chunks on the first attempt so retries replay from memory
   // instead of re-reading all chunks from S3.
@@ -92,17 +92,17 @@ export async function uploadToWalrusWithMetrics(params: {
     })) as WalrusUploadResult;
 
     return result;
-  } catch (err: any) {
+  } catch (err: unknown) {
     recordWalrusUploadMetric({
       uploadId: params.uploadId,
       sizeBytes: params.sizeBytes,
       epochs: params.epochs,
       attempt: WalrusUploadLimits.maxRetries,
       durationMs: Date.now() - start,
-      outcome: classifyWalrusError(err),
-      error: err?.message ?? "unknown",
+      outcome: classifyWalrusError(err as Error),
+      error: err instanceof Error ? err.message : "unknown",
       httpStatus: extractWalrusHttpStatus(err),
-      network: process.env.FLOE_NETWORK as any,
+      network: (process.env.FLOE_NETWORK as "mainnet" | "testnet") ?? "mainnet",
       timestamp: Date.now(),
     });
     observeWalrusPublish({
