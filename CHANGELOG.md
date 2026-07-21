@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Redis Sentinel support**: Automatic failover with configurable Sentinel nodes via `FLOE_REDIS_SENTINELS`, `FLOE_REDIS_SENTINEL_NAME`, and related env vars
+- **Redis reconnection with exponential backoff**: Automatic reconnection for transient Redis failures with `tryReconnect()` and `manualClose` guard
+- **Configurable Walrus idle timeout**: `FLOE_WALRUS_READ_IDLE_TIMEOUT_MS` env var for stream idle timeout
+- **Postgres `statement_timeout`**: Configurable via `FLOE_PG_STATEMENT_TIMEOUT_MS` to kill long-running queries
+- **`x-request-id` propagation**: Request ID propagated as HTTP header to downstream Walrus aggregator calls for log correlation
+- **OpenAPI schemas for health and ops routes**: Full request/response schemas for `/health`, `/health/livez`, `/health/readyz`, `/version`, `/metrics`, and all `/ops/*` routes
+- **OpenAPI "Ops" tag**: Grouped operations routes under "Ops" tag in Swagger UI
+- **SDK comprehensive JSDoc/TSDoc**: Full documentation across all 7 SDK source files with `@param`, `@returns`, `@throws`, `@remarks`, and `@example` blocks
+- **GitHub Actions CI pipeline**: 4 parallel jobs (lint, typecheck, test-unit, test-integration) with Postgres 16 and Redis 7 service containers
+- **Root `SECURITY.md`**: Reporting instructions for GitHub Security tab with supported versions policy
+
+### Changed
+
+- **Performance: upload finalize latency**: Skip S3 spool/PutObject for chunks already in Redis (`HeadObject` on 412); fuse chunk `SADD` into touch Lua script; parallelize checksum writes and Postgres upserts
+- **Stream cache hardening**: Content-Range validation, orphan cleanup, and running total
+- **Auth hardening**: Explicit scopes required on key creation; API key rotation made atomic with `SELECT FOR UPDATE`; lifecycle routes gated behind `supportsLifecycle`
+- **Production hardening**: Redact `DATABASE_URL`, log PG failures, 503 on Sui errors, GC distributed lock, batch reconcile, dedup race fix
+- **80 ESLint warnings resolved**: Proper typing replaces `any` across 20 files; useless assignments and unused imports removed
+- **3 TypeScript errors fixed**: `console.fatal` → `console.error`, circuit breaker TS2367 narrowing, TLS variable rename
+- **Swagger port corrected**: `localhost:3000` → `localhost:3001` in OpenAPI config
+
+### Fixed
+
+- **Server crash after sustained unhandled rejections**: Graceful handling added with proper exit
+- **AbortError crashing server on client disconnect**: Prevented in stream and Walrus paths
+- **broadcastStream errors after cleanup**: Suppressed async errors post-cleanup to prevent uncaughtException
+- **Circuit breaker HALF_OPEN race**: Probe mutex prevents concurrent probe attempts
+- **Finalize lock extension**: Resilient to Redis blips via `tryReconnect()` guard
+- **Silent `.catch(() => {})`**: Replaced with structured logging throughout
+- **Stream cache Content-Range validation**: Proper header validation prevents corrupt cache entries
+- **Idle timeout stream data delivery**: Buffered data delivered before closing idle timeout stream
+- **Consumer streams after broadcast pipe completes**: Streams properly ended
+- **`package.json` path in `version.ts`**: Corrected path and hardcoded test version
+
+### Security
+
+- **Atomic API key rotation**: Prevents concurrent duplicate keys via `SELECT FOR UPDATE`
+- **Explicit scopes on key creation**: Required; removes implicit wildcard default
+- **Lifecycle route gating**: Routes behind `supportsLifecycle` flag
+
+### CI/CD
+
+- **GitHub Actions CI pipeline**: 4 parallel jobs for build, lint, test, and typecheck with service containers
+
 ## [1.0.0] - 2026-07-15
 
 ### Added

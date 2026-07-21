@@ -12,8 +12,8 @@ Only the latest release receives security patches. Please ensure you are running
 
 Instead, please report vulnerabilities through one of the following channels:
 
-- **GitHub Issues**: Create an issue using the **security** label for non-sensitive reports.
-- **Email**: Contact the project maintainer directly via GitHub Issues for sensitive disclosures that should remain private.
+- **GitHub Security Advisories**: Use the [Security tab](../../security/advisories) to report vulnerabilities privately.
+- **Email**: Contact the project maintainer directly for sensitive disclosures that should remain private.
 
 ## What to Include
 
