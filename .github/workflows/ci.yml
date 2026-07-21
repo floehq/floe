@@ -26,12 +26,20 @@ jobs:
 
       - run: npm ci
 
-      - name: ESLint
+      - name: ESLint (API)
         run: npx eslint "apps/api/src/**/*.ts"
         working-directory: ${{ github.workspace }}
 
+      - name: ESLint (SDK)
+        run: npx eslint "src/**/*.ts"
+        working-directory: apps/sdk
+
+      - name: ESLint (CLI)
+        run: npx eslint "src/**/*.ts"
+        working-directory: apps/cli
+
       - name: Prettier
-        run: npx prettier --check "apps/api/src/**/*.ts"
+        run: npx prettier --check "apps/api/src/**/*.ts" "apps/sdk/src/**/*.ts" "apps/cli/src/**/*.ts"
         working-directory: ${{ github.workspace }}
 
   typecheck:
@@ -47,9 +55,17 @@ jobs:
 
       - run: npm ci
 
-      - name: TypeScript
+      - name: TypeScript (API)
         run: npx tsc --noEmit
         working-directory: apps/api
+
+      - name: TypeScript (SDK)
+        run: npx tsc --noEmit
+        working-directory: apps/sdk
+
+      - name: TypeScript (CLI)
+        run: npx tsc --noEmit
+        working-directory: apps/cli
 
   test-unit:
     name: Unit Tests
@@ -65,11 +81,8 @@ jobs:
       - run: npm ci
 
       - name: Run unit tests
-        run: npx tsx --test --no-coverage ./test/*.test.ts
+        run: npx tsx --test --no-coverage $(ls ./test/*.test.ts | grep -v '.integration.test.ts' | tr '\n' ' ')
         working-directory: apps/api
-        env:
-          FLOE_REDIS_PROVIDER: native
-          REDIS_URL: redis://localhost:6379
 
   test-integration:
     name: Integration Tests

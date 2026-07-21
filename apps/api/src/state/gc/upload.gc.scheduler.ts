@@ -31,7 +31,9 @@ export function startUploadGc(log: FastifyBaseLogger) {
       })
       .finally(async () => {
         running = null;
-        await redis.del(GC_LOCK_KEY).catch(() => {});
+        await redis.del(GC_LOCK_KEY).catch((err) => {
+          log.warn(err, "Failed to release GC lock");
+        });
       });
   }, GcConfig.gcInterval);
 

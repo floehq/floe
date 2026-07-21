@@ -31,7 +31,7 @@ Minimum required environment values:
 Mode-specific requirements:
 
 - when `FLOE_CHUNK_STORE_MODE=s3`: `FLOE_S3_BUCKET` and compatible credentials/config
-- when `FLOE_WALRUS_STORE_MODE=sdk`: `FLOE_WALRUS_SDK_BASE_URL`
+- when `FLOE_WALRUS_STORE_MODE=publisher`: `FLOE_WALRUS_PUBLISHER_BASE_URL`
 - when `FLOE_WALRUS_STORE_MODE=cli`: `FLOE_WALRUS_CLI_BIN`
 
 Use `.env.example` as the environment source of truth.
@@ -158,6 +158,81 @@ Read behavior and observability:
 - `FLOE_ENABLE_METRICS` default `1`
 - `FLOE_EVENT_LOG_ENABLED` default `1`
 - `FLOE_METRICS_TOKEN`
+
+Auth provider:
+
+- `FLOE_AUTH_PROVIDER` default `local` — `local` | `external` | `token`
+- `FLOE_API_KEY_STORE` default `env` — `env` | `postgres`
+- `FLOE_AUTH_TOKEN_SECRET` — JWT secret for `token` provider
+- `FLOE_AUTH_TOKEN_ISSUER` — expected JWT issuer
+- `FLOE_AUTH_TOKEN_AUDIENCE` — expected JWT audience
+- `FLOE_AUTH_EXTERNAL_VERIFY_URL` — external auth verification endpoint
+- `FLOE_AUTH_EXTERNAL_AUTH_TOKEN` — bearer token for external auth calls
+- `FLOE_AUTH_EXTERNAL_SHARED_SECRET` — shared secret for external auth
+- `FLOE_AUTH_EXTERNAL_TIMEOUT_MS` default `5000`
+- `FLOE_AUTH_EXTERNAL_CACHE_TTL_MS` default `60000`
+- `FLOE_AUTH_EXTERNAL_DEFAULT_EXPIRES_AT`
+- `FLOE_AUTH_EXTERNAL_ISSUER`
+- `FLOE_AUTH_EXTERNAL_TRUST_HEADERS` default `0`
+
+KMS signing (alternative to env-based Sui signing):
+
+- `FLOE_SIGNER_BACKEND` default `env` — `env` | `kms`
+- `FLOE_SIGNER_ADDRESS` — Sui address for KMS signer
+- `FLOE_KMS_KEY_ID` — AWS KMS key ID
+
+Redis Sentinel (HA):
+
+- `FLOE_REDIS_SENTINELS` — comma-separated `host:port` list
+- `FLOE_REDIS_SENTINEL_NAME` default `mymaster`
+- `FLOE_REDIS_SENTINEL_PASSWORD`
+- `FLOE_REDIS_CONNECT_TIMEOUT_MS` default `5000`
+- `FLOE_REDIS_RECONNECT_MAX_ATTEMPTS` default `10`
+
+Circuit breaker tuning:
+
+- `FLOE_CB_WALRUS_FAILURE_THRESHOLD` default `5`
+- `FLOE_CB_WALRUS_SUCCESS_THRESHOLD` default `3`
+- `FLOE_CB_WALRUS_OPEN_DURATION_MS` default `30000`
+- `FLOE_CB_SUI_FAILURE_THRESHOLD` default `3`
+- `FLOE_CB_SUI_SUCCESS_THRESHOLD` default `2`
+- `FLOE_CB_SUI_OPEN_DURATION_MS` default `60000`
+- `FLOE_CB_EXTERNAL_AUTH_FAILURE_THRESHOLD` default `5`
+- `FLOE_CB_EXTERNAL_AUTH_SUCCESS_THRESHOLD` default `3`
+- `FLOE_CB_EXTERNAL_AUTH_OPEN_DURATION_MS` default `30000`
+
+SLI/SLO:
+
+- `FLOE_SLI_WINDOW_SECONDS` default `300`
+- `FLOE_SLI_LATENCY_BUDGET_MS` default `500`
+- `FLOE_SLO_UPLOAD_TARGET` default `0.99`
+- `FLOE_SLO_STREAM_TARGET` default `0.99`
+- `FLOE_SLO_API_TARGET` default `0.995`
+
+Misc:
+
+- `FLOE_POSTGRES_STATEMENT_TIMEOUT_MS` — kills long-running queries
+- `FLOE_ACCESS_POLICY` — `public` | `hybrid` | `private`
+- `FLOE_ALLOW_PUBLIC_IN_PROD` — explicit opt-in for public in production
+- `FLOE_HEALTH_CACHE_TTL_MS` default `1000`
+- `FLOE_PUBLIC_HEALTH_DETAILS` default `0`
+- `FLOE_SENTRY_DSN` — Sentry DSN for error reporting
+- `FLOE_SENTRY_TRACES_SAMPLE_RATE` — Sentry traces sample rate
+- `FLOE_STREAM_CACHE_MIN_FREE_DISK_BYTES` — stops caching when disk is low
+- `FLOE_WALRUS_READ_IDLE_TIMEOUT_MS` — stream idle timeout
+- `FLOE_WALRUS_CLI_CONTEXT` — walrus CLI context for multi-wallet
+- `FLOE_INSTANCE_ID` — instance identifier for multi-instance deployments
+- `FLOE_SERVICE_NAME` — override service name in logs/metrics
+- `FLOE_SERVER_VERSION` — override version in /version endpoint
+- `FLOE_API_VERSION` — API version for client compatibility checks
+- `FLOE_CLIENT_COMPATIBILITY` — client compatibility mode
+- `FLOE_SUI_METADATA_FALLBACK` — Sui metadata fallback strategy
+- `FLOE_RATE_LIMIT_OPS_READ_PUBLIC` default `10`
+- `FLOE_RATE_LIMIT_OPS_READ_AUTH` default `120`
+- `FLOE_RATE_LIMIT_FILE_META_LOCAL_LEASE` default `1`
+- `FLOE_RATE_LIMIT_FILE_STREAM_LOCAL_LEASE` default `1`
+- `FLOE_GLOBAL_REQUEST_CONCURRENCY` default `200`
+- `FLOE_PUBLIC_STREAM_BASE_URL`
 
 ## Current Defaults
 

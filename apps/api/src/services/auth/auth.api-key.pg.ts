@@ -211,7 +211,9 @@ export class PostgresApiKeyStore implements ApiKeyStore {
       await client.query("COMMIT");
       return { id: newId, secret, rotatedAt: new Date() };
     } catch (err) {
-      await client.query("ROLLBACK").catch(() => {});
+      await client.query("ROLLBACK").catch((rbErr) => {
+        console.error({ rotateErr: err, rollbackErr: rbErr }, "ROLLBACK failed during key rotation");
+      });
       throw err;
     } finally {
       client.release();

@@ -144,10 +144,10 @@ Or copy `.env.integration.example` to `.env` and source it. Some integration tes
 
 GitHub Actions runs four parallel jobs on every push/PR:
 
-1. **Build and Test API** — starts Redis, Postgres, and MinIO via Docker; builds the API; runs migration check; runs the full test suite (unit + integration); builds and tests the SDK and CLI.
-2. **Lint** — ESLint + Prettier across all workspaces.
-3. **npm audit** — dependency vulnerability scan (high+ severity).
-4. **Trivy** — Docker image vulnerability scan (high/critical severity).
+1. **Lint** — ESLint + Prettier across the API, SDK, and CLI workspaces.
+2. **Typecheck** — TypeScript type-checking for the API, SDK, and CLI.
+3. **Unit Tests** — `node:test` with `tsx` on all non-integration test files.
+4. **Integration Tests** — Postgres + Redis service containers; runs `*.integration.test.ts` files.
 
 All four jobs must pass before a PR can be merged.
 
@@ -159,7 +159,7 @@ All four jobs must pass before a PR can be merged.
 4. Run the linter: `npm run lint --workspace=apps/api`
 5. Ensure TypeScript compiles: `npm run build --workspace=apps/api`
 6. Submit a PR with a clear description of what and why.
-7. All CI jobs must be green (Build+Test, Lint, npm audit, Trivy).
+7. All CI jobs must be green (Lint, Typecheck, Unit Tests, Integration Tests).
 
 ## Commit Messages
 
