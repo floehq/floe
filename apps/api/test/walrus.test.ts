@@ -100,7 +100,10 @@ test("walrus upload - describeWalrusWriters returns correct shape for cli mode",
     const mod = await importFresh("../src/services/walrus/upload.js");
     const writers = mod.describeWalrusWriters();
     assert.equal(writers.mode, "cli");
-    assert.equal(writers.cliBin, "walrus");
+    assert.ok(
+      writers.cliBin.endsWith("/walrus"),
+      `Expected path ending in /walrus, got: ${writers.cliBin}`,
+    );
     assert.equal(writers.count, 0);
     assert.equal(writers.primary, null);
     assert.deepEqual(writers.fallbacks, []);

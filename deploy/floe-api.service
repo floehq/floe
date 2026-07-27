@@ -1,0 +1,39 @@
+[Unit]
+Description=Floe API – decentralized media storage backend
+Documentation=https://github.com/floehq/floe
+After=network-online.target docker.service
+Requires=docker.service
+Wants=redis.service postgres.service
+
+[Service]
+Type=exec
+User=root
+Restart=always
+RestartSec=30s
+TimeoutStopSec=60
+
+Environment=PORT=3001
+Environment=FLOE_SERVICE_NAME=floe-api
+
+ExecStartPre=-/usr/bin/docker stop --time=30 floe-api
+ExecStartPre=-/usr/bin/docker rm floe-api
+ExecStartPre=/usr/bin/docker pull ghcr.io/floehq/floe:latest
+
+ExecStart=/usr/bin/docker run \
+  --name floe-api \
+  --pull=never \
+  --init \
+  --rm \
+  --env-file=/etc/floe/env \
+  -p 3001:3001 \
+  -v /var/lib/floe/upload:/var/lib/floe/upload \
+  --network=host \
+  ghcr.io/floehq/floe:latest
+
+ExecStop=/usr/bin/docker stop --time=30 floe-api
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
