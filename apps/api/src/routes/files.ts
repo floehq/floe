@@ -808,14 +808,6 @@ export async function filesRoutes(app: FastifyInstance) {
       // If missing, we try to update it if the user provides it or we can find it.
       let blobObjectId = normalized.blobObjectId;
       if (!blobObjectId) {
-        // For beta, we allow the user to provide it in the body if missing from metadata.
-        const b = req.body as Record<string, unknown>;
-        blobObjectId =
-          (b.blobObjectId as string | undefined) ??
-          (b.blob_object_id as string | undefined) ??
-          null;
-      }
-      if (!blobObjectId) {
         const indexed = await getIndexedFile(fileId).catch(() => null);
         blobObjectId = indexed?.blobObjectId ?? null;
       }

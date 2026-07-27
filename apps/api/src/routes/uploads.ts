@@ -61,6 +61,14 @@ const REDIS_DEPENDENCY_UNAVAILABLE = Symbol("REDIS_DEPENDENCY_UNAVAILABLE");
 const IDEMPOTENCY_LOCK_TTL_SECONDS = 30;
 const IDEMPOTENCY_KEY_MAX_BYTES = 256;
 
+const CANCEL_UPLOAD_SCRIPT = `
+  local status = redis.call("HGET", KEYS[1], "status")
+  if status == "finalizing" then return -1 end
+  if status == "completed" then return -2 end
+  redis.call("HSET", KEYS[1], "status", "canceled", "canceledAt", ARGV[1])
+  return 1
+`;
+
 type CreateUploadIdempotencyRecord = {
   fingerprint: string;
   uploadId: string;
@@ -85,6 +93,21 @@ function authzErrorCode(code?: string): "AUTH_REQUIRED" | "OWNER_MISMATCH" | "IN
   if (code === "AUTH_REQUIRED") return "AUTH_REQUIRED";
   if (code === "INSUFFICIENT_SCOPE") return "INSUFFICIENT_SCOPE";
   return "OWNER_MISMATCH";
+}
+
+function sendUploadAccessDenied(
+  reply: FastifyReply,
+  authz: { code?: string; message?: string },
+) {
+  if (authz.code === "OWNER_MISMATCH") {
+    return sendApiError(reply, 404, "UPLOAD_NOT_FOUND", "Upload not found");
+  }
+  return sendApiError(
+    reply,
+    authzStatusCode(authz.code),
+    authzErrorCode(authz.code),
+    authz.message ?? "Upload access denied",
+  );
 }
 
 function jitteredPollMs(): number {
@@ -508,12 +531,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         action: "create",
       });
       if (!authzCreate.allowed) {
-        return sendApiError(
-          reply,
-          authzStatusCode(authzCreate.code),
-          authzErrorCode(authzCreate.code),
-          authzCreate.message ?? "Upload access denied",
-        );
+        return sendUploadAccessDenied(reply, authzCreate);
       }
 
       if (!body || typeof body !== "object") {
@@ -892,12 +910,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         uploadOwner: session.owner ?? null,
       });
       if (!authzChunk.allowed) {
-        return sendApiError(
-          reply,
-          authzStatusCode(authzChunk.code),
-          authzErrorCode(authzChunk.code),
-          authzChunk.message ?? "Upload access denied",
-        );
+        return sendUploadAccessDenied(reply, authzChunk);
       }
 
       if (session.status === "completed") {
@@ -1112,12 +1125,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
           uploadOwner: currentMeta?.owner ?? null,
         });
         if (!authzStatus.allowed) {
-          return sendApiError(
-            reply,
-            authzStatusCode(authzStatus.code),
-            authzErrorCode(authzStatus.code),
-            authzStatus.message ?? "Upload access denied",
-          );
+          return sendUploadAccessDenied(reply, authzStatus);
         }
 
         let receivedChunks: number[];
@@ -1174,12 +1182,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         uploadOwner: session.owner ?? null,
       });
       if (!authzStatus.allowed) {
-        return sendApiError(
-          reply,
-          authzStatusCode(authzStatus.code),
-          authzErrorCode(authzStatus.code),
-          authzStatus.message ?? "Upload access denied",
-        );
+        return sendUploadAccessDenied(reply, authzStatus);
       }
 
       let receivedChunks: number[];
@@ -1302,12 +1305,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         uploadOwner: session?.owner ?? currentMeta?.owner ?? null,
       });
       if (!authzComplete.allowed) {
-        return sendApiError(
-          reply,
-          authzStatusCode(authzComplete.code),
-          authzErrorCode(authzComplete.code),
-          authzComplete.message ?? "Upload access denied",
-        );
+        return sendUploadAccessDenied(reply, authzComplete);
       }
 
       const idempotencyKey = getRequestIdempotencyKey(req);
@@ -1619,12 +1617,7 @@ export default async function uploadRoutes(app: FastifyInstance) {
         uploadOwner: session?.owner ?? currentMeta?.owner ?? null,
       });
       if (!authzCancel.allowed) {
-        return sendApiError(
-          reply,
-          authzStatusCode(authzCancel.code),
-          authzErrorCode(authzCancel.code),
-          authzCancel.message ?? "Upload access denied",
-        );
+        return sendUploadAccessDenied(reply, authzCancel);
       }
 
       const idempotencyKey = getRequestIdempotencyKey(req);
@@ -1710,13 +1703,15 @@ export default async function uploadRoutes(app: FastifyInstance) {
           return reply.code(200).send(responseBody);
         }
 
-        const markedCanceled = await guardRedisDependency(reply, () =>
-          redis.hset(metaKey, {
-            status: "canceled",
-            canceledAt: String(Date.now()),
-          }),
+        const cancelResult = await guardRedisDependency(reply, () =>
+          redis.eval(CANCEL_UPLOAD_SCRIPT, [metaKey], [String(Date.now())]),
         );
-        if (markedCanceled === REDIS_DEPENDENCY_UNAVAILABLE) return;
+        if (cancelResult === REDIS_DEPENDENCY_UNAVAILABLE) return;
+        const cancelCode = Number(cancelResult);
+        if (cancelCode === -1) {
+          reply.header("Retry-After", finalizePollRetryAfterSeconds());
+          return sendApiError(reply, 409, "UPLOAD_FINALIZATION_IN_PROGRESS", "Upload is currently finalizing");
+        }
 
         await Promise.all([
           chunkStore.cleanup(uploadId).catch(() => {}),
@@ -1777,13 +1772,15 @@ export default async function uploadRoutes(app: FastifyInstance) {
         return sendApiError(reply, 409, "UPLOAD_ALREADY_COMPLETED", "Upload is already finalized");
       }
 
-      const markedCanceled = await guardRedisDependency(reply, () =>
-        redis.hset(metaKey, {
-          status: "canceled",
-          canceledAt: String(Date.now()),
-        }),
+      const cancelResult = await guardRedisDependency(reply, () =>
+        redis.eval(CANCEL_UPLOAD_SCRIPT, [metaKey], [String(Date.now())]),
       );
-      if (markedCanceled === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      if (cancelResult === REDIS_DEPENDENCY_UNAVAILABLE) return;
+      const cancelCode = Number(cancelResult);
+      if (cancelCode === -1) {
+        reply.header("Retry-After", finalizePollRetryAfterSeconds());
+        return sendApiError(reply, 409, "UPLOAD_FINALIZATION_IN_PROGRESS", "Upload is currently finalizing");
+      }
 
       await Promise.all([
         chunkStore.cleanup(uploadId).catch(() => {}),

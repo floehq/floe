@@ -239,7 +239,7 @@ export class S3ChunkStore implements ChunkStore {
               throw new Error("CHUNK_SIZE_MISMATCH");
             }
           }
-          if (storedHash && storedHash !== expectedHash.toLowerCase()) {
+          if (storedHash !== expectedHash.toLowerCase()) {
             throw new Error("HASH_MISMATCH");
           }
           headOk = true;
@@ -332,7 +332,7 @@ export class S3ChunkStore implements ChunkStore {
               throw new Error("CHUNK_SIZE_MISMATCH");
             }
           }
-          if (storedHash && storedHash !== expectedHash.toLowerCase()) {
+          if (storedHash !== expectedHash.toLowerCase()) {
             throw new Error("HASH_MISMATCH");
           }
         } catch (headErr: unknown) {

@@ -1065,8 +1065,8 @@ test("status authorizes before reconciling chunk store state", async () => {
     });
     const body = res.json();
 
-    assert.equal(res.statusCode, 403);
-    assert.equal(body.error.code, "OWNER_MISMATCH");
+    assert.equal(res.statusCode, 404);
+    assert.equal(body.error.code, "UPLOAD_NOT_FOUND");
     assert.equal(listCalls, 0);
   } finally {
     storeIndexModule.chunkStore.listChunks = originalListChunks;
