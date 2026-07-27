@@ -8,7 +8,8 @@
     "test": "tsx --test --experimental-test-coverage ./test/*.test.ts 2>&1",
     "test:no-coverage": "tsx --test ./test/*.test.ts",
     "start": "node dist/server.js",
-    "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\" && prettier --check \"src/**/*.ts\" \"test/**/*.ts\""
+    "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\" && prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
+    "sast": "npm audit --audit-level=high"
   },
   "dependencies": {
     "@aws-sdk/client-kms": "^3.1088.0",

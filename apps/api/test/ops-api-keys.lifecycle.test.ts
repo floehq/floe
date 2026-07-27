@@ -32,7 +32,10 @@ function mockStore(overrides: Partial<ApiKeyStore> = {}): ApiKeyStore {
   };
 }
 
-async function buildApp(storeOverride?: ApiKeyStore) {
+async function buildApp(
+  storeOverride?: ApiKeyStore,
+  identityScopes: string[] = ["*"],
+) {
   const store = storeOverride ?? mockStore();
   setApiKeyStore(store);
   const app = Fastify({ logger: false });
@@ -46,6 +49,10 @@ async function buildApp(storeOverride?: ApiKeyStore) {
 
   app.addHook("onRequest", async (req: Record<string, unknown>) => {
     (req as { childLogger: unknown }).childLogger = (req as { log: unknown }).log;
+    (req as { authContext: unknown }).authContext = {
+      authenticated: true,
+      scopes: identityScopes,
+    };
   });
 
   await app.register(opsApiKeysRoutes);
@@ -129,6 +136,36 @@ test("POST /ops/api-keys succeeds with valid scopes", async () => {
     assert.equal(res.statusCode, 201);
     assert.equal(res.json().id, "new-key");
     assert.deepEqual(res.json().scopes, ["uploads:write", "files:read"]);
+  } finally {
+    await app.close();
+  }
+});
+
+test("POST /ops/api-keys returns 403 when requested scopes exceed caller scopes", async () => {
+  const { app } = await buildApp(undefined, ["uploads:write"]);
+  try {
+    const res = await app.inject({
+      method: "POST",
+      url: "/ops/api-keys",
+      payload: { scopes: ["*"] },
+    });
+    assert.equal(res.statusCode, 403);
+    assert.equal(res.json().error.code, "FORBIDDEN_SCOPES");
+    assert.ok(res.json().error.message.includes("*"));
+  } finally {
+    await app.close();
+  }
+});
+
+test("POST /ops/api-keys allows scopes within caller scopes", async () => {
+  const { app } = await buildApp(undefined, ["uploads:write", "files:read"]);
+  try {
+    const res = await app.inject({
+      method: "POST",
+      url: "/ops/api-keys",
+      payload: { scopes: ["uploads:write"] },
+    });
+    assert.equal(res.statusCode, 201);
   } finally {
     await app.close();
   }

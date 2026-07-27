@@ -67,7 +67,7 @@ class DefaultAuthProvider implements AuthProvider {
     return {
       allowed: false,
       code: "INSUFFICIENT_SCOPE",
-      message: `Authenticated principal is missing required scope: ${requiredScopes[0]}`,
+      message: "Insufficient scope for this operation",
     };
   }
 

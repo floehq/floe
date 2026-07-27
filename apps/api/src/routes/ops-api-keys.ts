@@ -146,6 +146,22 @@ export default async function opsApiKeysRoutes(app: FastifyInstance) {
 
     const tier = body.tier === "public" ? "public" : ("authenticated" as const);
 
+    const identity = req.authContext;
+    if (!identity.authenticated) {
+      return sendApiError(reply, 401, "AUTH_REQUIRED", "Authentication required");
+    }
+    const allowedScopes = identity.scopes;
+    const hasWildcard = allowedScopes.includes("*");
+    const forbidden = scopes.filter((s) => !hasWildcard && !allowedScopes.includes(s));
+    if (forbidden.length > 0) {
+      return sendApiError(
+        reply,
+        403,
+        "FORBIDDEN_SCOPES",
+        `Requested scopes not in your scope set: ${forbidden.join(", ")}`,
+      );
+    }
+
     const result = await store.create({ owner, scopes, tier });
 
     emitAuditEvent(req.childLogger, {

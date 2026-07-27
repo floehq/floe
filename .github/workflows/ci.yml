@@ -84,6 +84,22 @@ jobs:
         run: npx tsx --test --no-coverage $(ls ./test/*.test.ts | grep -v '.integration.test.ts' | tr '\n' ' ')
         working-directory: apps/api
 
+  sast:
+    name: SAST
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - name: npm audit
+        run: npm audit --audit-level=high
+        continue-on-error: true
+      - name: npm audit (summary)
+        run: npm audit --audit-level=high || true
+
   test-integration:
     name: Integration Tests
     runs-on: ubuntu-latest
