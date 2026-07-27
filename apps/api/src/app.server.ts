@@ -336,13 +336,15 @@ export async function createApiServer(params?: { authProvider?: AuthProvider }) 
     },
   });
 
-  await app.register(swaggerUi, {
-    routePrefix: "/docs",
-    uiConfig: {
-      docExpansion: "list",
-      defaultModelsExpandDepth: -1,
-    },
-  });
+  if (process.env.NODE_ENV !== "production") {
+    await app.register(swaggerUi, {
+      routePrefix: "/docs",
+      uiConfig: {
+        docExpansion: "list",
+        defaultModelsExpandDepth: -1,
+      },
+    });
+  }
 
   await app.register(helmet, {
     // Disable cross-origin embedder policy to avoid breaking clients that
