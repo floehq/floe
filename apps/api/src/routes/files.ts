@@ -939,7 +939,7 @@ export async function filesRoutes(app: FastifyInstance) {
           res,
           500,
           "RENEWAL_FAILED",
-          `Failed to renew file: ${(err as Error)?.message ?? "unknown"}`,
+          "File renewal failed",
         );
       }
     },

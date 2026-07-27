@@ -775,7 +775,7 @@ export async function finalizeUpload(
     ) {
       await redis.hset(metaKey, {
         status: failure.retryable ? "finalizing" : "failed",
-        error: message,
+        error: failure.reasonCode,
         failedAt: String(Date.now()),
         failedStage: wrapped.finalizeStage ?? currentStage ?? "unknown",
         failedReasonCode: failure.reasonCode,
